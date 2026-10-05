@@ -16,7 +16,7 @@ import (
 // turned away, a wrong password is refused, and the right credentials reach
 // the request stage (here an unroutable target, so nothing is dialed).
 func TestSocksAuth(t *testing.T) {
-	cat, err := catalogue.Parse([]byte("vless://00000000-0000-0000-0000-000000000000@127.0.0.1:9?security=none&type=tcp#dead"))
+	cat, err := catalogue.Parse([]byte("vless://00000000-0000-0000-0000-000000000000@127.0.0.1:9?security=tls&sni=example.com&type=tcp#dead"))
 	if err != nil {
 		t.Fatal(err)
 	}

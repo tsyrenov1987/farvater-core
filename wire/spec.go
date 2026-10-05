@@ -150,6 +150,11 @@ func ParseURI(raw string) (PathSpec, error) {
 		if spec.Security == "reality" && (len(spec.PublicKey) == 0 || spec.SNI == "") {
 			return spec, errors.New("reality: pbk and sni are required")
 		}
+		if spec.Security == "none" {
+			// VLESS itself does not encrypt; a tunnel that carries traffic in the clear
+			// is not one (and Play's VpnService policy requires encryption to the endpoint).
+			return spec, errors.New("vless: security=none: a path must be encrypted (tls or reality)")
+		}
 	case "hysteria2", "hy2":
 		// Mirrors the reference client (apernet/hysteria app/v2, cmd/client.go
 		// parseURI): the auth string is the whole userinfo, "user:pass" when a

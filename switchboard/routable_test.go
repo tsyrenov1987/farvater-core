@@ -40,7 +40,7 @@ func TestRoutable(t *testing.T) {
 // A flow to the tunnel's own DNS address is refused before any dial and
 // leaves no receipt against the path.
 func TestRefusesUnroutableWithoutReceipt(t *testing.T) {
-	cat, err := catalogue.Parse([]byte("vless://00000000-0000-0000-0000-000000000000@127.0.0.1:9?security=none&type=tcp#dead"))
+	cat, err := catalogue.Parse([]byte("vless://00000000-0000-0000-0000-000000000000@127.0.0.1:9?security=tls&sni=example.com&type=tcp#dead"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,7 +16,7 @@ import (
 // must; and each Start must issue new credentials.
 func TestPortIsClosedToOtherApps(t *testing.T) {
 	port := freePort(t)
-	const dead = "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:9?security=none&type=tcp#dead"
+	const dead = "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:9?security=tls&sni=example.com&type=tcp#dead"
 	if err := Start(dead, port, "test"); err != nil {
 		t.Fatal(err)
 	}

@@ -28,7 +28,7 @@ Media type: `application/farvater-catalogue+json`. A plain base64 subscription (
 | `title` | shown to the user |
 | `fingerprint` | opaque hash of the path set; a change means "fleet changed" — the client refreshes seamlessly (new catalogue applies to new connections; live connections finish on their old transports) |
 | `paths[].id` | stable identifier; evidence and priors are keyed by it |
-| `paths[].uri` | standard share URI; the client supports `vless` (reality/xhttp/ws/tcp+tls), `hysteria2`; others ignored |
+| `paths[].uri` | standard share URI; the client supports `vless` (reality/xhttp/ws/tcp+tls), `hysteria2`; others ignored. A `vless` path must be encrypted: `security=none` or no `security` is refused |
 | `labels.rail` | informational: `reality`, `xhttp`, `ws`, `hy2`, … |
 | `labels.net` | `any` / `cell` / `wifi` — a hint about where the path is intended; never a restriction |
 | `labels.white` | the path goes through an allow-listed entry; the client avoids spending probes on it |

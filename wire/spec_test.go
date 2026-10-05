@@ -26,6 +26,19 @@ func TestParseXHTTPAndWS(t *testing.T) {
 	}
 }
 
+func TestPlaintextVLESSIsRefused(t *testing.T) {
+	// Traffic to a path must be encrypted, and Play's VpnService policy requires it:
+	// security=none, or no security at all, is plain VLESS on the wire.
+	for _, raw := range []string{
+		"vless://11111111-2222-3333-4444-555555555555@203.0.113.10:80?security=none&type=ws&path=%2Fws#plain",
+		"vless://11111111-2222-3333-4444-555555555555@203.0.113.10:80?type=tcp#bare",
+	} {
+		if s, err := ParseURI(raw); err == nil {
+			t.Fatalf("plaintext path accepted: %+v", s)
+		}
+	}
+}
+
 func TestParseAndBuildGRPC(t *testing.T) {
 	s, err := ParseURI("vless://11111111-2222-3333-4444-555555555555@203.0.113.12:443?security=reality&encryption=none&pbk=cV6nKp-RGtPLOht6cg1Up0Tos0qaw8nITDsJCxOKvQk&fp=firefox&type=grpc&mode=gun&sni=www.example.com&sid=0123#g")
 	if err != nil || s.Network != "grpc" || s.Rail() != "grpc" {
