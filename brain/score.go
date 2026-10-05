@@ -22,6 +22,8 @@ type PathState struct {
 	recent             []int64
 	stallRun           int
 	Receipts           int
+	Served             int // receipts whose first byte came with no block signature
+	Blocked            int // receipts with a block signature; the rest closed before any answer
 }
 
 // MaxPriorWeight caps prior pseudo-counts so that five fresh receipts outweigh them.
@@ -60,6 +62,12 @@ func (s *PathState) decay(now, halfLifeMs int64) {
 func (s *PathState) Observe(r Receipt, now, halfLifeMs int64) {
 	s.decay(now, halfLifeMs)
 	s.Receipts++
+	switch {
+	case r.Sig() != SigNone:
+		s.Blocked++
+	case r.FirstByte():
+		s.Served++
+	}
 	dv := r.DelivEvidence()
 	switch dv {
 	case 1:

@@ -113,7 +113,9 @@ softer signatures must repeat inside a short window to trip. A tripped rail is
 avoided as a primary for a signature-dependent cooldown (reset longest, throttle
 shortest); if it was the current leader it is dethroned immediately, bypassing
 the section 5 hysteresis. The status reports each tripped rail's remaining
-cooldown, so the apps show when it returns.
+cooldown, so the apps show when it returns. It also carries each receipt's
+signature and, per path, how many receipts were served and how many blocked,
+so the apps word receipts and delivery shares exactly as the breaker reads them.
 
 **This is not narrowing.** A trip is client-side, per-user, reactive to measured
 delivery, and always time-boxed. When the cooldown expires the rail re-enters

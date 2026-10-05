@@ -70,6 +70,10 @@ type Receipt struct {
 // FirstByte reports whether the destination answered through this path.
 func (r Receipt) FirstByte() bool { return r.FirstByteMs >= 0 }
 
+// Sig is the block signature the breaker reads out of the receipt; SigNone
+// when nothing in it points at interference.
+func (r Receipt) Sig() BlockSig { return classify(r) }
+
 // Delivered reports whether the flow is proof of delivery.
 func (r Receipt) Delivered() bool {
 	if r.Stalls > 0 || !r.FirstByte() {

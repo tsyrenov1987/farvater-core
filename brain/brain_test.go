@@ -126,3 +126,16 @@ func TestLeaderHysteresis(t *testing.T) {
 		t.Fatalf("journal: %d lead_switch entries, want 1", b.J.Count("lead_switch"))
 	}
 }
+
+func TestServedAndBlockedCounts(t *testing.T) {
+	var s PathState
+	s.Observe(deliv("p", 1000), 1000, 60_000)
+	s.Observe(reset("p", 2000), 2000, 60_000)
+	s.Observe(blackhole("p", 3000), 3000, 60_000)
+	// Closed by the client before any answer: no evidence either way.
+	quiet := Receipt{Path: "p", AtMs: 4000, WireReadyMs: 20, FirstByteMs: -1, DownAtFail: -1, End: EndLocalClose}
+	s.Observe(quiet, 4000, 60_000)
+	if s.Receipts != 4 || s.Served != 1 || s.Blocked != 2 {
+		t.Fatalf("receipts=%d served=%d blocked=%d, want 4/1/2", s.Receipts, s.Served, s.Blocked)
+	}
+}

@@ -296,6 +296,8 @@ type PathStatus struct {
 	Parked         bool    `json:"parked"`
 	Tripped        string  `json:"tripped,omitempty"`         // breaker signature while avoided as primary
 	TrippedLeftMs  int64   `json:"tripped_left_ms,omitempty"` // until it is tried as a primary again
+	Served         int     `json:"served"`                    // receipts served: first byte, no block signature
+	Blocked        int     `json:"blocked"`                   // receipts with a block signature
 }
 
 func tripName(sig brain.BlockSig) string {
@@ -319,10 +321,11 @@ type ReceiptView struct {
 	Stalls  int    `json:"stalls"`
 	Dst     string `json:"dst"`
 	Explore bool   `json:"explore"`
+	Sig     string `json:"sig,omitempty"` // the breaker's block signature; empty when none
 }
 
 func view(r brain.Receipt) ReceiptView {
-	return ReceiptView{r.AtMs, r.Path, r.End.String(), r.WireReadyMs, r.FirstByteMs, r.Up, r.Down, r.DurMs, r.MaxGapMs, r.Stalls, r.Dst, r.Explore}
+	return ReceiptView{r.AtMs, r.Path, r.End.String(), r.WireReadyMs, r.FirstByteMs, r.Up, r.Down, r.DurMs, r.MaxGapMs, r.Stalls, r.Dst, r.Explore, tripName(r.Sig())}
 }
 
 // Status is the admin snapshot.
@@ -362,7 +365,7 @@ func (s *Switchboard) Status() Status {
 			DelivMean: ps.DelivMean(), FbMean: ps.FbMean(), Receipts: ps.Receipts,
 			Recent15m: ps.RecentReceipts(now, 15*60*1000), P90FirstByteMs: ps.P90FirstByteMs(),
 			Cut16: ps.Cut16, Parked: s.b.Diag.Parked(id, now), Tripped: tripName(s.b.Breaker.TrippedSig(id, now)),
-			TrippedLeftMs: s.b.Breaker.TrippedLeftMs(id, now),
+			TrippedLeftMs: s.b.Breaker.TrippedLeftMs(id, now), Served: ps.Served, Blocked: ps.Blocked,
 		})
 	}
 	n := len(s.receipts)
