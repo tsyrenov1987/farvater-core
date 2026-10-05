@@ -1,0 +1,278 @@
+// Package mobile is the gomobile-bindable surface of farvater-core used by the
+// Android and iOS apps. Everything crosses the language boundary as strings,
+// ints, bools and JSON; the app never sees Go types.
+//
+// The app owns the tunnel device and the socket-protection policy; this
+// package only runs the switchboard on a loopback SOCKS5 port and reports what
+// it measured.
+package mobile
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptrace"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/tsyrenov1987/farvater-core/catalogue"
+	"github.com/tsyrenov1987/farvater-core/switchboard"
+)
+
+var (
+	mu     sync.Mutex
+	sb     *switchboard.Switchboard
+	cancel context.CancelFunc
+	listen string
+)
+
+// Version is the core version string.
+func Version() string { return switchboard.Version }
+
+// Start loads the catalogue and starts the switchboard on 127.0.0.1:socksPort.
+// catalogueSrc is either an http(s) URL of a catalogue/subscription, or the
+// catalogue text itself (JSON, base64 subscription, or share links).
+// networkCtx names the network the receipts are filed under (e.g. "wifi").
+// It returns once the SOCKS5 port is listening.
+func Start(catalogueSrc string, socksPort int, networkCtx string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if sb != nil {
+		return errors.New("already running")
+	}
+	cat, err := loadCatalogue(catalogueSrc)
+	if err != nil {
+		return err
+	}
+	cfg := switchboard.DefaultConfig()
+	listen = net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort))
+	cfg.Listen = listen
+	if networkCtx != "" {
+		cfg.Ctx = networkCtx
+	}
+	s, err := switchboard.New(cfg, cat)
+	if err != nil {
+		return err
+	}
+	ctx, c := context.WithCancel(context.Background())
+	if err := s.Start(ctx); err != nil {
+		c()
+		return err
+	}
+	sb, cancel = s, c
+	return nil
+}
+
+func loadCatalogue(src string) (*catalogue.Catalogue, error) {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return nil, errors.New("empty catalogue")
+	}
+	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+		return catalogue.Load(src)
+	}
+	return catalogue.Parse([]byte(src))
+}
+
+// Stop shuts the switchboard down. It is safe to call when not running.
+func Stop() {
+	mu.Lock()
+	defer mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	sb, cancel = nil, nil
+}
+
+// Running reports whether the switchboard is up.
+func Running() bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return sb != nil
+}
+
+func current() *switchboard.Switchboard {
+	mu.Lock()
+	defer mu.Unlock()
+	return sb
+}
+
+func toJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// StatusJSON returns the switchboard status (paths, leader, breaker state).
+func StatusJSON() string {
+	s := current()
+	if s == nil {
+		return "{}"
+	}
+	return toJSON(s.Status())
+}
+
+// ReceiptsJSON returns the receipt history, oldest first.
+func ReceiptsJSON() string {
+	s := current()
+	if s == nil {
+		return "[]"
+	}
+	return toJSON(s.Receipts())
+}
+
+// JournalJSON returns the brain's decision journal.
+func JournalJSON() string {
+	s := current()
+	if s == nil {
+		return "[]"
+	}
+	return toJSON(s.Journal())
+}
+
+// ValidateCatalogue parses a catalogue without starting anything and returns
+// JSON {"ok":true,"paths":n,"title":"..."} or {"ok":false,"error":"..."} for
+// the import screen.
+func ValidateCatalogue(catalogueSrc string) string {
+	cat, err := loadCatalogue(catalogueSrc)
+	if err != nil {
+		return toJSON(map[string]any{"ok": false, "error": err.Error()})
+	}
+	return toJSON(map[string]any{"ok": true, "paths": len(cat.Paths), "title": cat.Title})
+}
+
+// proof is the result of ProveDelivery.
+type proof struct {
+	OK          bool   `json:"ok"`
+	Bytes       int64  `json:"bytes"`
+	Ms          int64  `json:"ms"`
+	FirstByteMs int64  `json:"first_byte_ms"`
+	Path        string `json:"path,omitempty"`
+	Rail        string `json:"rail,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+// ProveDelivery fetches probeURL (https) through the running switchboard — the
+// same SOCKS5 door every app uses — and returns JSON describing what was
+// actually delivered: bytes, total and first-byte time, and the path that
+// carried it. The app shows "connected" only after this succeeds.
+func ProveDelivery(probeURL string, timeoutMs int) string {
+	s := current()
+	mu.Lock()
+	addr := listen
+	mu.Unlock()
+	if s == nil {
+		return toJSON(proof{Error: "not running"})
+	}
+	u, err := url.Parse(probeURL)
+	if err != nil || u.Scheme != "https" {
+		return toJSON(proof{Error: "probe url must be https"})
+	}
+	ctx, c := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
+	defer c()
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, hostport string) (net.Conn, error) {
+			return socksConnect(ctx, addr, hostport)
+		},
+		TLSClientConfig:   &tls.Config{ServerName: u.Hostname()},
+		DisableKeepAlives: true,
+	}
+	start := time.Now()
+	var first time.Duration
+	trace := &httptrace.ClientTrace{GotFirstResponseByte: func() { first = time.Since(start) }}
+	req, _ := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), "GET", probeURL, nil)
+	req.Header.Set("User-Agent", "farvater-probe/"+switchboard.Version)
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		return toJSON(proof{Ms: time.Since(start).Milliseconds(), Error: err.Error()})
+	}
+	n, rerr := io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	tr.CloseIdleConnections() // end the flow now so its receipt is written
+	p := proof{Bytes: n, Ms: time.Since(start).Milliseconds(), FirstByteMs: first.Milliseconds()}
+	if rerr != nil {
+		p.Error = rerr.Error()
+	} else if resp.StatusCode/100 != 2 {
+		p.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+	} else {
+		p.OK = true
+	}
+	// Name the path that carried it: this probe's receipt. The receipt is
+	// written when the flow closes, which can trail the body by up to the
+	// remote-drain window, so wait for it briefly.
+	host := u.Hostname()
+	since := start.UnixMilli()
+	for deadline := time.Now().Add(3 * time.Second); p.Path == "" && time.Now().Before(deadline); {
+		rs := s.Receipts()
+		for i := len(rs) - 1; i >= 0; i-- {
+			if rs[i].Dst == host && rs[i].At >= since && rs[i].FbMs >= 0 {
+				p.Path = rs[i].Path
+				break
+			}
+		}
+		if p.Path == "" {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if p.Path != "" {
+		for _, ps := range s.Status().Paths {
+			if ps.ID == p.Path {
+				p.Rail = ps.Rail
+			}
+		}
+	}
+	return toJSON(p)
+}
+
+// socksConnect opens a SOCKS5 CONNECT through the local switchboard.
+func socksConnect(ctx context.Context, socksAddr, hostport string) (net.Conn, error) {
+	host, portStr, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return nil, err
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || len(host) > 255 {
+		return nil, errors.New("bad target")
+	}
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "tcp", socksAddr)
+	if err != nil {
+		return nil, err
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		_ = c.SetDeadline(dl)
+	}
+	fail := func(e error) (net.Conn, error) { c.Close(); return nil, e }
+	if _, err := c.Write([]byte{5, 1, 0}); err != nil {
+		return fail(err)
+	}
+	var greet [2]byte
+	if _, err := io.ReadFull(c, greet[:]); err != nil || greet[0] != 5 || greet[1] != 0 {
+		return fail(errors.New("socks: greeting refused"))
+	}
+	req := []byte{5, 1, 0, 3, byte(len(host))}
+	req = append(req, host...)
+	req = append(req, byte(port>>8), byte(port))
+	if _, err := c.Write(req); err != nil {
+		return fail(err)
+	}
+	var rep [10]byte
+	if _, err := io.ReadFull(c, rep[:]); err != nil {
+		return fail(err)
+	}
+	if rep[1] != 0 {
+		return fail(fmt.Errorf("socks: connect status %d", rep[1]))
+	}
+	_ = c.SetDeadline(time.Time{})
+	return c, nil
+}

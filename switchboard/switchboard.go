@@ -120,6 +120,21 @@ func (s *Switchboard) Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.serveListener(ctx, ln)
+}
+
+// Start listens synchronously (so the caller knows the port is up) and serves
+// in the background until ctx ends. Used by the mobile apps.
+func (s *Switchboard) Start(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.cfg.Listen)
+	if err != nil {
+		return err
+	}
+	go func() { _ = s.serveListener(ctx, ln) }()
+	return nil
+}
+
+func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error {
 	go func() {
 		<-ctx.Done()
 		ln.Close()
@@ -238,6 +253,14 @@ type PathStatus struct {
 	P90FirstByteMs int64   `json:"p90_first_byte_ms"`
 	Cut16          bool    `json:"cut16"`
 	Parked         bool    `json:"parked"`
+	Tripped        string  `json:"tripped,omitempty"` // breaker signature while avoided as primary
+}
+
+func tripName(sig brain.BlockSig) string {
+	if sig == brain.SigNone {
+		return ""
+	}
+	return sig.String()
 }
 
 // ReceiptView is the JSON form of a receipt.
@@ -296,7 +319,7 @@ func (s *Switchboard) Status() Status {
 			ID: id, Rail: sp.Rail(), Server: fmt.Sprintf("%s:%d", sp.Host, sp.Port), Leader: id == s.b.Leader(),
 			DelivMean: ps.DelivMean(), FbMean: ps.FbMean(), Receipts: ps.Receipts,
 			Recent15m: ps.RecentReceipts(now, 15*60*1000), P90FirstByteMs: ps.P90FirstByteMs(),
-			Cut16: ps.Cut16, Parked: s.b.Diag.Parked(id, now),
+			Cut16: ps.Cut16, Parked: s.b.Diag.Parked(id, now), Tripped: tripName(s.b.Breaker.TrippedSig(id, now)),
 		})
 	}
 	n := len(s.receipts)

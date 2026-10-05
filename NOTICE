@@ -55,8 +55,9 @@ Support libraries pulled in transitively by the transports above:
   golang.org/x/text                      BSD-3
   golang.org/x/exp                       BSD-3
   lukechampine.com/blake3                MIT
-  github.com/stretchr/testify            MIT   (tests only)
-  github.com/stretchr/objx               MIT   (tests only)
+  github.com/stretchr/testify            MIT   (linked via a mock file in hysteria core/v2/client)
+  github.com/stretchr/objx               MIT   (same)
+  golang.org/x/mobile                    BSD-3 (Android/iOS bindings: gobind and bind/seq)
 
 ------------------------------------------------------------------------------
 github.com/sagernet/sing — NOT linked
