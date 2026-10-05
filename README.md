@@ -3,8 +3,8 @@
 **Path selection by proven delivery, not by ping.** The routing core of Farvater VPN.
 
 Status (05 Oct 2026): **Phases 0–1 done** — the decision core (`brain`) with an anti-interference circuit breaker,
-a deterministic simulator (`sim`), real transports (`wire`: VLESS+Vision over Reality/TLS/WebSocket/XHTTP, and
-Hysteria 2), a SOCKS5 switchboard (`switchboard`) that turns live flows into receipts, and a reference CLI
+a deterministic simulator (`sim`), real transports (`wire`: VLESS+Vision over Reality/TLS/WebSocket/XHTTP/gRPC, and
+Hysteria 2 with Salamander), a SOCKS5 switchboard (`switchboard`) that turns live flows into receipts, and a reference CLI
 (`cmd/farvater`). Full design: [docs/DESIGN.md](docs/DESIGN.md).
 
 ```

@@ -5,6 +5,7 @@ import (
 
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/transport/internet"
+	xgrpc "github.com/xtls/xray-core/transport/internet/grpc"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/splithttp"
 	"github.com/xtls/xray-core/transport/internet/tcp"
@@ -24,6 +25,10 @@ func buildStream(s PathSpec) (*internet.MemoryStreamConfig, error) {
 	case "ws":
 		sc.ProtocolName = "websocket"
 		sc.TransportSettings = []*internet.TransportConfig{{ProtocolName: "websocket", Settings: serial.ToTypedMessage(&websocket.Config{Host: s.HostHeader, Path: s.Path})}}
+	case "grpc":
+		// mode=gun (default) is one stream per flow; mode=multi packs frames.
+		sc.ProtocolName = "grpc"
+		sc.TransportSettings = []*internet.TransportConfig{{ProtocolName: "grpc", Settings: serial.ToTypedMessage(&xgrpc.Config{Authority: s.Authority, ServiceName: s.ServiceName, MultiMode: s.Mode == "multi"})}}
 	case "xhttp":
 		sc.ProtocolName = "splithttp"
 		sc.TransportSettings = []*internet.TransportConfig{{ProtocolName: "splithttp", Settings: serial.ToTypedMessage(&splithttp.Config{Host: s.HostHeader, Path: s.Path, Mode: s.Mode})}}

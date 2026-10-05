@@ -26,9 +26,45 @@ func TestParseXHTTPAndWS(t *testing.T) {
 	}
 }
 
+func TestParseAndBuildGRPC(t *testing.T) {
+	s, err := ParseURI("vless://11111111-2222-3333-4444-555555555555@203.0.113.12:443?security=reality&encryption=none&pbk=cV6nKp-RGtPLOht6cg1Up0Tos0qaw8nITDsJCxOKvQk&fp=firefox&type=grpc&mode=gun&sni=www.example.com&sid=0123#g")
+	if err != nil || s.Network != "grpc" || s.Rail() != "grpc" {
+		t.Fatalf("grpc parse: %v %+v", err, s)
+	}
+	if _, err := Build(s); err != nil {
+		t.Fatalf("grpc wire must build: %v", err)
+	}
+}
+
 func TestParseHysteria2(t *testing.T) {
-	s, err := ParseURI("hysteria2://pass:pass@203.0.113.11:8443?sni=www.example.com&insecure=1&obfs=salamander&obfs-password=secret#h")
-	if err != nil || s.Kind != KindHysteria2 || s.Password != "pass" || s.Obfs != "salamander" || s.ObfsPass != "secret" || !s.Insecure || s.Rail() != "hy2" {
-		t.Fatalf("hy2: %v %+v", err, s)
+	// userpass mode: the auth string is the whole userinfo.
+	s, err := ParseURI("hysteria2://alice:s3cret@203.0.113.11:8443?sni=www.example.com&insecure=1&obfs=Salamander&obfs-password=secret#h")
+	if err != nil || s.Kind != KindHysteria2 || s.Auth != "alice:s3cret" || s.Obfs != "salamander" || s.ObfsPass != "secret" || !s.Insecure || s.Rail() != "hy2" {
+		t.Fatalf("hy2 userpass: %v %+v", err, s)
+	}
+	// password mode: no colon, the username is the password.
+	p, err := ParseURI("hysteria2://onlypass@203.0.113.11:8443?insecure=true#p")
+	if err != nil || p.Auth != "onlypass" || !p.Insecure {
+		t.Fatalf("hy2 password: %v %+v", err, p)
+	}
+}
+
+func TestHysteriaPinFailsClosed(t *testing.T) {
+	if got := normalizePin("AB:CD-ef"); got != "abcdef" {
+		t.Fatalf("normalizePin = %q", got)
+	}
+	w, err := newHysteria(PathSpec{Kind: KindHysteria2, Host: "203.0.113.11", Port: 8443, Auth: "a:b", PinSHA256: "not-a-real-pin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := w.config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TLSConfig.VerifyPeerCertificate == nil {
+		t.Fatal("a malformed pin must still be enforced, not dropped")
+	}
+	if cfg.TLSConfig.VerifyPeerCertificate([][]byte{[]byte("some cert")}, nil) == nil {
+		t.Fatal("a non-matching pin must fail the handshake")
 	}
 }

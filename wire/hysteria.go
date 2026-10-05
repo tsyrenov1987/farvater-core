@@ -25,8 +25,8 @@ type hyWire struct {
 }
 
 func newHysteria(spec PathSpec) (*hyWire, error) {
-	if spec.Password == "" {
-		return nil, errors.New("hysteria2: missing password")
+	if spec.Auth == "" {
+		return nil, errors.New("hysteria2: missing auth")
 	}
 	if spec.Obfs != "" && spec.Obfs != "salamander" {
 		return nil, errors.New("hysteria2: unsupported obfs " + spec.Obfs)
@@ -71,7 +71,7 @@ func (w *hyWire) config() (*client.Config, error) {
 	}
 	cfg := &client.Config{
 		ServerAddr: addr,
-		Auth:       w.spec.Password,
+		Auth:       w.spec.Auth,
 		TLSConfig: client.TLSConfig{
 			ServerName:         w.spec.ServerSNI(),
 			InsecureSkipVerify: w.spec.Insecure,
@@ -82,14 +82,18 @@ func (w *hyWire) config() (*client.Config, error) {
 	if w.spec.Obfs == "salamander" {
 		cfg.ConnFactory = salamanderFactory{psk: []byte(w.spec.ObfsPass)}
 	}
-	if pin := normalizePin(w.spec.PinSHA256); pin != "" {
-		cfg.TLSConfig.InsecureSkipVerify = true
+	if w.spec.PinSHA256 != "" {
+		// As in the reference client: only the end-entity certificate is
+		// pinned, and a pin that does not match — including a malformed one —
+		// fails the handshake. A pin is never silently dropped.
+		pin := normalizePin(w.spec.PinSHA256)
 		cfg.TLSConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			for _, rc := range rawCerts {
-				sum := sha256.Sum256(rc)
-				if hex.EncodeToString(sum[:]) == pin {
-					return nil
-				}
+			if len(rawCerts) == 0 {
+				return errors.New("hysteria2: no peer certificate")
+			}
+			sum := sha256.Sum256(rawCerts[0])
+			if hex.EncodeToString(sum[:]) == pin {
+				return nil
 			}
 			return errors.New("hysteria2: certificate pin mismatch")
 		}
@@ -98,11 +102,9 @@ func (w *hyWire) config() (*client.Config, error) {
 }
 
 func normalizePin(p string) string {
-	p = strings.ToLower(strings.ReplaceAll(p, ":", ""))
-	if len(p) != 64 {
-		return ""
-	}
-	return p
+	p = strings.ToLower(p)
+	p = strings.ReplaceAll(p, ":", "")
+	return strings.ReplaceAll(p, "-", "")
 }
 
 // Dial makes sure the QUIC session exists. The handshake only happens when

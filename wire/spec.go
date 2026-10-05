@@ -44,9 +44,10 @@ type PathSpec struct {
 	HostHeader  string // ws / xhttp
 	Mode        string // xhttp mode: auto | packet-up | stream-up | stream-one
 	ServiceName string // grpc
+	Authority   string // grpc :authority override
 
 	// Hysteria2
-	Password  string
+	Auth      string // full userinfo: "user:pass" (userpass mode) or "pass"
 	Obfs      string // "" | salamander
 	ObfsPass  string
 	PinSHA256 string
@@ -145,21 +146,28 @@ func ParseURI(raw string) (PathSpec, error) {
 		spec.HostHeader = q.Get("host")
 		spec.Mode = first(q.Get("mode"), "auto")
 		spec.ServiceName = q.Get("serviceName")
+		spec.Authority = q.Get("authority")
 		if spec.Security == "reality" && (len(spec.PublicKey) == 0 || spec.SNI == "") {
 			return spec, errors.New("reality: pbk and sni are required")
 		}
 	case "hysteria2", "hy2":
+		// Mirrors the reference client (apernet/hysteria app/v2, cmd/client.go
+		// parseURI): the auth string is the whole userinfo, "user:pass" when a
+		// password is present — servers in userpass mode reject anything else.
 		spec.Kind = KindHysteria2
 		if u.User != nil {
+			username := u.User.Username()
 			if pw, ok := u.User.Password(); ok {
-				spec.Password = pw
+				spec.Auth = username + ":" + pw
 			} else {
-				spec.Password = u.User.Username()
+				spec.Auth = username
 			}
 		}
 		spec.SNI = q.Get("sni")
-		spec.Insecure = q.Get("insecure") == "1"
-		spec.Obfs = q.Get("obfs")
+		if b, err := strconv.ParseBool(q.Get("insecure")); err == nil {
+			spec.Insecure = b
+		}
+		spec.Obfs = strings.ToLower(q.Get("obfs"))
 		spec.ObfsPass = q.Get("obfs-password")
 		spec.PinSHA256 = q.Get("pinSHA256")
 	default:

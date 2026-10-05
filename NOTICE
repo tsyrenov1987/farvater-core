@@ -22,7 +22,7 @@ the binary. Each remains under its own license.
 
 Transports and TLS:
   github.com/xtls/xray-core              MPL-2.0   VLESS, Vision, REALITY/TLS,
-                                                    WebSocket and XHTTP transport
+                                                    WebSocket, XHTTP and gRPC transport
   github.com/xtls/reality                MPL-2.0   REALITY handshake
   github.com/refraction-networking/utls  BSD-3     TLS ClientHello fingerprints
   github.com/apernet/hysteria/core/v2    MIT       Hysteria 2 client
@@ -47,6 +47,7 @@ Support libraries pulled in transitively by the transports above:
                                          combined work.
   go.yaml.in/yaml/v3                      Apache-2.0
   google.golang.org/grpc                 Apache-2.0
+  google.golang.org/genproto/googleapis/rpc  Apache-2.0
   google.golang.org/protobuf             BSD-3
   golang.org/x/crypto                    BSD-3
   golang.org/x/net                       BSD-3
