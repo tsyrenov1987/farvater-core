@@ -294,7 +294,8 @@ type PathStatus struct {
 	P90FirstByteMs int64   `json:"p90_first_byte_ms"`
 	Cut16          bool    `json:"cut16"`
 	Parked         bool    `json:"parked"`
-	Tripped        string  `json:"tripped,omitempty"` // breaker signature while avoided as primary
+	Tripped        string  `json:"tripped,omitempty"`         // breaker signature while avoided as primary
+	TrippedLeftMs  int64   `json:"tripped_left_ms,omitempty"` // until it is tried as a primary again
 }
 
 func tripName(sig brain.BlockSig) string {
@@ -361,6 +362,7 @@ func (s *Switchboard) Status() Status {
 			DelivMean: ps.DelivMean(), FbMean: ps.FbMean(), Receipts: ps.Receipts,
 			Recent15m: ps.RecentReceipts(now, 15*60*1000), P90FirstByteMs: ps.P90FirstByteMs(),
 			Cut16: ps.Cut16, Parked: s.b.Diag.Parked(id, now), Tripped: tripName(s.b.Breaker.TrippedSig(id, now)),
+			TrippedLeftMs: s.b.Breaker.TrippedLeftMs(id, now),
 		})
 	}
 	n := len(s.receipts)

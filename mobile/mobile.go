@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tsyrenov1987/farvater-core/catalogue"
@@ -197,6 +198,24 @@ func ValidateCatalogue(catalogueSrc string) string {
 	return toJSON(map[string]any{"ok": true, "paths": len(cat.Paths), "title": cat.Title})
 }
 
+// The probe in flight, for the apps' live counter: bytes read so far and the
+// length the server announced (-1 when it sent none).
+var probeRead, probeSize atomic.Int64
+
+// ProofProgress returns JSON {"bytes":n,"total":m} for the latest
+// ProveDelivery: while it runs, how much of the probe has arrived.
+func ProofProgress() string {
+	return toJSON(map[string]int64{"bytes": probeRead.Load(), "total": probeSize.Load()})
+}
+
+// countingDiscard drops the probe body, counting it into probeRead.
+type countingDiscard struct{}
+
+func (countingDiscard) Write(p []byte) (int, error) {
+	probeRead.Add(int64(len(p)))
+	return len(p), nil
+}
+
 // proof is the result of ProveDelivery.
 type proof struct {
 	OK          bool   `json:"ok"`
@@ -224,6 +243,8 @@ func ProveDelivery(probeURL string, timeoutMs int) string {
 	if s == nil {
 		return toJSON(proof{Error: "not running"})
 	}
+	probeRead.Store(0)
+	probeSize.Store(0)
 	u, err := url.Parse(probeURL)
 	if err != nil || u.Scheme != "https" {
 		return toJSON(proof{Error: "probe url must be https"})
@@ -246,7 +267,8 @@ func ProveDelivery(probeURL string, timeoutMs int) string {
 	if err != nil {
 		return toJSON(proof{Ms: time.Since(start).Milliseconds(), Error: err.Error()})
 	}
-	n, rerr := io.Copy(io.Discard, resp.Body)
+	probeSize.Store(resp.ContentLength)
+	n, rerr := io.Copy(countingDiscard{}, resp.Body)
 	resp.Body.Close()
 	tr.CloseIdleConnections() // end the flow now so its receipt is written
 	p := proof{Bytes: n, Ms: time.Since(start).Milliseconds(), FirstByteMs: first.Milliseconds()}

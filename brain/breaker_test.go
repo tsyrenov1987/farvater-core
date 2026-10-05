@@ -44,6 +44,21 @@ func TestBreakerTripsOnOneReset(t *testing.T) {
 	}
 }
 
+func TestBreakerCountdown(t *testing.T) {
+	b := NewBreaker(DefaultBreakerConfig())
+	b.Note(reset("p", 1000), 1000)
+	want := DefaultBreakerConfig().Cooldown[SigReset] - 30_000
+	if got := b.TrippedLeftMs("p", 31_000); got != want {
+		t.Fatalf("left 30 s into the reset cooldown = %d, want %d", got, want)
+	}
+	if got := b.TrippedLeftMs("p", 1000+DefaultBreakerConfig().Cooldown[SigReset]); got != 0 {
+		t.Fatalf("left at the end of the cooldown = %d, want 0", got)
+	}
+	if got := b.TrippedLeftMs("q", 1000); got != 0 {
+		t.Fatalf("an untripped rail has no countdown, got %d", got)
+	}
+}
+
 func TestBreakerSoftNeedsTwo(t *testing.T) {
 	b := NewBreaker(DefaultBreakerConfig())
 	if tripped, _ := b.Note(blackhole("p", 0), 0); tripped {

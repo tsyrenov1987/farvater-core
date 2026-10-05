@@ -213,6 +213,15 @@ func (b *Breaker) TrippedSig(path string, now int64) BlockSig {
 	return b.rails[path].sig
 }
 
+// TrippedLeftMs returns how long a tripped rail stays avoided as a primary (0
+// when it is not tripped): the countdown the apps show beside "bypassing".
+func (b *Breaker) TrippedLeftMs(path string, now int64) int64 {
+	if !b.Tripped(path, now) {
+		return 0
+	}
+	return b.rails[path].trippedUntil - now
+}
+
 // Storm reports an active fleet-wide disturbance: several distinct rails tripped
 // inside the window. During a storm the brain re-measures delivery across rails
 // in parallel instead of leaning on one leader.
