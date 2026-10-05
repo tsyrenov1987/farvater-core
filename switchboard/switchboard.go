@@ -203,7 +203,6 @@ func classify(port int) brain.DstClass {
 }
 
 func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
-	s.flows.Add(1)
 	s.active.Add(1)
 	defer s.active.Add(-1)
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
@@ -224,6 +223,9 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 		c.Close()
 		return
 	}
+	// Counted only once admitted: scanners, the iOS tunnel's liveness probe
+	// and refused targets are no app's connection.
+	s.flows.Add(1)
 	f := &flow{
 		s: s, client: c,
 		target: wire.Target{Host: req.Host, Port: req.Port},
