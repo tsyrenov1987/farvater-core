@@ -20,6 +20,7 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"runtime/debug"
+	"runtime/metrics"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +55,27 @@ func SetMemoryLimit(bytes int64) {
 	if bytes > 0 {
 		debug.SetMemoryLimit(bytes)
 	}
+}
+
+// MemoryJSON reports the Go runtime's share of the process, so the iOS tunnel
+// can tell the core's memory from the rest of its budget:
+// {"total": bytes the runtime holds from the OS, "heap": live heap objects,
+// "stacks": goroutine stacks, "goroutines": n}.
+func MemoryJSON() string {
+	s := []metrics.Sample{
+		{Name: "/memory/classes/total:bytes"},
+		{Name: "/memory/classes/heap/released:bytes"},
+		{Name: "/memory/classes/heap/objects:bytes"},
+		{Name: "/memory/classes/heap/stacks:bytes"},
+		{Name: "/sched/goroutines:goroutines"},
+	}
+	metrics.Read(s)
+	return toJSON(map[string]uint64{
+		"total":      s[0].Value.Uint64() - s[1].Value.Uint64(),
+		"heap":       s[2].Value.Uint64(),
+		"stacks":     s[3].Value.Uint64(),
+		"goroutines": s[4].Value.Uint64(),
+	})
 }
 
 // Start loads the catalogue and starts the switchboard on 127.0.0.1:socksPort.
