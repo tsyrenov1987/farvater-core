@@ -22,9 +22,9 @@ type Meter interface {
 	// Up is called with every chunk about to be sent upstream (the prelude the
 	// caller passed to Run is not reported again).
 	Up(p []byte)
-	// Down is called with the size of every chunk that arrived downstream,
-	// before it is written to the app.
-	Down(n int)
+	// Down is called with every chunk that arrived downstream, before it is
+	// written to the app. The meter must not keep or modify p.
+	Down(p []byte)
 }
 
 // Outcome says how a flow ended.

@@ -42,7 +42,7 @@ func (d *downWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		if b.IsEmpty() {
 			continue
 		}
-		d.m.Down(int(b.Len()))
+		d.m.Down(b.Bytes())
 		if _, err := d.w.Write(b.Bytes()); err != nil {
 			return err
 		}

@@ -54,10 +54,15 @@ replaces it.
  "down_at_fail":null,"dst_class":"tls443|dns|quic|other","explore":false}
 ```
 
-- **First byte:** first downstream byte after the request was sent. None within `T_fb = max(3 s, 3·p90_fb(path, ctx))`
-  → `timeout`, negative first-byte evidence.
-- **Stall:** after the first byte, downstream silence ≥ `T_stall = max(4 s, 3·p90_gap)` while the local app has
-  sent data after the last received byte (it is waiting). Local close inside the stall window → `stall_abandon`.
+- **First byte:** first downstream byte after the app's first bytes. The clock starts when the app sends, not when
+  the path connects: a connection the app has not used yet is waiting for nothing. None within
+  `T_fb = max(3 s, 3·p90_fb(path, ctx))` → `timeout`, negative first-byte evidence.
+- **Stall:** after the first byte, downstream silence ≥ `T_stall` (4 s) **in the middle of a TLS record** of the
+  app's stream. Record headers travel in the clear and servers write records whole, so silence inside a record means
+  bytes already sent are missing. Silence at a record boundary is a keep-alive connection with nothing to say (most of
+  a real connection's life: HTTP/2 idles between requests and sends WINDOW_UPDATE/SETTINGS ACK that expect no reply)
+  and is not evidence. Non-TLS streams get no stall verdict after they have answered. Local close inside a stall →
+  `stall_abandon`.
 - **Delivered:** `down ≥ 32 KB` without a stall, or `remote_fin` after ≥1 KB without a stall.
 - **Size classes:** <16 KB — first-byte evidence only; 16–256 KB — "not cut" evidence; >256 KB — also goodput.
 - **Cut signature (`cut16`):** median `down_at_fail` over ≥3 failed flows in 12–28 KB. Detected from receipts alone.
@@ -172,7 +177,12 @@ CI fails if any `sagernet/*` module appears in `go list -deps`. Built with `gomo
 
 - iOS Network Extension: ~50 MiB budget → C tun2socks with small buffers, Go GC every second, fixed buffer pools,
   ring-buffer logs; watchdog cancels the tunnel if the switchboard stops answering (no "protected" status over a dead core).
-- Android: VpnService + the same aar.
+- Android: VpnService + the same aar. The app excludes itself from the VPN (its own connections to the paths go out
+  directly), routes 0.0.0.0/0 and ::/0 into hev-socks5-tunnel, and answers DNS with mapped addresses so the
+  switchboard receives names. The interface comes up only after a delivery proof through the switchboard.
+- Destinations that mean nothing at a path's exit (loopback, private, link-local, 100.64/10, 198.18/15) are refused
+  at the SOCKS step with no dial and no receipt; otherwise Android's DNS-over-TLS probe of the tunnel's own DNS
+  address files failures against healthy paths.
 
 ## 13. Verification
 
@@ -186,6 +196,12 @@ reacts faster than the slow learner alone: it recovers success in the first minu
 fewer flows into a silently dropped rail, and settles on a surviving rail under a coordinated storm. Every such
 test also runs with the breaker switched off, so the breaker must demonstrably beat its own absence. Thresholds
 are then calibrated on field receipts.
+
+The simulator generates receipts directly, so the switchboard's byte meter has its own tests: completed responses
+followed by keep-alive silence, and HTTP/2 control frames after a response, must not count as stalls; silence inside
+a TLS record must. A live test drives real HTTP/2 traffic with idle pauses through the switchboard and requires
+receipts without stalls and no tripped rail. (The first Android run showed why: idle browser connections were
+scored as throttling and the best rail was benched.)
 
 ## 14. Non-goals
 

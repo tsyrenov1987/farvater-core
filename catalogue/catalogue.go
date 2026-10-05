@@ -123,7 +123,7 @@ func Parse(body []byte) (*Catalogue, error) {
 		}
 		t = string(dec)
 	}
-	c := &Catalogue{V: 1, Title: "subscription"}
+	c := &Catalogue{V: 1} // a plain list carries no title
 	sc := bufio.NewScanner(strings.NewReader(t))
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	seen := map[string]int{}

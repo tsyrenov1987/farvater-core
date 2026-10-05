@@ -79,7 +79,7 @@ type probeMeter struct {
 }
 
 func (m *probeMeter) Up([]byte) {}
-func (m *probeMeter) Down(n int) {
+func (m *probeMeter) Down(p []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.firstMs == 0 {
@@ -88,7 +88,7 @@ func (m *probeMeter) Down(n int) {
 			m.firstMs = 1
 		}
 	}
-	m.down += int64(n)
+	m.down += int64(len(p))
 }
 
 // appConn is the "app side" of a session: writes go to the up channel, reads

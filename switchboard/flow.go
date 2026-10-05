@@ -311,7 +311,12 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 	if fbMs <= 0 {
 		fbMs = f.s.cfg.FirstByteTimeout.Milliseconds()
 	}
-	fbDeadline := nowMs() + fbMs
+	// The first-byte clock runs from the app's first bytes: a connection the
+	// app has not used yet is waiting for nothing.
+	var askedAt int64
+	if len(prelude) > 0 {
+		askedAt = nowMs()
+	}
 	for {
 		select {
 		case r := <-done:
@@ -321,7 +326,10 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 			now := nowMs()
 			sn := a.m.snap()
 			if sn.firstDownAt == 0 {
-				if now > fbDeadline && !fbTimeout {
+				if askedAt == 0 {
+					askedAt = sn.firstUpAt
+				}
+				if askedAt > 0 && now > askedAt+fbMs && !fbTimeout {
 					fbTimeout = true
 					cancel()
 				}

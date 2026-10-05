@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -159,6 +160,32 @@ func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error 
 	}
 }
 
+// nonGlobal are ranges that Go's netip does not flag but that mean nothing
+// at a path's exit.
+var nonGlobal = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"), // shared address space (CGNAT)
+	netip.MustParsePrefix("198.18.0.0/15"), // benchmarking; the apps' tunnel and DNS addresses
+}
+
+// routable reports whether a destination can mean anything at a path's exit:
+// any name, or a global unicast address outside private and shared ranges.
+func routable(host string) bool {
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return true
+	}
+	ip = ip.Unmap()
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	for _, p := range nonGlobal {
+		if p.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
 func classify(port int) brain.DstClass {
 	switch port {
 	case 443:
@@ -176,6 +203,14 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	req, err := readSocks5(c)
 	if err != nil {
+		c.Close()
+		return
+	}
+	if !routable(req.Host) {
+		// Refused at once, with no dial and no receipt: such a flow would only
+		// file failures against healthy paths. The usual case is Android probing
+		// DNS-over-TLS on the tunnel's own DNS address.
+		_ = replySocks5(c, 2) // connection not allowed by ruleset
 		c.Close()
 		return
 	}

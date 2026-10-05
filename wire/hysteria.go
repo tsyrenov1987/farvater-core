@@ -190,7 +190,7 @@ func (s *hySession) Run(ctx context.Context, target Target, prelude []byte, up <
 		for {
 			n, err := c.Read(p)
 			if n > 0 {
-				m.Down(n)
+				m.Down(p[:n])
 				if _, werr := down.Write(p[:n]); werr != nil {
 					downErr <- werr
 					return
