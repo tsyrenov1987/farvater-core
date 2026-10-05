@@ -58,7 +58,7 @@ func Load(src string) (*Catalogue, error) {
 	var body []byte
 	var err error
 	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
-		body, err = fetch(src)
+		body, err = Fetch(src)
 	} else {
 		body, err = os.ReadFile(src)
 	}
@@ -73,7 +73,9 @@ func Load(src string) (*Catalogue, error) {
 	return c, nil
 }
 
-func fetch(u string) ([]byte, error) {
+// Fetch downloads a catalogue or subscription body without parsing it, so a
+// client can keep the last good copy for when the source is unreachable.
+func Fetch(u string) ([]byte, error) {
 	cl := &http.Client{Timeout: 20 * time.Second}
 	req, _ := http.NewRequest("GET", u, nil)
 	req.Header.Set("User-Agent", "farvater-core/0.1")

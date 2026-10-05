@@ -31,7 +31,7 @@ func TestLiveStartProveStop(t *testing.T) {
 		FirstByteMs       int64 `json:"first_byte_ms"`
 		Path, Rail, Error string
 	}
-	if err := json.Unmarshal([]byte(ProveDelivery("https://speed.cloudflare.com/__down?bytes=262144", 20000)), &p); err != nil {
+	if err := json.Unmarshal([]byte(ProveDelivery("", 20000)), &p); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("proof: ok=%v bytes=%d ms=%d fb=%d rail=%s err=%s", p.OK, p.Bytes, p.Ms, p.FirstByteMs, p.Rail, p.Error)

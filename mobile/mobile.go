@@ -27,11 +27,16 @@ import (
 	"github.com/tsyrenov1987/farvater-core/switchboard"
 )
 
+// DefaultProbeURL is fetched by ProveDelivery when neither the caller nor the
+// catalogue names a probe. 256 KiB: enough to cross a 16 KiB cut.
+const DefaultProbeURL = "https://speed.cloudflare.com/__down?bytes=262144"
+
 var (
 	mu     sync.Mutex
 	sb     *switchboard.Switchboard
 	cancel context.CancelFunc
 	listen string
+	probe  string
 )
 
 // Version is the core version string.
@@ -68,6 +73,10 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 		return err
 	}
 	sb, cancel = s, c
+	probe = DefaultProbeURL
+	if len(cat.ProbeURLs) > 0 {
+		probe = cat.ProbeURLs[0]
+	}
 	return nil
 }
 
@@ -140,6 +149,22 @@ func JournalJSON() string {
 	return toJSON(s.Journal())
 }
 
+// FetchCatalogue downloads a catalogue URL and returns JSON
+// {"ok":true,"text":"...","paths":n,"title":"..."} or {"ok":false,"error":"..."}.
+// The app stores text as the last good copy and starts from it when the URL
+// is unreachable.
+func FetchCatalogue(catalogueURL string) string {
+	body, err := catalogue.Fetch(strings.TrimSpace(catalogueURL))
+	if err != nil {
+		return toJSON(map[string]any{"ok": false, "error": err.Error()})
+	}
+	cat, err := catalogue.Parse(body)
+	if err != nil {
+		return toJSON(map[string]any{"ok": false, "error": err.Error()})
+	}
+	return toJSON(map[string]any{"ok": true, "text": string(body), "paths": len(cat.Paths), "title": cat.Title})
+}
+
 // ValidateCatalogue parses a catalogue without starting anything and returns
 // JSON {"ok":true,"paths":n,"title":"..."} or {"ok":false,"error":"..."} for
 // the import screen.
@@ -162,14 +187,18 @@ type proof struct {
 	Error       string `json:"error,omitempty"`
 }
 
-// ProveDelivery fetches probeURL (https) through the running switchboard — the
-// same SOCKS5 door every app uses — and returns JSON describing what was
-// actually delivered: bytes, total and first-byte time, and the path that
-// carried it. The app shows "connected" only after this succeeds.
+// ProveDelivery fetches probeURL (https; empty means the catalogue's probe, or
+// DefaultProbeURL) through the running switchboard — the same SOCKS5 door
+// every app uses — and returns JSON describing what was actually delivered:
+// bytes, total and first-byte time, and the path that carried it. The app
+// shows "connected" only after this succeeds.
 func ProveDelivery(probeURL string, timeoutMs int) string {
 	s := current()
 	mu.Lock()
 	addr := listen
+	if probeURL == "" {
+		probeURL = probe
+	}
 	mu.Unlock()
 	if s == nil {
 		return toJSON(proof{Error: "not running"})
