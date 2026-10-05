@@ -1,0 +1,12 @@
+farvater-core
+Copyright 2026 NTSAUTOSIGA LLC
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Planned third-party components (each keeps its own license; exact versions and hashes
+are recorded in docs/TRANSPARENCY.md for every published build):
+  - Xray-core transport/protocol packages (github.com/xtls/xray-core) — MPL-2.0
+  - Hysteria core/v2 (github.com/apernet/hysteria/core) — MIT
+  - hev-socks5-tunnel (github.com/heiher/hev-socks5-tunnel) — MIT
+  - uTLS (github.com/refraction-networking/utls) — BSD-3-Clause
+No GPL/AGPL code is linked; CI fails the build if any `sagernet/*` module appears in the dependency graph.

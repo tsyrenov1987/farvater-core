@@ -1,0 +1,7 @@
+.DS_Store
+bin/
+dist/
+*.xcframework
+*.aar
+*.map
+coverage.out
