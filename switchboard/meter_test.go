@@ -135,3 +135,12 @@ func TestFirstByteClockStartsWithTheApp(t *testing.T) {
 		t.Fatal("no first-byte timeout after the app asked and got nothing")
 	}
 }
+
+// Awake, the wall and monotonic clocks run together: no flow may look slept.
+func TestSleptMsAwake(t *testing.T) {
+	start := time.Now()
+	time.Sleep(30 * time.Millisecond)
+	if s := sleptMs(start); s < -5 || s > 5 {
+		t.Fatalf("sleptMs awake = %d ms, want ≈0", s)
+	}
+}

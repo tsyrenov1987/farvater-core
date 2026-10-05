@@ -70,13 +70,15 @@ func (f *flow) readLoop() {
 type attempt struct {
 	path    string
 	explore bool
+	start   time.Time // carries the monotonic reading sleptMs needs
 	startMs int64
 	readyMs int64 // 0 = never
 	m       *meter
 }
 
 func (f *flow) newAttempt(path string, explore bool) *attempt {
-	return &attempt{path: path, explore: explore, startMs: nowMs(), m: &meter{f: f}}
+	start := time.Now()
+	return &attempt{path: path, explore: explore, start: start, startMs: start.UnixMilli(), m: &meter{f: f}}
 }
 
 func (a *attempt) base(f *flow, now int64) brain.Receipt {
@@ -84,7 +86,7 @@ func (a *attempt) base(f *flow, now int64) brain.Receipt {
 		Path: a.path, Ctx: f.s.cfg.Ctx, AtMs: now,
 		WireReadyMs: -1, FirstByteMs: -1, DownAtFail: -1,
 		Dst: f.target.Host, DstClass: f.class, Explore: a.explore,
-		DurMs: now - a.startMs,
+		DurMs: now - a.startMs, SleptMs: sleptMs(a.start),
 	}
 	if a.readyMs > 0 {
 		r.WireReadyMs = a.readyMs - a.startMs

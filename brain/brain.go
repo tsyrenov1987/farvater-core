@@ -294,6 +294,13 @@ func (b *Brain) Observe(r Receipt) {
 		return
 	}
 	now := r.AtMs
+	if r.SleptMs >= SleepGraceMs {
+		// A phone asleep loses its flows whatever the path: NAT mappings
+		// expire and the radio goes quiet.
+		b.Dropped++
+		b.J.Add(now, "drop_sleep", "the device slept during the flow: not evidence against the path", r.Path)
+		return
+	}
 	wireOK := r.WireReadyMs >= 0
 	b.Diag.NoteWire(r.Path, wireOK, now)
 	if !wireOK && b.Diag.NetDown(now) {

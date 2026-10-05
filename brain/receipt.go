@@ -48,6 +48,10 @@ const (
 	Cut16Hi       = 28 * KB
 )
 
+// SleepGraceMs: a flow the device slept through for this long or longer is not
+// evidence about its path (see Receipt.SleptMs).
+const SleepGraceMs = 2000
+
 // Receipt is the unit of evidence: what one real flow experienced on one path.
 // Times are relative to the flow start unless stated otherwise.
 type Receipt struct {
@@ -65,6 +69,7 @@ type Receipt struct {
 	Dst         string
 	DstClass    DstClass
 	Explore     bool
+	SleptMs     int64 // how long the device slept while the flow was open
 }
 
 // FirstByte reports whether the destination answered through this path.

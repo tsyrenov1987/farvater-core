@@ -7,6 +7,15 @@ import (
 
 func nowMs() int64 { return time.Now().UnixMilli() }
 
+// sleptMs is how long the device slept since start. The wall clock runs on
+// through sleep and Go's monotonic clock does not (mach_absolute_time on Apple
+// systems, CLOCK_MONOTONIC on Linux and Android): the difference is the time
+// asleep.
+func sleptMs(start time.Time) int64 {
+	now := time.Now()
+	return (now.Round(0).Sub(start.Round(0)) - now.Sub(start)).Milliseconds()
+}
+
 // meter is the per-attempt byte ledger. It implements wire.Meter.
 type meter struct {
 	mu          sync.Mutex
