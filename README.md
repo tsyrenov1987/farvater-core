@@ -2,7 +2,27 @@
 
 **Path selection by proven delivery, not by ping.** The routing core of Farvater VPN.
 
-Status: design stage (05 Oct 2026). No code yet — see [docs/DESIGN.md](docs/DESIGN.md) for the full design.
+Status (05 Oct 2026): **Phase 0 done** — the decision core (`brain`) and a deterministic simulator (`sim`) with a
+latency-baseline model (`baseline`). No networking yet. Full design: [docs/DESIGN.md](docs/DESIGN.md).
+
+```
+go test ./... -v
+```
+
+Seeded simulator results, success rate of real flows (farvater vs. `urltest` baseline):
+
+| Scenario | farvater | urltest |
+|---|---|---|
+| fastest-ping path silently cuts at 18 KB, slow path carries | 0.99 | 0.42 |
+| leader starts cutting at minute 10 (late onset) | 1.00 (min 13–30) | 0.42 |
+| all paths healthy | 1.00 | 1.00 |
+| dead destination (10 % of flows) | leader kept, posterior 0.99 | — |
+| 2-minute local outage | not counted as evidence | — |
+| handshake-burst freeze hypothesis (5 paths, one SNI, page loads) | 1.00, 0 freezes | 0.03, 6 freezes |
+| 60 min: no path starved | every path ≥ 1 flow / 10 min | — |
+
+The baseline is *required* to fail on the throttled scenarios — a test that passes on the old selection logic
+would prove nothing.
 
 ## What is different
 
