@@ -183,6 +183,10 @@ CI fails if any `sagernet/*` module appears in `go list -deps`. Built with `gomo
 - Destinations that mean nothing at a path's exit (loopback, private, link-local, 100.64/10, 198.18/15) are refused
   at the SOCKS step with no dial and no receipt; otherwise Android's DNS-over-TLS probe of the tunnel's own DNS
   address files failures against healthy paths.
+- The switchboard's loopback SOCKS5 port is reachable by every app on the device, and detection tools scan
+  loopback ports for open proxies: through one, any app (including one the user keeps out of the tunnel) could
+  learn the path's exit address. The mobile layer therefore issues fresh random credentials on each start and
+  the port admits only them (RFC 1929); hev-socks5-tunnel presents them. No credentials, no proxy.
 
 ## 13. Verification
 

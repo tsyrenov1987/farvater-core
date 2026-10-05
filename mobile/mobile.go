@@ -3,12 +3,13 @@
 // ints, bools and JSON; the app never sees Go types.
 //
 // The app owns the tunnel device and the socket-protection policy; this
-// package only runs the switchboard on a loopback SOCKS5 port and reports what
-// it measured.
+// package only runs the switchboard on a loopback SOCKS5 port, closed by
+// per-session credentials, and reports what it measured.
 package mobile
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -32,11 +33,12 @@ import (
 const DefaultProbeURL = "https://speed.cloudflare.com/__down?bytes=262144"
 
 var (
-	mu     sync.Mutex
-	sb     *switchboard.Switchboard
-	cancel context.CancelFunc
-	listen string
-	probe  string
+	mu         sync.Mutex
+	sb         *switchboard.Switchboard
+	cancel     context.CancelFunc
+	listen     string
+	user, pass string
+	probe      string
 )
 
 // Version is the core version string.
@@ -46,7 +48,8 @@ func Version() string { return switchboard.Version }
 // catalogueSrc is either an http(s) URL of a catalogue/subscription, or the
 // catalogue text itself (JSON, base64 subscription, or share links).
 // networkCtx names the network the receipts are filed under (e.g. "wifi").
-// It returns once the SOCKS5 port is listening.
+// It returns once the SOCKS5 port is listening; the port accepts only the
+// credentials SocksUser and SocksPass report, fresh for each Start.
 func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -60,6 +63,7 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 	cfg := switchboard.DefaultConfig()
 	listen = net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort))
 	cfg.Listen = listen
+	cfg.User, cfg.Pass = rand.Text(), rand.Text()
 	if networkCtx != "" {
 		cfg.Ctx = networkCtx
 	}
@@ -73,6 +77,7 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 		return err
 	}
 	sb, cancel = s, c
+	user, pass = cfg.User, cfg.Pass
 	probe = DefaultProbeURL
 	if len(cat.ProbeURLs) > 0 {
 		probe = cat.ProbeURLs[0]
@@ -99,6 +104,22 @@ func Stop() {
 		cancel()
 	}
 	sb, cancel = nil, nil
+}
+
+// SocksUser and SocksPass are the credentials of the running switchboard's
+// SOCKS5 port; the tunnel presents them (RFC 1929). Other apps on the device
+// can reach a loopback port but not these.
+func SocksUser() string {
+	mu.Lock()
+	defer mu.Unlock()
+	return user
+}
+
+// SocksPass: see SocksUser.
+func SocksPass() string {
+	mu.Lock()
+	defer mu.Unlock()
+	return pass
 }
 
 // Running reports whether the switchboard is up.
@@ -195,7 +216,7 @@ type proof struct {
 func ProveDelivery(probeURL string, timeoutMs int) string {
 	s := current()
 	mu.Lock()
-	addr := listen
+	addr, su, sp := listen, user, pass
 	if probeURL == "" {
 		probeURL = probe
 	}
@@ -211,7 +232,7 @@ func ProveDelivery(probeURL string, timeoutMs int) string {
 	defer c()
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, hostport string) (net.Conn, error) {
-			return socksConnect(ctx, addr, hostport)
+			return socksConnect(ctx, addr, su, sp, hostport)
 		},
 		TLSClientConfig:   &tls.Config{ServerName: u.Hostname()},
 		DisableKeepAlives: true,
@@ -263,8 +284,9 @@ func ProveDelivery(probeURL string, timeoutMs int) string {
 	return toJSON(p)
 }
 
-// socksConnect opens a SOCKS5 CONNECT through the local switchboard.
-func socksConnect(ctx context.Context, socksAddr, hostport string) (net.Conn, error) {
+// socksConnect opens a SOCKS5 CONNECT through the local switchboard,
+// authenticating as user/pass.
+func socksConnect(ctx context.Context, socksAddr, user, pass, hostport string) (net.Conn, error) {
 	host, portStr, err := net.SplitHostPort(hostport)
 	if err != nil {
 		return nil, err
@@ -282,12 +304,20 @@ func socksConnect(ctx context.Context, socksAddr, hostport string) (net.Conn, er
 		_ = c.SetDeadline(dl)
 	}
 	fail := func(e error) (net.Conn, error) { c.Close(); return nil, e }
-	if _, err := c.Write([]byte{5, 1, 0}); err != nil {
+	if _, err := c.Write([]byte{5, 1, 2}); err != nil {
 		return fail(err)
 	}
 	var greet [2]byte
-	if _, err := io.ReadFull(c, greet[:]); err != nil || greet[0] != 5 || greet[1] != 0 {
+	if _, err := io.ReadFull(c, greet[:]); err != nil || greet[0] != 5 || greet[1] != 2 {
 		return fail(errors.New("socks: greeting refused"))
+	}
+	creds := append([]byte{1, byte(len(user))}, user...)
+	creds = append(append(creds, byte(len(pass))), pass...)
+	if _, err := c.Write(creds); err != nil {
+		return fail(err)
+	}
+	if _, err := io.ReadFull(c, greet[:]); err != nil || greet[1] != 0 {
+		return fail(errors.New("socks: credentials refused"))
 	}
 	req := []byte{5, 1, 0, 3, byte(len(host))}
 	req = append(req, host...)

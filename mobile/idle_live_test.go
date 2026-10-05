@@ -29,7 +29,7 @@ func TestLiveKeepAliveIsNotAStall(t *testing.T) {
 	defer Stop()
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, hostport string) (net.Conn, error) {
-			return socksConnect(ctx, "127.0.0.1:11092", hostport)
+			return socksConnect(ctx, "127.0.0.1:11092", SocksUser(), SocksPass(), hostport)
 		},
 		ForceAttemptHTTP2: true,
 		IdleConnTimeout:   5 * time.Minute,

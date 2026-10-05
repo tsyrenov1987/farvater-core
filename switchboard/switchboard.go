@@ -27,6 +27,12 @@ type Config struct {
 	Ctx    string // network context name the receipts are filed under
 	Brain  brain.Config
 
+	// User and Pass, when set, make SOCKS5 clients authenticate (RFC 1929).
+	// The mobile apps set fresh random ones each session: every app on the
+	// device can reach a loopback port, and an open proxy there would show it
+	// the exit address.
+	User, Pass string
+
 	DialTimeout      time.Duration
 	FirstByteTimeout time.Duration
 	FirstPayloadWait time.Duration
@@ -201,7 +207,7 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 	s.active.Add(1)
 	defer s.active.Add(-1)
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
-	req, err := readSocks5(c)
+	req, err := readSocks5(c, s.cfg.User, s.cfg.Pass)
 	if err != nil {
 		c.Close()
 		return
