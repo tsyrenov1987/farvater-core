@@ -11,5 +11,4 @@ jobs:
       - run: go vet ./...
       - run: go test ./... -count=1
       - name: license gate (no GPL/AGPL modules)
-        run: |
-          if go list -deps ./... | grep -E "sagernet|gvisor"; then echo "GPL/AGPL dependency found"; exit 1; fi
+        run: ./tools/licensegate.sh

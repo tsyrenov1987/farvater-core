@@ -1,0 +1,4 @@
+Apache License 2.0 — this directory is an independent, clean-room implementation of the tiny
+API surface that farvater-core's dependencies reference under the import path
+github.com/sagernet/sing/common/control. It contains no code from the sing project.
+See ../../LICENSE for the full license text.
