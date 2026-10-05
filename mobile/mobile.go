@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +45,16 @@ var (
 
 // Version is the core version string.
 func Version() string { return switchboard.Version }
+
+// SetMemoryLimit caps the Go runtime's memory at bytes (a soft limit: the
+// collector runs harder as it nears the cap). An iOS packet tunnel gets about
+// 50 MiB for the whole process and is killed past it, so the iOS app sets this
+// before Start. Zero or less leaves the limit as it is.
+func SetMemoryLimit(bytes int64) {
+	if bytes > 0 {
+		debug.SetMemoryLimit(bytes)
+	}
+}
 
 // Start loads the catalogue and starts the switchboard on 127.0.0.1:socksPort.
 // catalogueSrc is either an http(s) URL of a catalogue/subscription, or the
