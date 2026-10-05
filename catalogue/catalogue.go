@@ -148,6 +148,63 @@ func Parse(body []byte) (*Catalogue, error) {
 	return c, nil
 }
 
+// Merge joins several catalogues into one, for a client that holds more than
+// one: the switchboard then picks among all their paths by delivery. Paths keep
+// their order, first catalogue first; a path already in (same URI) is left out,
+// and an id already taken gets a suffix, its priors following it. Probe URLs are
+// pooled; the title, fingerprint and refresh period are the first catalogue's.
+// The feedback URL is kept only for a single catalogue: one provider's receipts
+// never go to another.
+func Merge(cs []*Catalogue) *Catalogue {
+	if len(cs) == 1 {
+		return cs[0]
+	}
+	out := &Catalogue{V: 1}
+	uris, ids, probes := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for i, c := range cs {
+		if i == 0 {
+			out.Title, out.Fingerprint, out.RefreshSec = c.Title, c.Fingerprint, c.RefreshSec
+		}
+		kept := map[string]string{} // id in c → id in out
+		for _, e := range c.Paths {
+			if uris[e.URI] {
+				continue
+			}
+			uris[e.URI] = true
+			id := e.ID
+			for n := 2; ids[id]; n++ {
+				id = fmt.Sprintf("%s#%d", e.ID, n)
+			}
+			ids[id] = true
+			kept[e.ID] = id
+			e.ID, e.Spec.ID = id, id
+			out.Paths = append(out.Paths, e)
+		}
+		for ctx, ps := range c.Priors {
+			for id, p := range ps {
+				nid, ok := kept[id]
+				if !ok {
+					continue
+				}
+				if out.Priors == nil {
+					out.Priors = map[string]map[string]Prior{}
+				}
+				if out.Priors[ctx] == nil {
+					out.Priors[ctx] = map[string]Prior{}
+				}
+				out.Priors[ctx][nid] = p
+			}
+		}
+		for _, u := range c.ProbeURLs {
+			if !probes[u] {
+				probes[u] = true
+				out.ProbeURLs = append(out.ProbeURLs, u)
+			}
+		}
+	}
+	return out
+}
+
 func decodeB64(s string) ([]byte, error) {
 	s = strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' || r == ' ' {

@@ -220,6 +220,37 @@ func FetchCatalogue(catalogueURL string) string {
 	return toJSON(map[string]any{"ok": true, "text": string(body), "paths": len(cat.Paths), "title": cat.Title})
 }
 
+// MergeCatalogues joins catalogue texts into one for Start: the apps' "several
+// catalogues at once". textsJSON is a JSON array of strings, each a catalogue
+// JSON, a base64 subscription or share links (fetched already: no URLs). A text
+// that doesn't parse is left out. Returns JSON {"ok":true,"text":"...","paths":n,
+// "skipped":k}, or {"ok":false,"error":"..."} when none parses.
+func MergeCatalogues(textsJSON string) string {
+	var texts []string
+	if err := json.Unmarshal([]byte(textsJSON), &texts); err != nil {
+		return toJSON(map[string]any{"ok": false, "error": err.Error()})
+	}
+	var cs []*catalogue.Catalogue
+	err := errors.New("no catalogues")
+	for _, t := range texts {
+		c, e := catalogue.Parse([]byte(t))
+		if e != nil {
+			err = e
+			continue
+		}
+		cs = append(cs, c)
+	}
+	if len(cs) == 0 {
+		return toJSON(map[string]any{"ok": false, "error": err.Error()})
+	}
+	m := catalogue.Merge(cs)
+	text, e := json.Marshal(m)
+	if e != nil {
+		return toJSON(map[string]any{"ok": false, "error": e.Error()})
+	}
+	return toJSON(map[string]any{"ok": true, "text": string(text), "paths": len(m.Paths), "skipped": len(texts) - len(cs)})
+}
+
 // ValidateCatalogue parses a catalogue without starting anything and returns
 // JSON {"ok":true,"paths":n,"title":"..."} or {"ok":false,"error":"..."} for
 // the import screen.
