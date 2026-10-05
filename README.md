@@ -2,8 +2,10 @@
 
 **Path selection by proven delivery, not by ping.** The routing core of Farvater VPN.
 
-Status (05 Oct 2026): **Phase 0 done** — the decision core (`brain`) and a deterministic simulator (`sim`) with a
-latency-baseline model (`baseline`). No networking yet. Full design: [docs/DESIGN.md](docs/DESIGN.md).
+Status (05 Oct 2026): **Phases 0–1 done** — the decision core (`brain`) with an anti-interference circuit breaker,
+a deterministic simulator (`sim`), real transports (`wire`: VLESS+Vision over Reality/TLS/WebSocket/XHTTP, and
+Hysteria 2), a SOCKS5 switchboard (`switchboard`) that turns live flows into receipts, and a reference CLI
+(`cmd/farvater`). Full design: [docs/DESIGN.md](docs/DESIGN.md).
 
 ```
 go test ./... -v
@@ -20,6 +22,14 @@ Seeded simulator results, success rate of real flows (farvater vs. `urltest` bas
 | 2-minute local outage | not counted as evidence | — |
 | handshake-burst freeze hypothesis (5 paths, one SNI, page loads) | 1.00, 0 freezes | 0.03, 6 freezes |
 | 60 min: no path starved | every path ≥ 1 flow / 10 min | — |
+
+Circuit-breaker scenarios (active interference switched on mid-run; farvater with the breaker vs. the slow learner alone):
+
+| Scenario | with breaker | breaker off |
+|---|---|---|
+| leader injects RST on big flows — success in the first minute after onset | 0.97 | 0.81 |
+| leader silently black-holes — wasted primary attempts on the dead rail | 11 | 37 |
+| four of six rails die at once — wasted attempts on dead rails (first 2 min) | roughly halved | baseline |
 
 The baseline is *required* to fail on the throttled scenarios — a test that passes on the old selection logic
 would prove nothing.

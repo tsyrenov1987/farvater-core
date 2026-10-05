@@ -11,14 +11,26 @@ const minute = int64(60_000)
 func infos(sc Scenario) []brain.PathInfo {
 	out := make([]brain.PathInfo, 0, len(sc.Paths))
 	for _, p := range sc.Paths {
-		out = append(out, brain.PathInfo{ID: p.ID, SNI: p.SNI, IP: p.IP})
+		out = append(out, brain.PathInfo{ID: p.ID, SNI: p.SNI, IP: p.IP, Rail: p.Rail})
 	}
 	return out
 }
 
 func runOurs(sc Scenario) (Result, *brain.Brain) {
-	b := brain.New(brain.DefaultConfig(), "sim", infos(sc), sc.Seed)
+	return runOursCfg(sc, brain.DefaultConfig())
+}
+
+func runOursCfg(sc Scenario, cfg brain.Config) (Result, *brain.Brain) {
+	b := brain.New(cfg, "sim", infos(sc), sc.Seed)
 	return Run(sc, &BrainPolicy{B: b}, b.Gov), b
+}
+
+// noBreaker is DefaultConfig with the circuit breaker switched off: the pure
+// slow learner. TSPU scenarios must show the breaker beating it.
+func noBreaker() brain.Config {
+	cfg := brain.DefaultConfig()
+	cfg.Breaker.Enabled = false
+	return cfg
 }
 
 func scFastCut(seed uint64, durMin int64, n int) Scenario {
@@ -64,8 +76,12 @@ func TestFastPingCutVsSlowCarrier(t *testing.T) {
 	if b.Leader() != "carrier" {
 		t.Fatalf("leader %q, want carrier", b.Leader())
 	}
-	if !b.State("fast-cut").Cut16 {
-		t.Errorf("cut16 signature not detected on fast-cut")
+	// cut16 is the SLOW learner's persistent fingerprint. With the breaker on,
+	// the bad rail is starved of flows too fast for the fingerprint to form,
+	// which is the point. Isolate the fingerprint logic with the breaker off.
+	_, bOff := runOursCfg(sc, noBreaker())
+	if !bOff.State("fast-cut").Cut16 {
+		t.Errorf("cut16 signature not detected on fast-cut (breaker off)")
 	}
 }
 

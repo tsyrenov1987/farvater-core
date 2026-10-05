@@ -154,7 +154,22 @@ func (r *Runner) execute(pathID string, f Flow, startAt, fbTimeout int64) (rec b
 		rec.AtMs = startAt + rec.DurMs
 		return rec, false, waited
 	}
+	if p.BlackholeFrom > 0 && startAt >= p.BlackholeFrom {
+		// The path connects but the server is silently black-holed by the DPI.
+		rec.End = brain.EndTimeout
+		rec.DurMs = rec.WireReadyMs + fbTimeout
+		rec.AtMs = startAt + rec.DurMs
+		return rec, false, waited
+	}
 	rec.FirstByteMs = rec.WireReadyMs + p.RTTMs/2 + 5
+	if p.ResetAtBytes > 0 && startAt >= p.ResetOnsetMs && f.WantBytes > p.ResetAtBytes {
+		// Injected RST after the first byte: active DPI reset mid-stream.
+		rec.Down, rec.DownAtFail, rec.Stalls = p.ResetAtBytes, p.ResetAtBytes, 0
+		rec.End = brain.EndWireReset
+		rec.DurMs = rec.FirstByteMs + p.RTTMs
+		rec.AtMs = startAt + rec.DurMs
+		return rec, false, waited
+	}
 	cut := p.CutAtBytes
 	if cut > 0 && startAt < p.OnsetMs {
 		cut = 0

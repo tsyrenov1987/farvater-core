@@ -13,12 +13,13 @@ import (
 
 // flow is one app connection from SOCKS accept to close.
 type flow struct {
-	s      *Switchboard
-	client net.Conn
-	target wire.Target
-	class  brain.DstClass
-	up     chan []byte
-	done   chan struct{}
+	s            *Switchboard
+	client       net.Conn
+	target       wire.Target
+	class        brain.DstClass
+	up           chan []byte
+	done         chan struct{}
+	fbDeadlineMs int64
 
 	pmu      sync.Mutex
 	prelude  []byte
@@ -147,9 +148,13 @@ func (f *flow) serve(ctx context.Context) {
 	s := f.s
 
 	dec := s.pick(nowMs(), f.target.Host, f.class)
+	f.fbDeadlineMs = dec.FirstByteDeadlineMs
 	order := []string{dec.Primary}
 	if dec.Secondary != "" && dec.Secondary != dec.Primary {
 		order = append(order, dec.Secondary)
+	}
+	if dec.Tertiary != "" && dec.Tertiary != dec.Primary && dec.Tertiary != dec.Secondary {
+		order = append(order, dec.Tertiary) // storm mode: a third, diverse dial
 	}
 
 	sess, a, err := f.dialRace(ctx, order, dec.StaggerMs, dec.Explore)
@@ -237,20 +242,26 @@ func (f *flow) dialRace(ctx context.Context, order []string, staggerMs int64, ex
 	}
 	launch(order[0], explore)
 	launched, finished := 1, 0
-	var timer <-chan time.Time
-	if len(order) > 1 {
-		timer = time.After(time.Duration(staggerMs) * time.Millisecond)
+	nextStagger := func() <-chan time.Time {
+		if launched < len(order) {
+			return time.After(time.Duration(staggerMs) * time.Millisecond)
+		}
+		return nil
 	}
+	timer := nextStagger()
 	for finished < launched {
 		select {
 		case <-timer:
-			timer = nil
-			launch(order[1], false)
-			launched++
+			// The current dials are slow but not yet failed: add the next one.
+			if launched < len(order) {
+				launch(order[launched], false)
+				launched++
+			}
+			timer = nextStagger()
 		case r := <-results:
 			finished++
 			if r.err == nil {
-				// Winner. Drain the other dial in the background.
+				// First ready wins; drain the losing dials in the background.
 				cancelAll()
 				go f.drain(results, launched-finished)
 				return r.sess, r.a, nil
@@ -258,10 +269,12 @@ func (f *flow) dialRace(ctx context.Context, order []string, staggerMs int64, ex
 			if rctx.Err() == nil {
 				f.s.observe(r.a.dialFail(f, r.err))
 			}
-			if timer != nil && launched < len(order) {
-				timer = nil
-				launch(order[1], false)
+			if launched < len(order) {
+				// A dial failed: bring the next one up immediately (Happy
+				// Eyeballs across rails), do not wait out the stagger.
+				launch(order[launched], false)
 				launched++
+				timer = nextStagger()
 			}
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
@@ -294,7 +307,11 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 	}()
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
-	fbDeadline := nowMs() + f.s.cfg.FirstByteTimeout.Milliseconds()
+	fbMs := f.fbDeadlineMs
+	if fbMs <= 0 {
+		fbMs = f.s.cfg.FirstByteTimeout.Milliseconds()
+	}
+	fbDeadline := nowMs() + fbMs
 	for {
 		select {
 		case r := <-done:

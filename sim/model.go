@@ -13,11 +13,17 @@ import (
 // PathModel describes how one path behaves.
 type PathModel struct {
 	ID, SNI, IP  string
+	Rail         string // protocol family label, for escape-diversity
 	RTTMs        int64
-	CutAtBytes   int64 // 0 = carries everything; else the stream silently dies after this many bytes
+	CutAtBytes   int64 // 0 = carries everything; else the stream stalls after this many bytes (throttle/shaping)
 	OnsetMs      int64 // the cut applies from this time on (0 = always)
 	GoodputBps   int64
 	WireFailProb float64
+
+	// TSPU impairments that switch on at a time (0 = never):
+	ResetAtBytes  int64 // after ResetOnsetMs, a flow past this many bytes is RST mid-stream
+	ResetOnsetMs  int64
+	BlackholeFrom int64 // from this time the path connects but delivers no first byte
 }
 
 // Network models the local network: outages and the behavioural-freeze hypothesis.

@@ -84,7 +84,58 @@ quarter weight; priors never outweigh 5 fresh receipts.
 - **Idle:** one 256 KB volume probe (HTTP Range to `probe_urls`) on the leader right after connect; status is
   "connecting" until it passes. Exploration probes ≤1 per 10 min per path, never on metered paths, never in bursts.
 
-## 6. Differential diagnosis
+## 6. Fast reaction to active interference
+
+The scoring layer in section 5 is deliberately slow: it must not flap on
+ordinary jitter. But a DPI / throttling box does not produce jitter — it
+produces sharp, recognisable damage: a RST injected mid-stream, a silent black
+hole after the handshake, a sudden goodput collapse, dropped SYNs. Waiting for
+five receipts and two stalls to react to that is too slow.
+
+A circuit breaker makes the response **asymmetric**: promotion stays slow,
+demotion is immediate.
+
+**Signatures.** Every receipt is classified: *reset* (the wire was reset after
+the first byte, often at the cut16 byte count — an active mid-stream reset);
+*handshake* (failed before the wire was ready — a dropped SYN, a reset on
+connect, or a behavioural freeze); *blackhole* (the wire connected but no first
+byte arrived and it then timed out — a silent drop after the handshake);
+*throttle* (the first byte arrived, then goodput collapsed or the flow stalled —
+shaping).
+
+**Trip.** A single *reset* trips a rail at once, since it is unambiguous. The
+softer signatures must repeat inside a short window to trip. A tripped rail is
+avoided as a primary for a signature-dependent cooldown (reset longest, throttle
+shortest); if it was the current leader it is dethroned immediately, bypassing
+the section 5 hysteresis.
+
+**This is not narrowing.** A trip is client-side, per-user, reactive to measured
+delivery, and always time-boxed. When the cooldown expires the rail re-enters
+selection and the exploration floor re-probes it. No rail is ever removed: the
+breaker heals a suffering user by adding live re-measurement, never by taking a
+rail away, and the fallback set can never shrink to nothing.
+
+**Diverse escape.** The connect-stage backup, and the third dial added in storm
+mode, are chosen not only by delivery but biased toward a rail *unlike* the one
+in trouble — a different protocol, a different server name, a different
+address — because a block tends to strike one of those axes. A shared-name
+sibling of a failing rail is not chosen as its own backup.
+
+**Storm mode.** When several distinct rails trip inside the window the client is
+under a coordinated disturbance. Exploration is raised and a third, diverse dial
+is added, so delivery is re-measured across rails in parallel instead of leaning
+on one leader; it collapses back to a single leader once one proves itself.
+
+**Adaptive deadlines.** The abandon-and-migrate deadline for the first byte is
+derived per rail from that rail's own measured P90 first-byte time, floored and
+capped, so a healthy rail is given up on in well under two seconds while a
+genuinely slow one is not misjudged. The handshake governor keeps the resulting
+retries from clustering into a behavioural freeze.
+
+All thresholds here are initial hypotheses, to be calibrated against field
+measurement; none of them is a protocol constant.
+
+## 7. Differential diagnosis
 
 | Observation | Conclusion | Action |
 |---|---|---|
@@ -94,43 +145,48 @@ quarter weight; priors never outweigh 5 fresh receipts.
 | All paths of one SNI/IP stop for ~2 min after a handshake burst | behavioural freeze | governor tightens ×2 for 10 min; paths parked, not punished |
 | Network context change | new (path, ctx) pair | previous state saved; new state seeded from memory |
 
-## 7. Handshake governor
+## 8. Handshake governor
 
 Token buckets: ≤2 new TLS handshakes per SNI per 400 ms, ≤4 per IP per 1 s; excess waits in a queue (the local
 TCP SYN is acknowledged locally, the wire connects a few tens of ms later). Cold start: only the leader connects,
 plus the staggered connect-stage retry. No race of all paths. Hysteria2 runs with standard congestion control
 (BBR), not a fixed-bandwidth custom CC, because custom CCs are fingerprintable by their reaction to loss.
 
-## 8. Context memory and priors
+## 9. Context memory and priors
 
 Context key: `wifi:<gateway-hash>` / `cell` / `wired`, cached per session, changed only after a 60 s debounce.
 Stored: posteriors, `cut16`, goodput, timestamps; TTL 7 days. Catalogue priors are weak and advisory.
 
-## 9. Catalogue
+## 10. Catalogue
 
 See `CATALOGUE-SPEC.md`. The schema has no `only/skip/pin` directives by design.
 
-## 10. Engine and licensing
+## 11. Engine and licensing
 
 Own Go module. Wires from Xray-core packages (MPL-2.0: Reality dialer, VLESS encoding, XHTTP, WebSocket),
 Hysteria `core/v2` (MIT), tun2socks via hev-socks5-tunnel (MIT), uTLS (BSD-3). No GPL/AGPL code is linked;
 CI fails if any `sagernet/*` module appears in `go list -deps`. Built with `gomobile` into an xcframework / aar,
 `-trimpath -ldflags="-s -w"`.
 
-## 11. Platform notes
+## 12. Platform notes
 
 - iOS Network Extension: ~50 MiB budget → C tun2socks with small buffers, Go GC every second, fixed buffer pools,
   ring-buffer logs; watchdog cancels the tunnel if the switchboard stops answering (no "protected" status over a dead core).
 - Android: VpnService + the same aar.
 
-## 12. Verification
+## 13. Verification
 
 A deterministic simulator models paths (latency, cut-at-bytes, freeze on handshake bursts, late-onset throttling),
 destinations (dead sites) and the local network (outages), and runs the same workload through farvater-core and
 through a latency-baseline policy (`urltest`: lowest RTT every 3 min). Tests assert that the baseline fails and
 farvater-core succeeds on throttled scenarios, that no path is ever starved, that no flow is switched mid-stream,
-and that the governor limits hold. Thresholds are then calibrated on field receipts.
+and that the governor limits hold. A second family of scenarios switches active interference on mid-run — injected
+RST, silent black holes, and a coordinated multi-rail outage — and asserts that the circuit breaker (section 6)
+reacts faster than the slow learner alone: it recovers success in the first minute after a reset storm, sends far
+fewer flows into a silently dropped rail, and settles on a surviving rail under a coordinated storm. Every such
+test also runs with the breaker switched off, so the breaker must demonstrably beat its own absence. Thresholds
+are then calibrated on field receipts.
 
-## 13. Non-goals
+## 14. Non-goals
 
 Accounts, payments, provider advertising, server-side forcing of clients, latency-based selection.
