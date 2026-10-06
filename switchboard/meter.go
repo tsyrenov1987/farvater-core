@@ -20,6 +20,7 @@ func sleptMs(start time.Time) int64 {
 type meter struct {
 	mu          sync.Mutex
 	f           *flow
+	c           *carried // the path's session totals; nil for a bare test meter
 	up, down    int64
 	firstUpAt   int64
 	lastUpAt    int64
@@ -32,6 +33,9 @@ type meter struct {
 }
 
 func (m *meter) Up(p []byte) {
+	if m.c != nil {
+		m.c.up.Add(int64(len(p)))
+	}
 	m.mu.Lock()
 	m.up += int64(len(p))
 	m.lastUpAt = nowMs()
@@ -46,6 +50,9 @@ func (m *meter) Up(p []byte) {
 }
 
 func (m *meter) Down(p []byte) {
+	if m.c != nil {
+		m.c.down.Add(int64(len(p)))
+	}
 	now := nowMs()
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -120,6 +120,7 @@ type udpAssoc struct {
 	s     *Switchboard
 	ps    wire.PacketSession
 	path  string
+	c     *carried // the path's session totals
 	to    wire.Target
 	name  bool
 	start time.Time
@@ -154,6 +155,7 @@ func (s *Switchboard) serveUDP(ctx context.Context, c net.Conn) {
 		}
 		a.last.Store(nowMs())
 		a.up.Add(int64(len(d.data)))
+		a.c.up.Add(int64(len(d.data)))
 		if err := a.ps.WritePacket(d.data, d.to); err != nil {
 			a.pathEnded(ctx)
 			break
@@ -193,7 +195,7 @@ func (s *Switchboard) openUDP(ctx context.Context, a *udpAssoc, d datagram) bool
 			continue
 		}
 		s.udp.Add(1)
-		a.ps, a.path, a.to, a.name, a.start = ps, id, d.to, d.name, time.Now()
+		a.ps, a.path, a.c, a.to, a.name, a.start = ps, id, s.carried[id], d.to, d.name, time.Now()
 		return true
 	}
 	return false
@@ -236,6 +238,7 @@ func (a *udpAssoc) pumpDown(ctx context.Context, cancel context.CancelFunc, c ne
 		}
 		a.answers.Add(1)
 		a.down.Add(int64(len(p)))
+		a.c.down.Add(int64(len(p)))
 	}
 }
 

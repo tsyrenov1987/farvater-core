@@ -78,7 +78,7 @@ type attempt struct {
 
 func (f *flow) newAttempt(path string, explore bool) *attempt {
 	start := time.Now()
-	return &attempt{path: path, explore: explore, start: start, startMs: start.UnixMilli(), m: &meter{f: f}}
+	return &attempt{path: path, explore: explore, start: start, startMs: start.UnixMilli(), m: &meter{f: f, c: f.s.carried[path]}}
 }
 
 func (a *attempt) base(f *flow, now int64) brain.Receipt {

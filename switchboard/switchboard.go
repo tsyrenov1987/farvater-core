@@ -87,12 +87,18 @@ const (
 	whiteProbeTimeout = 4 * time.Second
 )
 
+// carried counts the bytes one path has carried this session, both ways,
+// flows still running and UDP included: the apps draw its live flow from how
+// it grows.
+type carried struct{ up, down atomic.Int64 }
+
 // Switchboard serves SOCKS5 and keeps the brain fed.
 type Switchboard struct {
 	cfg     Config
 	cat     *catalogue.Catalogue
 	wires   map[string]wire.Wire
 	infos   map[string]brain.PathInfo
+	carried map[string]*carried
 	order   []string
 	Skipped []string
 
@@ -119,7 +125,7 @@ type Switchboard struct {
 
 // New builds wires for every supported path of the catalogue and a brain over them.
 func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
-	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}, wantTill: map[string]int64{}}
+	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, carried: map[string]*carried{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}, wantTill: map[string]int64{}}
 	var infos []brain.PathInfo
 	for _, e := range cat.Paths {
 		if wire.IsHosted(e.Spec.Kind) && !slices.Contains(cfg.Hosted, e.Spec.Kind) {
@@ -134,6 +140,7 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 		info := brain.PathInfo{ID: e.ID, SNI: e.Spec.ServerSNI(), IP: resolveIP(e.Spec.Host), Rail: e.Spec.Rail(), White: e.Labels.White, NotHTTP: !e.Spec.HTTPLike()}
 		s.wires[e.ID] = w
 		s.infos[e.ID] = info
+		s.carried[e.ID] = &carried{}
 		s.order = append(s.order, e.ID)
 		infos = append(infos, info)
 	}
@@ -513,6 +520,8 @@ type PathStatus struct {
 	Served         int     `json:"served"`                    // receipts served: first byte, no block signature
 	Blocked        int     `json:"blocked"`                   // receipts with a block signature
 	Asleep         bool    `json:"asleep,omitempty"`          // a hosted path whose transport is down
+	UpBytes        int64   `json:"up_bytes"`                  // carried this session, running flows and UDP included
+	DownBytes      int64   `json:"down_bytes"`
 }
 
 func tripName(sig brain.BlockSig) string {
@@ -576,6 +585,7 @@ func (s *Switchboard) Status() Status {
 	for _, id := range s.order {
 		ps := s.b.State(id)
 		sp := s.wires[id].Spec()
+		c := s.carried[id]
 		server := fmt.Sprintf("%s:%d", sp.Host, sp.Port)
 		if sp.Host == "" {
 			server = sp.Provider // a hosted call has no address of its own
@@ -586,7 +596,7 @@ func (s *Switchboard) Status() Status {
 			Recent15m: ps.RecentReceipts(now, 15*60*1000), P90FirstByteMs: ps.P90FirstByteMs(),
 			Cut16: ps.Cut16, Parked: s.b.Diag.Parked(id, now), Tripped: tripName(s.b.Breaker.TrippedSig(id, now)),
 			TrippedLeftMs: s.b.Breaker.TrippedLeftMs(id, now), Served: ps.Served, Blocked: ps.Blocked,
-			Asleep: s.b.Asleep(id),
+			Asleep: s.b.Asleep(id), UpBytes: c.up.Load(), DownBytes: c.down.Load(),
 		})
 	}
 	n := len(s.receipts)
