@@ -112,10 +112,14 @@ func fieldFleet() []PathModel {
 	return out
 }
 
-// TestStealthReport runs the current core and the browser-like prototype over
-// an hour of a realistic fleet under the blocks seen in the field, and reports
-// delivery against what an observer can count. Read it with -v; the decision
-// on the prototype is taken on these numbers.
+// TestStealthReport runs over an hour of a realistic fleet, under the blocks seen
+// in the field: the current core, the core with half its exploration share, the
+// core with the prototype's rarer exploration alone, and the whole browser-like
+// prototype. It reports delivery against what an observer can count. Read it with
+// -v; the decision on the prototype is taken on these numbers. (A floor of 30
+// minutes or a share of 0.05 as the default breaks invariants checked elsewhere:
+// every path in the fan of a restricted network, the cut16 signature, a dead
+// destination never moving the leader. Half the share breaks none.)
 func TestStealthReport(t *testing.T) {
 	const at = 20 * minute // the block starts here
 	cases := []struct {
@@ -146,7 +150,13 @@ func TestStealthReport(t *testing.T) {
 	}
 	const end, seeds = 60 * minute, 5
 	for _, c := range cases {
-		for _, mode := range []string{"farvater", "chrome"} {
+		half := brain.DefaultConfig()
+		half.ExploreShare = 0.1
+		for _, mode := range []struct {
+			name   string
+			cfg    brain.Config
+			chrome bool
+		}{{"farvater", brain.DefaultConfig(), false}, {"share .1", half, false}, {"rarer", ChromeConfig(), false}, {"chrome", ChromeConfig(), true}} {
 			var all, after, first float64
 			var e Exposure
 			for seed := uint64(31); seed < 31+seeds; seed++ {
@@ -156,15 +166,15 @@ func TestStealthReport(t *testing.T) {
 				}
 				sc := Scenario{Name: c.name, Seed: seed, Paths: paths, Work: Workload{N: 7200, DurationMs: end}}
 				var res Result
-				if mode == "chrome" {
-					b := brain.New(ChromeConfig(), "sim", infos(sc), sc.Seed)
+				if mode.chrome {
+					b := brain.New(mode.cfg, "sim", infos(sc), sc.Seed)
 					res = Run(sc, NewChromePolicy(b, paths), b.Gov)
 				} else {
-					res, _ = runOurs(sc)
+					res, _ = runOursCfg(sc, mode.cfg)
 				}
 				m := Measure(res, paths, end)
 				if s := res.SuccessRate(0, end); s <= 0 || s > 1 || m.ServersPerHour > 4 || m.TunnelsPer10Min > 12 {
-					t.Fatalf("%s/%s: served %.3f, %+v", c.name, mode, s, m)
+					t.Fatalf("%s/%s: served %.3f, %+v", c.name, mode.name, s, m)
 				}
 				all += res.SuccessRate(0, end) / seeds
 				after += res.SuccessRate(at, end) / seeds
@@ -177,7 +187,7 @@ func TestStealthReport(t *testing.T) {
 				e.NotHTTPAfterFail += m.NotHTTPAfterFail / seeds
 			}
 			t.Logf("%-22s %-8s served %.3f (after the block %.3f, its first 2 min %.3f) | servers/h %.1f tunnels/10min %.1f explore/h %.0f failed/h %.0f reveals/h %.1f not-HTTP-after-fail/h %.0f",
-				c.name, mode, all, after, first, e.ServersPerHour, e.TunnelsPer10Min, e.ExplorePerHour, e.FailedPerHour, e.RevealsPerHour, e.NotHTTPAfterFail)
+				c.name, mode.name, all, after, first, e.ServersPerHour, e.TunnelsPer10Min, e.ExplorePerHour, e.FailedPerHour, e.RevealsPerHour, e.NotHTTPAfterFail)
 		}
 	}
 }
