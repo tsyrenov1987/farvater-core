@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"runtime/debug"
 	"runtime/metrics"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -195,6 +196,21 @@ func SetHostedKinds(kinds string) {
 	}
 }
 
+// runnable counts the catalogue's paths this app runs: Start skips a hosted
+// kind the app does not run, so the counts the apps show skip it too.
+func runnable(c *catalogue.Catalogue) int {
+	mu.Lock()
+	kinds := hosted
+	mu.Unlock()
+	n := 0
+	for _, e := range c.Paths {
+		if !wire.IsHosted(e.Spec.Kind) || slices.Contains(kinds, e.Spec.Kind) {
+			n++
+		}
+	}
+	return n
+}
+
 // HostedJSON lists the running switchboard's hosted paths as
 // [{"id","kind","provider","transport","options","room","key","want","up"}].
 // The app keeps the transports of those with "want" up, hands each one's door
@@ -302,7 +318,7 @@ func FetchCatalogue(catalogueURL string) string {
 	if err != nil {
 		return toJSON(map[string]any{"ok": false, "error": err.Error()})
 	}
-	return toJSON(map[string]any{"ok": true, "text": string(body), "paths": len(cat.Paths), "title": cat.Title})
+	return toJSON(map[string]any{"ok": true, "text": string(body), "paths": runnable(cat), "title": cat.Title})
 }
 
 // MergeCatalogues joins catalogue texts into one for Start: the apps' "several
@@ -333,7 +349,7 @@ func MergeCatalogues(textsJSON string) string {
 	if e != nil {
 		return toJSON(map[string]any{"ok": false, "error": e.Error()})
 	}
-	return toJSON(map[string]any{"ok": true, "text": string(text), "paths": len(m.Paths), "skipped": len(texts) - len(cs)})
+	return toJSON(map[string]any{"ok": true, "text": string(text), "paths": runnable(m), "skipped": len(texts) - len(cs)})
 }
 
 // ValidateCatalogue parses a catalogue without starting anything and returns
@@ -344,7 +360,7 @@ func ValidateCatalogue(catalogueSrc string) string {
 	if err != nil {
 		return toJSON(map[string]any{"ok": false, "error": err.Error()})
 	}
-	return toJSON(map[string]any{"ok": true, "paths": len(cat.Paths), "title": cat.Title})
+	return toJSON(map[string]any{"ok": true, "paths": runnable(cat), "title": cat.Title})
 }
 
 // The probe in flight, for the apps' live counter: bytes read so far and the
