@@ -1,7 +1,7 @@
 # Farvater path catalogue — specification v1 (draft, 05 Oct 2026)
 
 Media type: `application/farvater-catalogue+json`. A plain base64 subscription (list of `vless://`, `trojan://`,
-`vmess://`, `hysteria2://` URIs) is also accepted; labels are then derived from the URIs.
+`vmess://`, `hysteria2://`, `olcrtc://` URIs) is also accepted; labels are then derived from the URIs.
 
 ```json
 {
@@ -28,7 +28,7 @@ Media type: `application/farvater-catalogue+json`. A plain base64 subscription (
 | `title` | shown to the user |
 | `fingerprint` | opaque hash of the path set; a change means "fleet changed" — the client refreshes seamlessly (new catalogue applies to new connections; live connections finish on their old transports) |
 | `paths[].id` | stable identifier; evidence and priors are keyed by it |
-| `paths[].uri` | standard share URI; the client supports `vless`, `trojan` and `vmess` (each over reality, xhttp, ws, grpc or tcp+tls; `vmess` also as v2rayN's base64 JSON) and `hysteria2`; others ignored. Every path must look like HTTPS: `security=none`, or a `vless`/`vmess` path with no `security`, is refused (`trojan` means TLS when it names none), as is a TCP header disguise. Shadowsocks is not supported |
+| `paths[].uri` | standard share URI; the client supports `vless`, `trojan` and `vmess` (each over reality, xhttp, ws, grpc or tcp+tls; `vmess` also as v2rayN's base64 JSON), `hysteria2`, and `olcrtc` (olcRTC's compact link, `olcrtc://<provider>?<transport>[<params>]@<room>#<key>$<name>`: a video call the Android app runs beside the core, TCP only, brought up only when needed; skipped on iOS); others ignored. Every path must look like HTTPS: `security=none`, or a `vless`/`vmess` path with no `security`, is refused (`trojan` means TLS when it names none), as is a TCP header disguise. Shadowsocks is not supported |
 | `labels.rail` | informational: `reality`, `xhttp`, `ws`, `hy2`, … |
 | `labels.net` | `any` / `cell` / `wifi` — a hint about where the path is intended; never a restriction |
 | `labels.white` | the path goes through an allow-listed entry; the client avoids spending probes on it. In a restricted network (only allow-listed addresses pass) it starts ahead of unlabelled paths until the client has its own memory of that network |

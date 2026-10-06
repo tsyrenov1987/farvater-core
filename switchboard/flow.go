@@ -150,6 +150,9 @@ func (f *flow) serve(ctx context.Context) {
 	s := f.s
 
 	dec := s.pick(nowMs(), f.target.Host, f.class)
+	if dec.Primary == "" {
+		return // every path is asleep: nothing to carry the flow
+	}
 	f.fbDeadlineMs = dec.FirstByteDeadlineMs
 	order := []string{dec.Primary}
 	if dec.Secondary != "" && dec.Secondary != dec.Primary {

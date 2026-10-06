@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -92,6 +93,7 @@ func TestHTTPLike(t *testing.T) {
 		"hysteria2://pw@203.0.113.11:8443?sni=www.example.com&obfs=salamander&obfs-password=x#s":                                                                      false,
 		"hysteria2://pw@203.0.113.11:443?sni=www.example.com#q":                                                                                                       true,
 		"vless://11111111-2222-3333-4444-555555555555@cdn.example.net:443?encryption=none&security=tls&type=ws&host=cdn.example.net&path=%2Fws&sni=cdn.example.net#w": true,
+		"olcrtc://wbstream?vp8channel@room-1#" + testOlcKey + "$o":                                                                                                    false,
 	} {
 		s, err := ParseURI(raw)
 		if err != nil {
@@ -154,6 +156,37 @@ func TestTrojanAndVMessMustLookLikeHTTPS(t *testing.T) {
 	} {
 		if s, err := ParseURI(raw); err == nil {
 			t.Fatalf("accepted %+v", s)
+		}
+	}
+}
+
+const testOlcKey = "d823fa01cb3e0609b67322f7cf984c4ee2e4ce2e294936fc24ef38c9e59f4799"
+
+// olcRTC's compact link: provider?transport[<params>]@room#key$comment.
+func TestParseOlcRTC(t *testing.T) {
+	s, err := ParseURI("olcrtc://WBStream?vp8channel<vp8-fps=25&vp8-batch=4>@room-01#" + testOlcKey + "$RU%20%2F%20wb%201")
+	if err != nil || s.Kind != KindOlcRTC || s.Provider != "wbstream" || s.Transport != "vp8channel" ||
+		s.TransportOpts != "vp8-fps=25&vp8-batch=4" || s.Room != "room-01" || s.Key != testOlcKey || s.ID != "RU / wb 1" ||
+		s.Rail() != "olcrtc" || s.Host != "" || s.Port != 0 {
+		t.Fatalf("olcrtc: %v %+v", err, s)
+	}
+	// No parameters, a comment with spaces as written, none at all.
+	if s, err = ParseURI("olcrtc://telemost?datachannel@r#" + testOlcKey + "$RU / olc free sub"); err != nil || s.TransportOpts != "" || s.ID != "RU / olc free sub" {
+		t.Fatalf("plain comment: %v %+v", err, s)
+	}
+	if s, err = ParseURI("olcrtc://wbstream?vp8channel@r2#" + testOlcKey); err != nil || s.ID != "wbstream/r2" {
+		t.Fatalf("no comment: %v %+v", err, s)
+	}
+	for _, bad := range []string{
+		"olcrtc://wbstream?vp8channel@r#" + testOlcKey[:62] + "$short key",
+		"olcrtc://wbstream?vp8channel@r#" + strings.Repeat("zz", 32) + "$not hex",
+		"olcrtc://wbstream?vp8channel@#" + testOlcKey + "$no room",
+		"olcrtc://wbstream@r#" + testOlcKey + "$no transport",
+		"olcrtc://?vp8channel@r#" + testOlcKey + "$no provider",
+		"olcrtc://wbstream?vp8channel<vp8-fps=25@r#" + testOlcKey + "$open parameters",
+	} {
+		if s, err := ParseURI(bad); err == nil {
+			t.Errorf("%s parsed: %+v", bad, s)
 		}
 	}
 }

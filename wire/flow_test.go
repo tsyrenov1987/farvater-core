@@ -50,6 +50,12 @@ func flowEcho(t *testing.T, uri string) (finish func() (Outcome, time.Duration))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return flowEchoOver(t, w)
+}
+
+// flowEchoOver is flowEcho over a wire already built.
+func flowEchoOver(t *testing.T, w Wire) (finish func() (Outcome, time.Duration)) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	sess, err := w.Dial(ctx)

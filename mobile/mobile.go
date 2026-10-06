@@ -29,6 +29,7 @@ import (
 
 	"github.com/tsyrenov1987/farvater-core/catalogue"
 	"github.com/tsyrenov1987/farvater-core/switchboard"
+	"github.com/tsyrenov1987/farvater-core/wire"
 )
 
 // DefaultProbeURL is fetched by ProveDelivery when neither the caller nor the
@@ -43,6 +44,7 @@ var (
 	user, pass string
 	probe      string
 	memoryFile string
+	hosted     []wire.Kind
 )
 
 // Version is the core version string.
@@ -135,6 +137,7 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 		cfg.Ctx = n
 	}
 	cfg.MemoryFile = memoryFile
+	cfg.Hosted = hosted
 	s, err := switchboard.New(cfg, cat)
 	if err != nil {
 		return err
@@ -176,6 +179,50 @@ func Stop() {
 		cancel()
 	}
 	sb, cancel = nil, nil
+}
+
+// SetHostedKinds names the kinds of path the app runs beside the core,
+// comma-separated ("olcrtc"); the apps call it before Start. Paths of a kind
+// the app does not run are skipped.
+func SetHostedKinds(kinds string) {
+	mu.Lock()
+	defer mu.Unlock()
+	hosted = nil
+	for _, k := range strings.Split(kinds, ",") {
+		if k = strings.ToLower(strings.TrimSpace(k)); k != "" {
+			hosted = append(hosted, wire.Kind(k))
+		}
+	}
+}
+
+// HostedJSON lists the running switchboard's hosted paths as
+// [{"id","kind","provider","transport","options","room","key","want","up"}].
+// The app keeps the transports of those with "want" up, hands each one's door
+// to SetHostedEndpoint, and takes the others down. "[]" when not running.
+func HostedJSON() string {
+	s := current()
+	if s == nil {
+		return "[]"
+	}
+	h := s.Hosted()
+	if h == nil {
+		h = []switchboard.HostedPath{}
+	}
+	return toJSON(h)
+}
+
+// SetHostedEndpoint tells the running core that the hosted path id is up
+// behind 127.0.0.1:port with these SOCKS5 credentials, or down (port 0).
+func SetHostedEndpoint(id string, port int, user, pass string) {
+	s := current()
+	if s == nil {
+		return
+	}
+	ep := wire.Endpoint{}
+	if port > 0 {
+		ep = wire.Endpoint{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), User: user, Pass: pass}
+	}
+	_ = s.SetEndpoint(id, ep)
 }
 
 // SocksUser and SocksPass are the credentials of the running switchboard's

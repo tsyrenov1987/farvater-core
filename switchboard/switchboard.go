@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,11 @@ type Config struct {
 	// lets through. When no path connects, they are dialled directly: an
 	// answer means the network is up and shuts the paths out. Empty: never.
 	WhiteProbes []string
+
+	// Hosted names the kinds of path the app runs beside the core
+	// (wire.IsHosted): they start asleep and wake when the app hands their
+	// door to SetEndpoint. A path of a hosted kind not named here is skipped.
+	Hosted []wire.Kind
 
 	// User and Pass, when set, make SOCKS5 clients authenticate (RFC 1929).
 	// The mobile apps set fresh random ones each session: every app on the
@@ -99,6 +105,7 @@ type Switchboard struct {
 	probedAt int64
 	probe    func(ctx context.Context, hosts []string) bool
 	udpBack  map[string]int64 // path → until when UDP tries it last (udp.go)
+	wantTill map[string]int64 // hosted path → until when it is wanted up (Hosted)
 
 	saveMu  sync.Mutex // one memory write at a time, never an older snapshot over a newer one
 	written uint64
@@ -112,9 +119,13 @@ type Switchboard struct {
 
 // New builds wires for every supported path of the catalogue and a brain over them.
 func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
-	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}}
+	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}, wantTill: map[string]int64{}}
 	var infos []brain.PathInfo
 	for _, e := range cat.Paths {
+		if wire.IsHosted(e.Spec.Kind) && !slices.Contains(cfg.Hosted, e.Spec.Kind) {
+			s.Skipped = append(s.Skipped, e.ID+": "+string(e.Spec.Kind)+" paths are not run by this app")
+			continue
+		}
 		w, err := wire.Build(e.Spec)
 		if err != nil {
 			s.Skipped = append(s.Skipped, e.ID+": "+err.Error())
@@ -130,6 +141,11 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 		return nil, errors.New("switchboard: no usable paths")
 	}
 	s.b = brain.New(cfg.Brain, cfg.Ctx, infos, uint64(time.Now().UnixNano()))
+	for _, id := range s.order {
+		if _, ok := s.wires[id].(wire.HostedWire); ok {
+			s.b.Sleep(id, nowMs()) // until the app brings it up
+		}
+	}
 	priors := map[string]map[string]brain.Prior{}
 	for ctx, ps := range cat.Priors {
 		priors[ctx] = map[string]brain.Prior{}
@@ -496,6 +512,7 @@ type PathStatus struct {
 	TrippedLeftMs  int64   `json:"tripped_left_ms,omitempty"` // until it is tried as a primary again
 	Served         int     `json:"served"`                    // receipts served: first byte, no block signature
 	Blocked        int     `json:"blocked"`                   // receipts with a block signature
+	Asleep         bool    `json:"asleep,omitempty"`          // a hosted path whose transport is down
 }
 
 func tripName(sig brain.BlockSig) string {
@@ -559,12 +576,17 @@ func (s *Switchboard) Status() Status {
 	for _, id := range s.order {
 		ps := s.b.State(id)
 		sp := s.wires[id].Spec()
+		server := fmt.Sprintf("%s:%d", sp.Host, sp.Port)
+		if sp.Host == "" {
+			server = sp.Provider // a hosted call has no address of its own
+		}
 		st.Paths = append(st.Paths, PathStatus{
-			ID: id, Rail: sp.Rail(), Server: fmt.Sprintf("%s:%d", sp.Host, sp.Port), Leader: id == s.b.Leader(),
+			ID: id, Rail: sp.Rail(), Server: server, Leader: id == s.b.Leader(),
 			DelivMean: ps.DelivMean(), FbMean: ps.FbMean(), Receipts: ps.Receipts,
 			Recent15m: ps.RecentReceipts(now, 15*60*1000), P90FirstByteMs: ps.P90FirstByteMs(),
 			Cut16: ps.Cut16, Parked: s.b.Diag.Parked(id, now), Tripped: tripName(s.b.Breaker.TrippedSig(id, now)),
 			TrippedLeftMs: s.b.Breaker.TrippedLeftMs(id, now), Served: ps.Served, Blocked: ps.Blocked,
+			Asleep: s.b.Asleep(id),
 		})
 	}
 	n := len(s.receipts)

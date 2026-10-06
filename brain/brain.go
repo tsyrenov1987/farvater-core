@@ -84,13 +84,14 @@ type Brain struct {
 	back       map[string]bool             // ...and those of them that connected since
 	upAt       int64                       // an allow-listed site last answered directly
 	upSeen     bool
+	asleep     map[string]bool // paths whose transport is down (Sleep)
 }
 
 // New creates a brain for one network context.
 func New(cfg Config, ctx string, paths []PathInfo, seed uint64) *Brain {
 	b := &Brain{cfg: cfg, ctx: ctx, paths: paths, st: map[string]*PathState{}, lastPick: map[string]int64{},
 		Gov: NewGovernor(), Diag: NewDiagnoser(paths), Breaker: NewBreaker(cfg.Breaker), J: NewJournal(1000), rng: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
-		saved: map[string]ctxState{}, switchedAt: math.MinInt64}
+		saved: map[string]ctxState{}, switchedAt: math.MinInt64, asleep: map[string]bool{}}
 	for _, p := range paths {
 		b.st[p.ID] = &PathState{}
 	}
@@ -108,19 +109,44 @@ func (b *Brain) State(path string) PathState {
 	return PathState{}
 }
 
+// Sleep takes a path out of the fan until Wake: its transport is down (a
+// path the app hosts and has not brought up). It is neither picked nor tried,
+// and with no dials its silence says nothing about the network.
+func (b *Brain) Sleep(path string, now int64) {
+	if b.asleep[path] {
+		return
+	}
+	b.asleep[path] = true
+	b.J.Add(now, "sleep", "its transport is down", path)
+}
+
+// Wake puts a sleeping path back in the fan.
+func (b *Brain) Wake(path string, now int64) {
+	if !b.asleep[path] {
+		return
+	}
+	delete(b.asleep, path)
+	b.J.Add(now, "wake", "its transport is up", path)
+}
+
+// Asleep reports whether a path is out of the fan (see Sleep).
+func (b *Brain) Asleep(path string) bool { return b.asleep[path] }
+
 func (b *Brain) available(now int64) []string {
 	out := make([]string, 0, len(b.paths))
 	for _, p := range b.paths {
-		if !b.Diag.Parked(p.ID, now) && !b.Breaker.Tripped(p.ID, now) {
+		if !b.asleep[p.ID] && !b.Diag.Parked(p.ID, now) && !b.Breaker.Tripped(p.ID, now) {
 			out = append(out, p.ID)
 		}
 	}
 	if len(out) == 0 {
 		// Never narrow to nothing: if the breaker and the freeze guard would
-		// silence the whole fleet, fall back to everything and let delivery
-		// measurement re-sort it. A rail is avoided, never removed.
+		// silence the whole fleet, fall back to everything awake and let
+		// delivery measurement re-sort it. A rail is avoided, never removed.
 		for _, p := range b.paths {
-			out = append(out, p.ID)
+			if !b.asleep[p.ID] {
+				out = append(out, p.ID)
+			}
 		}
 	}
 	return out
@@ -232,6 +258,9 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		}
 	}
 	avail := b.available(now)
+	if len(avail) == 0 {
+		return Decision{Reason: "asleep"} // no path has its transport up
+	}
 
 	if b.leader == "" || !contains(avail, b.leader) {
 		l, _ := b.bestBy(avail, "", false, now)
@@ -301,9 +330,9 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 	return Decision{Primary: primary, Secondary: secondary, Tertiary: tertiary, Explore: explore, Reason: reason, StaggerMs: stagger, FirstByteDeadlineMs: deadline}
 }
 
-// UDPOrder lists every path in the order a UDP association tries them: the
-// leader, the other available paths by posterior mean (NotHTTP ones after the
-// rest: they do not stand in for a failing leader), then the parked and
+// UDPOrder lists every awake path in the order a UDP association tries them:
+// the leader, the other available paths by posterior mean (NotHTTP ones after
+// the rest: they do not stand in for a failing leader), then the parked and
 // tripped ones. UDP yields no receipts, so it follows what TCP flows proved,
 // and asking is not a pick.
 func (b *Brain) UDPOrder(now int64) []string {
@@ -326,7 +355,7 @@ func (b *Brain) UDPOrder(now int64) []string {
 	})
 	out = append(out, rest...)
 	for _, p := range b.paths {
-		if !contains(out, p.ID) {
+		if !b.asleep[p.ID] && !contains(out, p.ID) {
 			out = append(out, p.ID)
 		}
 	}

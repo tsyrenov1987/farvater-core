@@ -43,6 +43,7 @@ replaces it.
  │          Journal (decision -> outcome)                                       │
  │                                           ▼                                  │
  │   WIRES (dumb): VLESS · Trojan · VMess over Reality/TLS/WS/XHTTP/gRPC · Hy2  │
+│                 olcRTC calls, run by the Android app behind a loopback door  │
  └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -133,7 +134,7 @@ mode, are chosen not only by delivery but biased toward a rail *unlike* the one
 in trouble — a different protocol, a different server name, a different
 address — because a block tends to strike one of those axes. A shared-name
 sibling of a failing rail is not chosen as its own backup. A path whose traffic
-looks like no HTTP (Hysteria 2 under Salamander noise) is never a backup: it
+looks like no HTTP (Hysteria 2 under Salamander noise, an olcRTC video call) is never a backup: it
 takes flows as the leader or on exploration, by proven delivery, but is never the
 connect-stage backup, the storm's third dial, a failed flow's retry or a UDP
 association's second try. Whoever blocks the path a flow went to sees the flow
@@ -201,7 +202,7 @@ Own Go module. Wires from Xray-core packages (MPL-2.0: Reality dialer, VLESS, Tr
 WebSocket, gRPC),
 Hysteria `core/v2` (MIT), tun2socks via hev-socks5-tunnel (MIT), uTLS (BSD-3). No GPL/AGPL code is linked;
 CI fails if any `sagernet/*` module appears in `go list -deps`. Built with `gomobile` into an xcframework / aar,
-`-trimpath -ldflags="-s -w"`.
+`-trimpath -ldflags="-s -w"`. olcRTC is not linked: the Android app runs olcRTC's own program beside the core (§12).
 
 ## 12. Platform notes
 
@@ -222,6 +223,15 @@ CI fails if any `sagernet/*` module appears in `go list -deps`. Built with `gomo
   the port admits only them (RFC 1929); hev-socks5-tunnel presents them. No credentials, no proxy.
 - While the delivery proof runs, the mobile layer reports how much of the probe has arrived and its announced
   size, so the apps can count real bytes up to "connected" instead of spinning.
+- Hosted paths: olcRTC carries TCP through a video call (WB Stream, Telemost, Jitsi). The call needs a WebRTC stack
+  the core does not link, so the Android app runs olcRTC's own program as a separate process (its crash cannot take
+  the tunnel down) and hands the core a loopback SOCKS5 door with fresh credentials. The core carries flows through
+  the door and judges the path like any other; it looks like no HTTP, so it is never a backup (§6). A call sits in a
+  room other people share and costs traffic even idle, so the core asks for it only on need — while the network is
+  restricted, while the path leads, or when the catalogue has nothing else — and for ten minutes after. The rest of
+  the time the path sleeps: it is neither picked nor tried, its silence is no evidence, and once its door is up
+  again the exploration floor gives it a flow at once. The iOS app runs no call (the extension's memory budget), so
+  there such paths are skipped. Calls carry TCP only.
 
 ## 13. Verification
 

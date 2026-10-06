@@ -22,6 +22,7 @@ const (
 	KindTrojan    Kind = "trojan"
 	KindVMess     Kind = "vmess"
 	KindHysteria2 Kind = "hysteria2"
+	KindOlcRTC    Kind = "olcrtc"
 )
 
 // PathSpec is a parsed, provider-neutral description of one path.
@@ -56,6 +57,14 @@ type PathSpec struct {
 	Obfs      string // "" | salamander
 	ObfsPass  string
 	PinSHA256 string
+
+	// olcRTC: TCP through a video call. The app runs the call beside the core
+	// (see Hosted) and the core reaches it through the app's loopback door.
+	Provider      string // the call service: wbstream | telemost | jitsi
+	Transport     string // how bytes ride the call: vp8channel | datachannel | seichannel | videochannel
+	TransportOpts string // the transport's parameters, "key=value&key=value" as the link has them
+	Room          string
+	Key           string // the tunnel's key, 64 hex
 }
 
 // Rail is the informational label of the path's transport.
@@ -82,9 +91,10 @@ func (p PathSpec) Rail() string {
 
 // HTTPLike reports whether the path's traffic looks like HTTP(S) to an
 // observer: TLS, REALITY, WebSocket, gRPC, XHTTP, or QUIC with no
-// obfuscation. Salamander turns Hysteria 2 into noise that resembles nothing.
+// obfuscation. Salamander turns Hysteria 2 into noise that resembles nothing;
+// olcRTC is a video call (WebRTC).
 func (p PathSpec) HTTPLike() bool {
-	return !(p.Kind == KindHysteria2 && p.Obfs != "")
+	return !(p.Kind == KindHysteria2 && p.Obfs != "") && p.Kind != KindOlcRTC
 }
 
 // ServerSNI is the TLS server name the wire presents (for the handshake governor).
@@ -98,10 +108,13 @@ func (p PathSpec) ServerSNI() string {
 	return p.Host
 }
 
-// ParseURI parses a vless://, trojan://, vmess:// or hysteria2:// share link;
-// vmess:// also in v2rayN's form, the base64 of a JSON object.
+// ParseURI parses a vless://, trojan://, vmess://, hysteria2:// or olcrtc://
+// share link; vmess:// also in v2rayN's form, the base64 of a JSON object.
 func ParseURI(raw string) (PathSpec, error) {
 	raw = strings.TrimSpace(raw)
+	if len(raw) > 9 && strings.EqualFold(raw[:9], "olcrtc://") {
+		return parseOlcRTC(raw[9:])
+	}
 	if len(raw) > 8 && strings.EqualFold(raw[:8], "vmess://") {
 		if b64, name, _ := strings.Cut(raw[8:], "#"); !strings.Contains(b64, "@") {
 			if n, err := url.PathUnescape(name); err == nil {
@@ -314,4 +327,36 @@ func decodeB64(s string) ([]byte, error) {
 		return b, nil
 	}
 	return base64.RawStdEncoding.DecodeString(s)
+}
+
+// parseOlcRTC reads olcRTC's compact link (its docs/uri.md), the part after
+// "olcrtc://": <provider>?<transport>[<key=value&...>]@<room>#<key hex>$<comment>.
+// The comment names the path.
+func parseOlcRTC(body string) (PathSpec, error) {
+	spec := PathSpec{Kind: KindOlcRTC}
+	provider, rest, _ := strings.Cut(body, "?")
+	transport, rest, _ := strings.Cut(rest, "@")
+	if t, opts, ok := strings.Cut(transport, "<"); ok {
+		if !strings.HasSuffix(opts, ">") {
+			return spec, errors.New("olcrtc: the transport's parameters must end with >")
+		}
+		transport, spec.TransportOpts = t, strings.TrimSuffix(opts, ">")
+	}
+	room, rest, _ := strings.Cut(rest, "#")
+	key, name, _ := strings.Cut(rest, "$")
+	spec.Provider, spec.Transport, spec.Room, spec.Key = strings.ToLower(provider), strings.ToLower(transport), room, key
+	if spec.Provider == "" || spec.Transport == "" || spec.Room == "" {
+		return spec, errors.New("olcrtc: provider, transport and room are required")
+	}
+	if b, err := hex.DecodeString(key); err != nil || len(b) != 32 {
+		return spec, errors.New("olcrtc: the key must be 64 hex digits")
+	}
+	if n, err := url.PathUnescape(name); err == nil {
+		name = n
+	}
+	spec.ID = strings.TrimSpace(name)
+	if spec.ID == "" {
+		spec.ID = spec.Provider + "/" + spec.Room
+	}
+	return spec, nil
 }
