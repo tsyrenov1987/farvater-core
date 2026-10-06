@@ -73,10 +73,11 @@ silently stops carrying after 16–20 KB. farvater-core inverts the hierarchy:
 No accounts, no payments, no provider advertising, no server-side forcing of clients. The core is a library;
 apps built on it decide their own UI and business model.
 
-## Planned stack
+## Stack
 
 Go module built with `gomobile`; transports from Xray-core packages (MPL-2.0), Hysteria `core/v2` (MIT),
-TUN via hev-socks5-tunnel (MIT). License gate in CI: no GPL/AGPL in the dependency graph.
+TUN via hev-socks5-tunnel (MIT). License gate in CI: no GPL/AGPL in the dependency graph. What is inside an app
+build, module by module: [docs/TRANSPARENCY.md](docs/TRANSPARENCY.md).
 
 ## License
 
@@ -89,4 +90,5 @@ Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 Ядро маршрутизации Farvater VPN: путь для каждого соединения выбирается по **квитанциям реальной доставки**
 (первый байт, доставленные байты, паузы, где встал), а не по задержке крошечной пробы. Мозг владеет выбором,
 транспорты глупые; ни один путь не удаляется — только понижается; смена пути только между соединениями и
-только по доказательствам; темп рукопожатий ограничен; каждое решение объяснимо. Полный документ — [docs/DESIGN.md](docs/DESIGN.md) (англ.). Статус: проектирование, кода пока нет.
+только по доказательствам; темп рукопожатий ограничен; каждое решение объяснимо. Полный документ — [docs/DESIGN.md](docs/DESIGN.md) (англ.). Статус: фазы 0–1 готовы, ядро работает в приложениях
+Farvater для Android и iPhone; что внутри сборки — [docs/TRANSPARENCY.md](docs/TRANSPARENCY.md).
