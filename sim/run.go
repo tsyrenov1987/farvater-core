@@ -29,10 +29,19 @@ type FlowRecord struct {
 	WaitedMs int64 // governor delay
 }
 
+// Dial is one connection attempt, as an observer of the client sees it.
+type Dial struct {
+	At, EndAt int64 // when it started; when it answered or the client gave up
+	Path      string
+	OK        bool // served the flow (no silence, reset or stall)
+	Explore   bool
+}
+
 // Result is everything a run produced.
 type Result struct {
 	Policy          string
 	Records         []FlowRecord
+	Dials           []Dial
 	Receipts        int
 	MidFlowSwitches int
 	Net             *Network
@@ -224,6 +233,7 @@ func (r *Runner) Execute(pol Policy) Result {
 			rec2, ok2, w2 := r.execute(ev.dec.Secondary, ev.flow, ev.at, ev.dec.StaggerMs)
 			rec2.Explore = ev.dec.Explore
 			heap.Push(pending, rec2)
+			res.Dials = append(res.Dials, Dial{At: ev.at, EndAt: ev.at + rec2.DurMs, Path: ev.dec.Secondary, OK: ok2})
 			fr := ev.fr
 			fr.Path, fr.Success, fr.Retried = ev.dec.Secondary, ok2, true
 			fr.WaitedMs += w2
@@ -238,6 +248,7 @@ func (r *Runner) Execute(pol Policy) Result {
 		rec, ok, waited := r.execute(d.Primary, f, f.StartMs, d.StaggerMs)
 		rec.Explore = d.Explore
 		heap.Push(pending, rec)
+		res.Dials = append(res.Dials, Dial{At: f.StartMs, EndAt: f.StartMs + rec.DurMs, Path: d.Primary, OK: ok, Explore: d.Explore})
 		res.Picks[d.Primary] = append(res.Picks[d.Primary], f.StartMs)
 		fr := FlowRecord{ID: f.ID, StartMs: f.StartMs, Path: d.Primary, Success: ok, Dead: f.Dead, Bytes: f.WantBytes, Explore: d.Explore, Reason: d.Reason, WaitedMs: waited}
 		if !rec.FirstByte() && d.Secondary != "" && d.Secondary != d.Primary {

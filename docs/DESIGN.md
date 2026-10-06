@@ -241,6 +241,13 @@ a TLS record must. A live test drives real HTTP/2 traffic with idle pauses throu
 receipts without stalls and no tripped rail. (The first Android run showed why: idle browser connections were
 scored as throttling and the best rail was benched.)
 
+The simulator also counts what an observer of the client's connections sees (`sim/stealth.go`): servers per hour,
+distinct tunnels per ten minutes, exploration dials, failures, a failure followed within a second by a server unseen
+for ten minutes, and one followed within a second by a path that looks like no HTTP. `TestStealthReport` runs the
+core and a browser-like prototype — retry on the same server only, QUIC only where TCP delivered lately, rarer
+exploration — over an hour of a fleet shaped like a real one under the blocks seen in the field. Whether the core
+takes up any of the prototype is decided on its delivery numbers; the prototype lives in the simulator alone.
+
 ## 14. Non-goals
 
 Accounts, payments, provider advertising, server-side forcing of clients, latency-based selection.

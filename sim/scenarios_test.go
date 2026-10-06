@@ -11,7 +11,7 @@ const minute = int64(60_000)
 func infos(sc Scenario) []brain.PathInfo {
 	out := make([]brain.PathInfo, 0, len(sc.Paths))
 	for _, p := range sc.Paths {
-		out = append(out, brain.PathInfo{ID: p.ID, SNI: p.SNI, IP: p.IP, Rail: p.Rail})
+		out = append(out, brain.PathInfo{ID: p.ID, SNI: p.SNI, IP: p.IP, Rail: p.Rail, NotHTTP: p.NotHTTP})
 	}
 	return out
 }
