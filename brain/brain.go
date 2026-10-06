@@ -38,7 +38,7 @@ type Config struct {
 // DefaultConfig returns the design defaults.
 func DefaultConfig() Config {
 	return Config{HalfLifeMs: 10 * 60_000, LeaderDelta: 0.15, LeaderMinReceipts: 5, LeaderWindowMs: 15 * 60_000,
-		LeaderStallStrikes: 2, ExploreShare: 0.2, ExploreWindowMs: 60_000, FloorMs: 10 * 60_000, FirstByteCapMs: 3000, StaggerPadMs: 300,
+		LeaderStallStrikes: 2, ExploreShare: 0.1, ExploreWindowMs: 60_000, FloorMs: 10 * 60_000, FirstByteCapMs: 3000, StaggerPadMs: 300,
 		FirstByteDeadlineCapMs: 5000, Breaker: DefaultBreakerConfig()}
 }
 

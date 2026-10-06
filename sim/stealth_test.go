@@ -113,13 +113,14 @@ func fieldFleet() []PathModel {
 }
 
 // TestStealthReport runs over an hour of a realistic fleet, under the blocks seen
-// in the field: the current core, the core with half its exploration share, the
+// in the field: the core, the core with its former exploration share of 0.2, the
 // core with the prototype's rarer exploration alone, and the whole browser-like
-// prototype. It reports delivery against what an observer can count. Read it with
-// -v; the decision on the prototype is taken on these numbers. (A floor of 30
-// minutes or a share of 0.05 as the default breaks invariants checked elsewhere:
-// every path in the fan of a restricted network, the cut16 signature, a dead
-// destination never moving the leader. Half the share breaks none.)
+// prototype. It reports delivery against what an observer can count; read it
+// with -v. On these numbers the share went from 0.2 to 0.1: the same delivery,
+// half the exploration dials. A floor of 30 minutes or a share of 0.05 as the
+// default breaks invariants checked elsewhere: every path in the fan of a
+// restricted network, the cut16 signature, a dead destination never moving the
+// leader.
 func TestStealthReport(t *testing.T) {
 	const at = 20 * minute // the block starts here
 	cases := []struct {
@@ -149,14 +150,15 @@ func TestStealthReport(t *testing.T) {
 		}},
 	}
 	const end, seeds = 60 * minute, 5
+	calm := map[string]float64{} // exploration dials per hour, calm network
 	for _, c := range cases {
-		half := brain.DefaultConfig()
-		half.ExploreShare = 0.1
+		old := brain.DefaultConfig()
+		old.ExploreShare = 0.2
 		for _, mode := range []struct {
 			name   string
 			cfg    brain.Config
 			chrome bool
-		}{{"farvater", brain.DefaultConfig(), false}, {"share .1", half, false}, {"rarer", ChromeConfig(), false}, {"chrome", ChromeConfig(), true}} {
+		}{{"farvater", brain.DefaultConfig(), false}, {"share .2", old, false}, {"rarer", ChromeConfig(), false}, {"chrome", ChromeConfig(), true}} {
 			var all, after, first float64
 			var e Exposure
 			for seed := uint64(31); seed < 31+seeds; seed++ {
@@ -188,6 +190,13 @@ func TestStealthReport(t *testing.T) {
 			}
 			t.Logf("%-22s %-8s served %.3f (after the block %.3f, its first 2 min %.3f) | servers/h %.1f tunnels/10min %.1f explore/h %.0f failed/h %.0f reveals/h %.1f not-HTTP-after-fail/h %.0f",
 				c.name, mode.name, all, after, first, e.ServersPerHour, e.TunnelsPer10Min, e.ExplorePerHour, e.FailedPerHour, e.RevealsPerHour, e.NotHTTPAfterFail)
+			if c.name == "calm" {
+				calm[mode.name] = e.ExplorePerHour
+			}
 		}
+	}
+	// The default has half the former share since 06.10.2026, on these numbers.
+	if calm["farvater"] > 0.6*calm["share .2"] {
+		t.Fatalf("calm exploration %.0f/h, want well under the old share's %.0f/h", calm["farvater"], calm["share .2"])
 	}
 }

@@ -78,8 +78,9 @@ quarter weight; priors never outweigh 5 fresh receipts.
 - **New flow:** Thompson sampling on `θ = deliv · fb`. A path with five bad receipts still gets roughly one flow in
   twenty; a path without data gets more until it has evidence. Floor: every path gets ≥1 flow per 10 minutes.
   Exploration flows are small-destination classes (dns, tls443) where possible; a flow that grows past 256 KB keeps
-  going and is tagged `explore`.
-- **Leader hysteresis:** the leader (≥80 % of flows) changes only if a challenger is `δ = 0.15` better in posterior
+  going and is tagged `explore`. Exploration takes at most 10 % of a minute's flows (60 % in a storm): at 20 % the
+  simulator showed the same delivery for twice the dials an observer counts (`TestStealthReport`).
+- **Leader hysteresis:** the leader (about 90 % of flows outside a storm) changes only if a challenger is `δ = 0.15` better in posterior
   mean with ≥5 own receipts in 15 min, or the leader stalled twice in a row.
 - **Connect stage:** no first byte within `T_stagger = min(T_fb, p90_fb(leader)+300 ms)` → repeat the same connect
   (with the held first client segment) over the runner-up; first responder wins, the other is closed. The duplicate
