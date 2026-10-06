@@ -12,6 +12,11 @@ import (
 type PathInfo struct {
 	ID, SNI, IP, Rail string
 	White             bool
+	// NotHTTP: the path's traffic looks like no HTTP (Hysteria 2 under
+	// Salamander noise). Such a path stays in the fan and takes flows on proven
+	// delivery, but never stands in for a failing one: a flow that fails is
+	// never retried over it, so a block does not light it up next.
+	NotHTTP bool
 }
 
 // Config holds the selection parameters. All numbers are initial hypotheses.
@@ -163,7 +168,7 @@ func (b *Brain) info(id string) PathInfo {
 func (b *Brain) bestEscape(avail, exclude []string, from PathInfo, now int64) string {
 	bestP, bestV := "", -1.0
 	for _, p := range avail {
-		if contains(exclude, p) {
+		if contains(exclude, p) || b.info(p).NotHTTP {
 			continue
 		}
 		s := b.st[p]
@@ -297,7 +302,8 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 }
 
 // UDPOrder lists every path in the order a UDP association tries them: the
-// leader, the other available paths by posterior mean, then the parked and
+// leader, the other available paths by posterior mean (NotHTTP ones after the
+// rest: they do not stand in for a failing leader), then the parked and
 // tripped ones. UDP yields no receipts, so it follows what TCP flows proved,
 // and asking is not a pick.
 func (b *Brain) UDPOrder(now int64) []string {
@@ -312,7 +318,12 @@ func (b *Brain) UDPOrder(now int64) []string {
 			rest = append(rest, p)
 		}
 	}
-	sort.SliceStable(rest, func(i, j int) bool { return b.st[rest[i]].Mean() > b.st[rest[j]].Mean() })
+	sort.SliceStable(rest, func(i, j int) bool {
+		if ni, nj := b.info(rest[i]).NotHTTP, b.info(rest[j]).NotHTTP; ni != nj {
+			return nj
+		}
+		return b.st[rest[i]].Mean() > b.st[rest[j]].Mean()
+	})
 	out = append(out, rest...)
 	for _, p := range b.paths {
 		if !contains(out, p.ID) {

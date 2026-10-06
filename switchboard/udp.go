@@ -165,12 +165,14 @@ func (s *Switchboard) serveUDP(ctx context.Context, c net.Conn) {
 	}
 }
 
-// openUDP dials the first paths of the UDP order until one carries UDP.
+// openUDP dials the first paths of the UDP order until one carries UDP. A path
+// that looks like no HTTP is dialled only as the first try: it never stands in
+// for one that failed.
 func (s *Switchboard) openUDP(ctx context.Context, a *udpAssoc, d datagram) bool {
 	tries := 0
 	for _, id := range s.udpOrder() {
 		pw, ok := s.wires[id].(wire.PacketWire)
-		if !ok {
+		if !ok || (tries > 0 && s.infos[id].NotHTTP) {
 			continue
 		}
 		if tries == udpTries {

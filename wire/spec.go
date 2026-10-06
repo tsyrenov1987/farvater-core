@@ -75,6 +75,13 @@ func (p PathSpec) Rail() string {
 	return string(p.Kind)
 }
 
+// HTTPLike reports whether the path's traffic looks like HTTP(S) to an
+// observer: TLS, REALITY, WebSocket, gRPC, XHTTP, or QUIC with no
+// obfuscation. Salamander turns Hysteria 2 into noise that resembles nothing.
+func (p PathSpec) HTTPLike() bool {
+	return !(p.Kind == KindHysteria2 && p.Obfs != "")
+}
+
 // ServerSNI is the TLS server name the wire presents (for the handshake governor).
 func (p PathSpec) ServerSNI() string {
 	if p.SNI != "" {

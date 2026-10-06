@@ -85,11 +85,11 @@ quarter weight; priors never outweigh 5 fresh receipts.
   (with the held first client segment) over the runner-up; first responder wins, the other is closed. The duplicate
   first segment is harmless for TLS and server-speaks-first protocols; accepted knowingly for the rest.
 - **UDP:** an association (one per app socket and destination) rides the leader, then the other paths in the
-  brain's order; a path that cannot carry UDP is passed over, and one that ends an association at once with no
-  answer goes to the back of that order for 10 minutes (reordered, never removed). VLESS carries UDP as XUDP —
-  the framing Vision requires, naming each datagram's address — and Hysteria 2 in its QUIC datagrams. UDP gives
-  no delivery evidence and files no receipts. UDP/443 (QUIC) is refused, so browsers and apps fall back to TCP,
-  where delivery is measured.
+  brain's order (a path that looks like no HTTP only as the first try, see §6); a path that cannot carry UDP is
+  passed over, and one that ends an association at once with no answer goes to the back of that order for
+  10 minutes (reordered, never removed). VLESS carries UDP as XUDP — the framing Vision requires, naming each
+  datagram's address — and Hysteria 2 in its QUIC datagrams. UDP gives no delivery evidence and files no
+  receipts. UDP/443 (QUIC) is refused, so browsers and apps fall back to TCP, where delivery is measured.
 - **Idle:** one 256 KB volume probe (HTTP Range to `probe_urls`) on the leader right after connect; status is
   "connecting" until it passes. Exploration probes ≤1 per 10 min per path, never on metered paths, never in bursts.
 
@@ -131,7 +131,12 @@ rail away, and the fallback set can never shrink to nothing.
 mode, are chosen not only by delivery but biased toward a rail *unlike* the one
 in trouble — a different protocol, a different server name, a different
 address — because a block tends to strike one of those axes. A shared-name
-sibling of a failing rail is not chosen as its own backup.
+sibling of a failing rail is not chosen as its own backup. A path whose traffic
+looks like no HTTP (Hysteria 2 under Salamander noise) is never a backup: it
+takes flows as the leader or on exploration, by proven delivery, but is never the
+connect-stage backup, the storm's third dial, a failed flow's retry or a UDP
+association's second try. Whoever blocks the path a flow went to sees the flow
+retried only over HTTPS-shaped connections.
 
 **Storm mode.** When several distinct rails trip inside the window the client is
 under a coordinated disturbance. Exploration is raised and a third, diverse dial

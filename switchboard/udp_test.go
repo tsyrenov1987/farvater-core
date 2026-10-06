@@ -7,11 +7,13 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/tsyrenov1987/farvater-core/catalogue"
 	"github.com/tsyrenov1987/farvater-core/wire"
 )
 
@@ -152,24 +154,30 @@ func (e *echoSession) Close() error {
 
 // udpBoard is a switchboard over paths a, b, c with a the leader, b second.
 func udpBoard(t *testing.T) (*Switchboard, string, map[string]*fakeUDPWire) {
+	return udpBoardOver(t, threeDead(t), "a", "b", "c")
+}
+
+// udpBoardOver is a switchboard over the catalogue's paths lead, next and
+// failing: lead leads, next delivers too, failing has tripped.
+func udpBoardOver(t *testing.T, cat *catalogue.Catalogue, lead, next, failing string) (*Switchboard, string, map[string]*fakeUDPWire) {
 	t.Helper()
-	s, err := New(DefaultConfig(), threeDead(t))
+	s, err := New(DefaultConfig(), cat)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.probe = func(context.Context, []string) bool { return false }
 	for i := 0; i < 6; i++ {
-		s.observe(delivered("a"))
+		s.observe(delivered(lead))
 	}
-	if l := leaderOf(s); l != "a" {
-		t.Fatalf("leader %s, want a", l)
+	if l := leaderOf(s); l != lead {
+		t.Fatalf("leader %s, want %s", l, lead)
 	}
 	for i := 0; i < 3; i++ {
-		s.observe(delivered("b"))
-		s.observe(wireFailed("c"))
+		s.observe(delivered(next))
+		s.observe(wireFailed(failing))
 	}
 	fakes := map[string]*fakeUDPWire{}
-	for _, id := range []string{"a", "b", "c"} {
+	for _, id := range []string{lead, next, failing} {
 		fakes[id] = &fakeUDPWire{id: id, newSess: func() wire.PacketSession { return newEcho() }}
 		s.wires[id] = fakes[id]
 	}
@@ -289,5 +297,42 @@ func TestUDPRefusingPathGoesBack(t *testing.T) {
 	s.mu.Unlock()
 	if back != 0 {
 		t.Fatal("an association the app ended put its path at the back")
+	}
+}
+
+// A path that looks like no HTTP (Hysteria 2 under Salamander) carries UDP when
+// it leads, but never stands in for one that failed: past a leader that cannot
+// carry UDP the association skips it for an HTTP-like path, even a tripped one.
+func TestUDPNotHTTPOnlyWhenItLeads(t *testing.T) {
+	cat := func() *catalogue.Catalogue {
+		cat, err := catalogue.Parse([]byte(strings.Join([]string{
+			"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?security=tls&sni=a.example.com&type=tcp#a",
+			"hysteria2://pw@127.0.0.1:2?sni=h.example.com&obfs=salamander&obfs-password=x#h",
+			"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:3?security=tls&sni=c.example.com&type=tcp#c",
+		}, "\n")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cat
+	}
+	_, addr, fakes := udpBoardOver(t, cat(), "h", "a", "c")
+	c := associate(t, addr)
+	send(t, c, "1.1.1.1:53", []byte("q"))
+	if d, err := readDatagram(c); err != nil || string(d.data) != "q" {
+		t.Fatalf("with h leading: %+v %v", d, err)
+	}
+	if fakes["h"].dials.Load() != 1 || fakes["a"].dials.Load() != 0 {
+		t.Fatalf("dials h=%d a=%d, want the association on the leader h", fakes["h"].dials.Load(), fakes["a"].dials.Load())
+	}
+
+	_, addr, fakes = udpBoardOver(t, cat(), "a", "h", "c")
+	fakes["a"].dialErr = errors.New("UDP not enabled")
+	c = associate(t, addr)
+	send(t, c, "1.1.1.1:53", []byte("q"))
+	if d, err := readDatagram(c); err != nil || string(d.data) != "q" {
+		t.Fatalf("past a refusing leader: %+v %v", d, err)
+	}
+	if fakes["a"].dials.Load() != 1 || fakes["h"].dials.Load() != 0 || fakes["c"].dials.Load() != 1 {
+		t.Fatalf("dials a=%d h=%d c=%d, want the leader, then c with h skipped", fakes["a"].dials.Load(), fakes["h"].dials.Load(), fakes["c"].dials.Load())
 	}
 }

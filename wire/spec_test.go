@@ -81,3 +81,21 @@ func TestHysteriaPinFailsClosed(t *testing.T) {
 		t.Fatal("a non-matching pin must fail the handshake")
 	}
 }
+
+// Salamander turns Hysteria 2 into noise that looks like no HTTP; without it
+// Hysteria 2 is QUIC, as HTTP/3 is, and every VLESS transport is TLS-shaped.
+func TestHTTPLike(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"hysteria2://pw@203.0.113.11:8443?sni=www.example.com&obfs=salamander&obfs-password=x#s":                                                                      false,
+		"hysteria2://pw@203.0.113.11:443?sni=www.example.com#q":                                                                                                       true,
+		"vless://11111111-2222-3333-4444-555555555555@cdn.example.net:443?encryption=none&security=tls&type=ws&host=cdn.example.net&path=%2Fws&sni=cdn.example.net#w": true,
+	} {
+		s, err := ParseURI(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := s.HTTPLike(); got != want {
+			t.Errorf("%s: HTTPLike = %v, want %v", s.ID, got, want)
+		}
+	}
+}
