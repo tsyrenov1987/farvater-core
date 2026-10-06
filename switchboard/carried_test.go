@@ -36,17 +36,21 @@ func (st streamSession) Run(ctx context.Context, _ wire.Target, _ []byte, _ <-ch
 }
 func (streamSession) Close() error { return nil }
 
-func downBytes(s *Switchboard) (total int64, by map[string]int64) {
+func carriedBytes(s *Switchboard, way func(PathStatus) int64) (total int64, by map[string]int64) {
 	by = map[string]int64{}
 	for _, p := range s.Status().Paths {
-		total += p.DownBytes
-		by[p.ID] = p.DownBytes
+		total += way(p)
+		by[p.ID] = way(p)
 	}
 	return total, by
 }
 
+func up(p PathStatus) int64   { return p.UpBytes }
+func down(p PathStatus) int64 { return p.DownBytes }
+
 // The apps draw each path's live flow from Status: a flow's bytes count while
-// it still runs, on the path carrying it, and so do UDP's.
+// it still runs, on the path carrying it, the first payload that rides with
+// the proxy request included, and so do UDP's.
 func TestPathsCountBytesAsTheyFlow(t *testing.T) {
 	s, addr, fakes := udpBoard(t)
 	for _, id := range []string{"a", "b", "c"} {
@@ -71,9 +75,13 @@ func TestPathsCountBytesAsTheyFlow(t *testing.T) {
 	if _, err := io.ReadFull(c, make([]byte, 70_000)); err != nil {
 		t.Fatal(err)
 	}
-	total, by := downBytes(s)
+	total, by := carriedBytes(s, down)
 	if total != 70_000 || s.Status().Active != 1 {
 		t.Fatalf("while the flow runs: %d bytes down %v, %d active; want 70000 on one path", total, by, s.Status().Active)
+	}
+	sent, upBy := carriedBytes(s, up)
+	if sent != 5 || upBy[s.Status().Leader] != 5 {
+		t.Fatalf("while the flow runs: %d bytes up %v; want the app's 5 on the leader", sent, upBy)
 	}
 
 	for _, id := range []string{"a", "b", "c"} {
@@ -86,7 +94,7 @@ func TestPathsCountBytesAsTheyFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range s.Status().Paths {
-		if p.ID == "b" && (p.UpBytes != 4 || p.DownBytes != 4+by["b"]) {
+		if p.ID == "b" && (p.UpBytes != 4+upBy["b"] || p.DownBytes != 4+by["b"]) {
 			t.Fatalf("UDP over b: up %d down %d, want 4 more each way", p.UpBytes, p.DownBytes)
 		}
 	}

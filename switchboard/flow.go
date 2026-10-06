@@ -292,6 +292,11 @@ func (f *flow) drain(results chan dialResult, n int) {
 
 // run executes one session with the first-byte watchdog and stall accounting.
 func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude []byte) (out wire.Outcome, err error, fbTimeout bool, sawBytes bool) {
+	if a.m.c != nil {
+		// The first payload rides with the proxy request, past the meter: the
+		// path carries it all the same.
+		a.m.c.up.Add(int64(len(prelude)))
+	}
 	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type res struct {
