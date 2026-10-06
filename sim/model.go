@@ -24,6 +24,8 @@ type PathModel struct {
 	ResetAtBytes  int64 // after ResetOnsetMs, a flow past this many bytes is RST mid-stream
 	ResetOnsetMs  int64
 	BlackholeFrom int64 // from this time the path connects but delivers no first byte
+	WireDeadFrom  int64 // from this time the path never connects (its address blocked)...
+	WireDeadTo    int64 // ...until this time (0 = for good)
 }
 
 // Network models the local network: outages and the behavioural-freeze hypothesis.

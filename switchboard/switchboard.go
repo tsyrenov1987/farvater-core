@@ -5,10 +5,14 @@ package switchboard
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,8 +28,19 @@ const Version = "0.1.0-dev"
 // Config of a switchboard.
 type Config struct {
 	Listen string
-	Ctx    string // network context name the receipts are filed under
+	Ctx    string // network context the receipts are filed under at start; SetNetwork changes it
 	Brain  brain.Config
+
+	// MemoryFile, when set, keeps what the brain learned about each network
+	// between sessions (DESIGN §9): read by New, written every
+	// MemorySaveEvery, on a network change and by SaveMemory.
+	MemoryFile      string
+	MemorySaveEvery time.Duration
+
+	// WhiteProbes are allow-listed sites a restricted mobile network still
+	// lets through. When no path connects, they are dialled directly: an
+	// answer means the network is up and shuts the paths out. Empty: never.
+	WhiteProbes []string
 
 	// User and Pass, when set, make SOCKS5 clients authenticate (RFC 1929).
 	// The mobile apps set fresh random ones each session: every app on the
@@ -55,8 +70,16 @@ func DefaultConfig() Config {
 		StallMs:          4000,
 		PreludeCap:       64 * 1024,
 		ReceiptHistory:   200,
+		MemorySaveEvery:  2 * time.Minute,
+		WhiteProbes:      []string{"ya.ru", "vk.com", "gosuslugi.ru"},
 	}
 }
+
+// A restricted-network check runs at most this often and gives up after whiteProbeTimeout.
+const (
+	whiteProbeEveryMs = 60_000
+	whiteProbeTimeout = 4 * time.Second
+)
 
 // Switchboard serves SOCKS5 and keeps the brain fed.
 type Switchboard struct {
@@ -70,6 +93,14 @@ type Switchboard struct {
 	mu       sync.Mutex
 	b        *brain.Brain
 	receipts []brain.Receipt
+	savedAt  int64  // last periodic memory write
+	saveSeq  uint64 // memory snapshots taken
+	probing  bool   // a restricted-network check is out
+	probedAt int64
+	probe    func(ctx context.Context, hosts []string) bool
+
+	saveMu  sync.Mutex // one memory write at a time, never an older snapshot over a newer one
+	written uint64
 
 	started time.Time
 	flows   atomic.Int64
@@ -79,7 +110,7 @@ type Switchboard struct {
 
 // New builds wires for every supported path of the catalogue and a brain over them.
 func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
-	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, started: time.Now()}
+	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite}
 	var infos []brain.PathInfo
 	for _, e := range cat.Paths {
 		w, err := wire.Build(e.Spec)
@@ -87,7 +118,7 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 			s.Skipped = append(s.Skipped, e.ID+": "+err.Error())
 			continue
 		}
-		info := brain.PathInfo{ID: e.ID, SNI: e.Spec.ServerSNI(), IP: resolveIP(e.Spec.Host), Rail: e.Spec.Rail()}
+		info := brain.PathInfo{ID: e.ID, SNI: e.Spec.ServerSNI(), IP: resolveIP(e.Spec.Host), Rail: e.Spec.Rail(), White: e.Labels.White}
 		s.wires[e.ID] = w
 		s.infos[e.ID] = info
 		s.order = append(s.order, e.ID)
@@ -97,12 +128,140 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 		return nil, errors.New("switchboard: no usable paths")
 	}
 	s.b = brain.New(cfg.Brain, cfg.Ctx, infos, uint64(time.Now().UnixNano()))
-	for path, pr := range cat.Priors[cfg.Ctx] {
-		if _, ok := s.wires[path]; ok {
-			s.b.SetPrior(path, pr.A, pr.B, 1)
+	priors := map[string]map[string]brain.Prior{}
+	for ctx, ps := range cat.Priors {
+		priors[ctx] = map[string]brain.Prior{}
+		for path, pr := range ps {
+			priors[ctx][path] = brain.Prior{A: pr.A, B: pr.B}
 		}
 	}
+	s.b.UseMemory(s.loadMemory(), priors, nowMs())
 	return s, nil
+}
+
+// loadMemory reads Config.MemoryFile. A missing or unreadable file starts an
+// empty memory; no file configured, none at all.
+func (s *Switchboard) loadMemory() *brain.Memory {
+	if s.cfg.MemoryFile == "" {
+		return nil
+	}
+	m := brain.NewMemory()
+	if data, err := os.ReadFile(s.cfg.MemoryFile); err == nil {
+		if err := json.Unmarshal(data, m); err != nil || m.V != 1 {
+			s.logf("memory: unreadable (%v), starting empty", err)
+			m = brain.NewMemory()
+		}
+	}
+	if m.Ctx == nil {
+		m.Ctx = map[string]map[string]brain.PathMemory{}
+	}
+	m.Prune(nowMs())
+	return m
+}
+
+// snapshot serialises the brain's memory for writing; called under s.mu.
+func (s *Switchboard) snapshot(now int64) ([]byte, uint64) {
+	m := s.b.Remember(now)
+	if m == nil || s.cfg.MemoryFile == "" {
+		return nil, 0
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return nil, 0
+	}
+	s.saveSeq++
+	return data, s.saveSeq
+}
+
+func (s *Switchboard) writeMemory(data []byte, seq uint64) error {
+	if data == nil {
+		return nil
+	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	if seq <= s.written {
+		return nil
+	}
+	tmp := s.cfg.MemoryFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.cfg.MemoryFile); err != nil {
+		return err
+	}
+	s.written = seq
+	return nil
+}
+
+// SaveMemory writes what the brain learned to Config.MemoryFile now; the apps
+// call it when the tunnel stops. A no-op without a file.
+func (s *Switchboard) SaveMemory() error {
+	s.mu.Lock()
+	data, seq := s.snapshot(nowMs())
+	s.mu.Unlock()
+	return s.writeMemory(data, seq)
+}
+
+// SetNetwork tells the switchboard the device moved to another network
+// ("wifi:<gateway hash>", "cell", "wired"; DESIGN §9). The brain files new
+// evidence under it and resumes what it knows of it, with no restart: live
+// flows finish on their paths. The restricted variant of the same network is
+// kept.
+func (s *Switchboard) SetNetwork(ctx string) {
+	s.mu.Lock()
+	old := s.b.Ctx()
+	if ctx == "" || strings.TrimSuffix(old, brain.RestrictedSuffix) == ctx {
+		s.mu.Unlock()
+		return
+	}
+	now := nowMs()
+	s.b.SwitchContext(ctx, now)
+	leader := s.b.Leader()
+	data, seq := s.snapshot(now)
+	s.mu.Unlock()
+	s.logf("network %s → %s (leader %s)", old, ctx, leader)
+	_ = s.writeMemory(data, seq)
+}
+
+// checkRestricted runs when no path connects: if an allow-listed site answers
+// directly, the network is up and shuts the paths out, and the brain moves to
+// (or stays in) the network's restricted variant. A result that arrives after
+// the network changed is ignored.
+func (s *Switchboard) checkRestricted(ctxAtStart string) {
+	ctx, cancel := context.WithTimeout(context.Background(), whiteProbeTimeout)
+	defer cancel()
+	up := s.probe(ctx, s.cfg.WhiteProbes)
+	s.mu.Lock()
+	s.probing = false
+	same := s.b.Ctx() == ctxAtStart
+	if up && same {
+		s.b.EnterRestricted(nowMs())
+	}
+	ctxNow := s.b.Ctx()
+	s.mu.Unlock()
+	s.logf("no path connects; allow-listed sites answer: %v; network %s", up && same, ctxNow)
+}
+
+// probeWhite reports whether any of hosts completes a verified TLS handshake
+// on port 443, dialled directly rather than through a path.
+func probeWhite(ctx context.Context, hosts []string) bool {
+	res := make(chan bool, len(hosts))
+	for _, h := range hosts {
+		go func() {
+			d := tls.Dialer{Config: &tls.Config{ServerName: h}}
+			c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(h, "443"))
+			if err == nil {
+				c.Close()
+			}
+			res <- err == nil
+		}()
+	}
+	for range hosts {
+		if <-res {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveIP(host string) string {
@@ -268,12 +427,28 @@ func (s *Switchboard) acquire(path string) int64 {
 
 func (s *Switchboard) observe(r brain.Receipt) {
 	s.mu.Lock()
+	r.Ctx = s.b.Ctx()
 	s.b.Observe(r)
 	s.receipts = append(s.receipts, r)
 	if n := s.cfg.ReceiptHistory; n > 0 && len(s.receipts) > n {
 		s.receipts = s.receipts[len(s.receipts)-n:]
 	}
+	now := nowMs()
+	check := ""
+	if len(s.cfg.WhiteProbes) > 0 && !s.probing && now-s.probedAt >= whiteProbeEveryMs && s.b.Diag.NetDown(now) {
+		s.probing, s.probedAt, check = true, now, s.b.Ctx()
+	}
+	var data []byte
+	var seq uint64
+	if every := s.cfg.MemorySaveEvery.Milliseconds(); every > 0 && now-s.savedAt >= every {
+		s.savedAt = now
+		data, seq = s.snapshot(now)
+	}
 	s.mu.Unlock()
+	if check != "" {
+		go s.checkRestricted(check)
+	}
+	_ = s.writeMemory(data, seq)
 	s.logf("receipt %s %s wire=%dms fb=%dms down=%d up=%d dur=%dms stalls=%d dst=%s", r.Path, r.End, r.WireReadyMs, r.FirstByteMs, r.Down, r.Up, r.DurMs, r.Stalls, r.Dst)
 }
 
@@ -355,7 +530,7 @@ func (s *Switchboard) Status() Status {
 	now := nowMs()
 	st := Status{
 		Version: Version, UptimeSec: int64(time.Since(s.started).Seconds()),
-		Listen: s.cfg.Listen, Ctx: s.cfg.Ctx, Catalogue: s.cat.Title, Leader: s.b.Leader(),
+		Listen: s.cfg.Listen, Ctx: s.b.Ctx(), Catalogue: s.cat.Title, Leader: s.b.Leader(),
 		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), Dropped: s.b.Dropped,
 		Skipped: s.Skipped, Journal: len(s.b.J.Entries()),
 	}

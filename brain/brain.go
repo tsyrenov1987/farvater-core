@@ -2,11 +2,16 @@ package brain
 
 import (
 	"fmt"
+	"math"
 	"math/rand/v2"
 )
 
-// PathInfo identifies a path of the catalogue.
-type PathInfo struct{ ID, SNI, IP, Rail string }
+// PathInfo identifies a path of the catalogue. White: the catalogue says the
+// path enters through an allow-listed address.
+type PathInfo struct {
+	ID, SNI, IP, Rail string
+	White             bool
+}
 
 // Config holds the selection parameters. All numbers are initial hypotheses.
 type Config struct {
@@ -64,23 +69,26 @@ type Brain struct {
 	J           *Journal
 	rng         *rand.Rand
 	Dropped     int // receipts not counted (network down / quarantined destination)
+
+	saved      map[string]ctxState         // networks left this session
+	mem        *Memory                     // what earlier sessions learned (nil: none)
+	priors     map[string]map[string]Prior // the catalogue's, per network
+	switchedAt int64                       // last network change: flows begun before it are not evidence
+	silent     map[string]bool             // restricted network: paths silent when it was entered
+	back       map[string]bool             // ...and those of them that connected since
+	upAt       int64                       // an allow-listed site last answered directly
+	upSeen     bool
 }
 
 // New creates a brain for one network context.
 func New(cfg Config, ctx string, paths []PathInfo, seed uint64) *Brain {
 	b := &Brain{cfg: cfg, ctx: ctx, paths: paths, st: map[string]*PathState{}, lastPick: map[string]int64{},
-		Gov: NewGovernor(), Diag: NewDiagnoser(paths), Breaker: NewBreaker(cfg.Breaker), J: NewJournal(1000), rng: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))}
+		Gov: NewGovernor(), Diag: NewDiagnoser(paths), Breaker: NewBreaker(cfg.Breaker), J: NewJournal(1000), rng: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
+		saved: map[string]ctxState{}, switchedAt: math.MinInt64}
 	for _, p := range paths {
 		b.st[p.ID] = &PathState{}
 	}
 	return b
-}
-
-// SetPrior installs a weak delivery prior for a path (from memory or catalogue).
-func (b *Brain) SetPrior(path string, a, bb, weight float64) {
-	if s, ok := b.st[path]; ok {
-		s.SetDelivPrior(a, bb, weight)
-	}
 }
 
 // Leader is the current leading path.
@@ -289,8 +297,7 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 
 // Observe folds a receipt into the evidence, after differential diagnosis.
 func (b *Brain) Observe(r Receipt) {
-	s, ok := b.st[r.Path]
-	if !ok {
+	if _, ok := b.st[r.Path]; !ok {
 		return
 	}
 	now := r.AtMs
@@ -301,9 +308,19 @@ func (b *Brain) Observe(r Receipt) {
 		b.J.Add(now, "drop_sleep", "the device slept during the flow: not evidence against the path", r.Path)
 		return
 	}
+	if r.AtMs-r.DurMs < b.switchedAt {
+		// The flow began on the network the device has left.
+		b.Dropped++
+		b.J.Add(now, "drop_netchange", "the network changed during the flow: not evidence for either network", r.Path)
+		return
+	}
 	wireOK := r.WireReadyMs >= 0
+	if wireOK {
+		b.noteBack(r.Path, now) // may leave a restricted network: fetch the state after it
+	}
+	s := b.st[r.Path]
 	b.Diag.NoteWire(r.Path, wireOK, now)
-	if !wireOK && b.Diag.NetDown(now) {
+	if !wireOK && b.Diag.NetDown(now) && !b.networkUp(now) {
 		b.Dropped++
 		b.J.Add(now, "drop_netdown", "no path connects: not evidence against the path", r.Path)
 		return

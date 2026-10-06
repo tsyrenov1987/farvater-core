@@ -83,7 +83,7 @@ func (f *flow) newAttempt(path string, explore bool) *attempt {
 
 func (a *attempt) base(f *flow, now int64) brain.Receipt {
 	r := brain.Receipt{
-		Path: a.path, Ctx: f.s.cfg.Ctx, AtMs: now,
+		Path: a.path, AtMs: now,
 		WireReadyMs: -1, FirstByteMs: -1, DownAtFail: -1,
 		Dst: f.target.Host, DstClass: f.class, Explore: a.explore,
 		DurMs: now - a.startMs, SleptMs: sleptMs(a.start),

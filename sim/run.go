@@ -144,7 +144,7 @@ func (r *Runner) execute(pathID string, f Flow, startAt, fbTimeout int64) (rec b
 		rec.AtMs = startAt + rec.DurMs
 		return rec, false, waited
 	}
-	if r.net.IsDown(hsAt) || r.net.Handshake(p.SNI, hsAt) || r.rng.Float64() < p.WireFailProb {
+	if r.net.IsDown(hsAt) || r.net.Handshake(p.SNI, hsAt) || r.rng.Float64() < p.WireFailProb || p.WireDeadFrom > 0 && hsAt >= p.WireDeadFrom && (p.WireDeadTo == 0 || hsAt < p.WireDeadTo) {
 		return fail()
 	}
 	rec.WireReadyMs = waited + p.RTTMs

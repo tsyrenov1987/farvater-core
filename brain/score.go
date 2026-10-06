@@ -12,6 +12,7 @@ type PathState struct {
 	evFbA, evFbB       float64
 	priorDelivA        float64 // weak prior pseudo-counts (already weighted and capped)
 	priorDelivB        float64
+	priorFbA, priorFbB float64
 	GoodputBps         float64
 	Cut16              bool
 	failBytes          []int64
@@ -39,6 +40,18 @@ func (s *PathState) SetDelivPrior(a, b, weight float64) {
 		a, b = a*MaxPriorWeight/t, b*MaxPriorWeight/t
 	}
 	s.priorDelivA, s.priorDelivB = a, b
+}
+
+// SetFbPrior does the same for the first-byte posterior.
+func (s *PathState) SetFbPrior(a, b, weight float64) {
+	if a < 0 || b < 0 || weight <= 0 {
+		return
+	}
+	a, b = a*weight, b*weight
+	if t := a + b; t > MaxPriorWeight {
+		a, b = a*MaxPriorWeight/t, b*MaxPriorWeight/t
+	}
+	s.priorFbA, s.priorFbB = a, b
 }
 
 func (s *PathState) decay(now, halfLifeMs int64) {
@@ -137,7 +150,9 @@ func (s PathState) DelivPosterior() (a, b float64) {
 }
 
 // FbPosterior returns Beta(a, b) parameters for "the first byte arrives in time".
-func (s PathState) FbPosterior() (a, b float64) { return 1 + s.evFbA, 1 + s.evFbB }
+func (s PathState) FbPosterior() (a, b float64) {
+	return 1 + s.priorFbA + s.evFbA, 1 + s.priorFbB + s.evFbB
+}
 
 // DelivMean and FbMean are posterior means.
 func (s PathState) DelivMean() float64 { a, b := s.DelivPosterior(); return a / (a + b) }

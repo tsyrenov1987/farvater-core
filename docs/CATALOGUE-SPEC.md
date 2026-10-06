@@ -31,11 +31,11 @@ Media type: `application/farvater-catalogue+json`. A plain base64 subscription (
 | `paths[].uri` | standard share URI; the client supports `vless` (reality/xhttp/ws/tcp+tls), `hysteria2`; others ignored. A `vless` path must be encrypted: `security=none` or no `security` is refused |
 | `labels.rail` | informational: `reality`, `xhttp`, `ws`, `hy2`, … |
 | `labels.net` | `any` / `cell` / `wifi` — a hint about where the path is intended; never a restriction |
-| `labels.white` | the path goes through an allow-listed entry; the client avoids spending probes on it |
+| `labels.white` | the path goes through an allow-listed entry; the client avoids spending probes on it. In a restricted network (only allow-listed addresses pass) it starts ahead of unlabelled paths until the client has its own memory of that network |
 | `labels.budget_bytes` | remaining traffic budget on a metered path; shown to the user, nothing is sold |
 | `labels.udp` | the path can carry UDP |
 | `probe_urls` | large objects for the 256 KB volume check right after connect (HTTP Range is used) |
-| `priors` | optional weak priors per network context: Beta(a, b) per path id; capped so that 5 fresh receipts outweigh them |
+| `priors` | optional weak priors per network context (`wifi`, `cell`, `wired`; `cell:wl` for a restricted mobile network): Beta(a, b) per path id; capped so that 5 fresh receipts outweigh them. The client's own memory of a network takes precedence |
 | `feedback_url` | optional; if present AND the user opted in, the client POSTs aggregated receipts (no destinations) |
 | `refresh_sec` | how often to refresh the catalogue |
 

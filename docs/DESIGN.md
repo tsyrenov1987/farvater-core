@@ -148,6 +148,7 @@ measurement; none of them is a protocol constant.
 | Observation | Conclusion | Action |
 |---|---|---|
 | All paths without first byte, ≥2 flows | local network down | no receipts recorded; back-off |
+| No path connects, but allow-listed sites answer when dialled directly | restricted network (allow-list only) | its own context (§9); failures count again |
 | One destination fails on ≥2 paths, others fine | destination | path not punished; destination quarantined 5 min |
 | One path: `cut16` or stalls, others fine | path throttled | posterior falls; journal entry |
 | All paths of one SNI/IP stop for ~2 min after a handshake burst | behavioural freeze | governor tightens ×2 for 10 min; paths parked, not punished |
@@ -162,8 +163,23 @@ plus the staggered connect-stage retry. No race of all paths. Hysteria2 runs wit
 
 ## 9. Context memory and priors
 
-Context key: `wifi:<gateway-hash>` / `cell` / `wired`, cached per session, changed only after a 60 s debounce.
-Stored: posteriors, `cut16`, goodput, timestamps; TTL 7 days. Catalogue priors are weak and advisory.
+Context key: `wifi:<gateway-hash>` / `cell` / `wired`, reported by the app when the network changes and switched
+at once, with no tunnel restart: the network left keeps its state for the session, the one entered resumes its
+state or starts from memory. A flow that straddles the change is not evidence for either network (like a flow
+the device slept through), so the handover does not pollute either memory and flapping costs nothing.
+
+Stored per network: delivery and first-byte posteriors, `cut16`, goodput, time of the last evidence; TTL 7 days,
+at most 16 networks. Memory counts at half weight and is capped like any prior, so five fresh receipts outweigh
+it. A path without memory gets the catalogue's prior for the network, or for its kind (`wifi` for
+`wifi:<hash>`). Catalogue priors are weak and advisory.
+
+Restricted network (`<key>:wl`): a mobile network that lets only allow-listed addresses through. When no path
+connects, the switchboard dials a few allow-listed sites directly (verified TLS, at most once a minute). An answer
+means the network is up and shuts the paths out: the brain moves to the network's restricted variant, where the
+paths that delivered there before go first (the first time, those the catalogue labels `white`), and for two
+minutes after each answer a path that fails to connect is evidence against it, not a sign of a dead network.
+When two of the paths that were silent at entry connect again, the brain returns to the plain network. Only the
+order changes: every path stays in the fan.
 
 ## 10. Catalogue
 

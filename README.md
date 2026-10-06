@@ -31,6 +31,16 @@ Circuit-breaker scenarios (active interference switched on mid-run; farvater wit
 | leader silently black-holes — wasted primary attempts on the dead rail | 11 | 37 |
 | four of six rails die at once — wasted attempts on dead rails (first 2 min) | roughly halved | baseline |
 
+Network memory and restricted networks (a mobile network that lets only allow-listed addresses through: 7 of 8
+paths never connect; share of flows served on their first path in the first minute, mean of 20 workloads):
+
+| Scenario | now | before |
+|---|---|---|
+| restricted network, first encounter | 0.83 | 0.46 |
+| restricted network, met again (memory) | 0.95 | 0.46 |
+| whole fleet shut out for 3 min on a live network | back to the plain network after, no loss | — |
+| 14 simulator scenarios (those above among them) with the restricted-network check on | unchanged | — |
+
 The baseline is *required* to fail on the throttled scenarios — a test that passes on the old selection logic
 would prove nothing.
 
@@ -51,6 +61,9 @@ silently stops carrying after 16–20 KB. farvater-core inverts the hierarchy:
   runner-up path (Happy Eyeballs between paths). Inside a live connection: never.
 - **Handshake governor.** At most 2 new TLS handshakes per SNI per 400 ms, no start-up race of all paths.
 - **Differential diagnosis.** Path vs. local network vs. destination — a path is not punished for a dead site.
+- **Network memory.** What was learned on each network (a Wi-Fi by its gateway, mobile, a mobile network that
+  lets only allow-listed sites through) is kept for a week and resumed when the device returns to it, with no
+  tunnel restart.
 - **Explainable.** Every decision is journaled with its later outcome and shown to the user ("why this path").
 - **Provider-neutral.** Paths come from an open *catalogue* format ([docs/CATALOGUE-SPEC.md](docs/CATALOGUE-SPEC.md));
   the schema has no `only/skip/pin` directives — servers may send priors, never commands.

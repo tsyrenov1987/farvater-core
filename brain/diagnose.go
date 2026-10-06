@@ -103,3 +103,15 @@ func (d *Diagnoser) DstQuarantined(dst string, now int64) bool {
 	t, ok := d.dstQ[dst]
 	return ok && now < t
 }
+
+// WireFailed lists the paths whose wire failed at or after since and has not
+// connected since.
+func (d *Diagnoser) WireFailed(since int64) []string {
+	var out []string
+	for _, p := range d.paths {
+		if t, ok := d.lastWireFail[p.ID]; ok && t >= since && d.lastWireOK[p.ID] < t {
+			out = append(out, p.ID)
+		}
+	}
+	return out
+}

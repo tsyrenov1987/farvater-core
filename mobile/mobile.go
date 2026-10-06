@@ -42,6 +42,7 @@ var (
 	listen     string
 	user, pass string
 	probe      string
+	memoryFile string
 )
 
 // Version is the core version string.
@@ -78,10 +79,42 @@ func MemoryJSON() string {
 	})
 }
 
+// SetMemoryFile names the file where the core keeps what it learned about each
+// network between sessions; the apps call it before Start. Empty: nothing is
+// kept on disk.
+func SetMemoryFile(path string) {
+	mu.Lock()
+	defer mu.Unlock()
+	memoryFile = path
+}
+
+// contextName maps the apps' network names onto the core's network keys
+// (DESIGN §9): "wifi" or "wifi:<gateway hash>", "cell", "wired".
+func contextName(network string) string {
+	n := strings.ToLower(strings.TrimSpace(network))
+	switch n {
+	case "cellular", "mobile":
+		return "cell"
+	case "ethernet":
+		return "wired"
+	}
+	return n
+}
+
+// SetNetwork tells the running core the device moved to another network
+// (names as for Start), so it resumes what it knows of that network without
+// restarting the tunnel. A no-op when not running.
+func SetNetwork(networkCtx string) {
+	if s := current(); s != nil {
+		s.SetNetwork(contextName(networkCtx))
+	}
+}
+
 // Start loads the catalogue and starts the switchboard on 127.0.0.1:socksPort.
 // catalogueSrc is either an http(s) URL of a catalogue/subscription, or the
 // catalogue text itself (JSON, base64 subscription, or share links).
-// networkCtx names the network the receipts are filed under (e.g. "wifi").
+// networkCtx names the network the receipts are filed under: "wifi" or
+// "wifi:<gateway hash>", "cell" (or "cellular"), "wired" (or "ethernet").
 // It returns once the SOCKS5 port is listening; the port accepts only the
 // credentials SocksUser and SocksPass report, fresh for each Start.
 func Start(catalogueSrc string, socksPort int, networkCtx string) error {
@@ -98,9 +131,10 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 	listen = net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort))
 	cfg.Listen = listen
 	cfg.User, cfg.Pass = rand.Text(), rand.Text()
-	if networkCtx != "" {
-		cfg.Ctx = networkCtx
+	if n := contextName(networkCtx); n != "" {
+		cfg.Ctx = n
 	}
+	cfg.MemoryFile = memoryFile
 	s, err := switchboard.New(cfg, cat)
 	if err != nil {
 		return err
@@ -130,10 +164,14 @@ func loadCatalogue(src string) (*catalogue.Catalogue, error) {
 	return catalogue.Parse([]byte(src))
 }
 
-// Stop shuts the switchboard down. It is safe to call when not running.
+// Stop writes what the core learned to the memory file and shuts the
+// switchboard down. It is safe to call when not running.
 func Stop() {
 	mu.Lock()
 	defer mu.Unlock()
+	if sb != nil {
+		_ = sb.SaveMemory()
+	}
 	if cancel != nil {
 		cancel()
 	}
