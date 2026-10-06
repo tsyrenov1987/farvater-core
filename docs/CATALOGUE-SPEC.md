@@ -1,7 +1,7 @@
 # Farvater path catalogue — specification v1 (draft, 05 Oct 2026)
 
-Media type: `application/farvater-catalogue+json`. A plain base64 subscription (list of `vless://`,
-`hysteria2://`, `ss://` URIs) is also accepted; labels are then derived from the URIs.
+Media type: `application/farvater-catalogue+json`. A plain base64 subscription (list of `vless://`, `trojan://`,
+`vmess://`, `hysteria2://` URIs) is also accepted; labels are then derived from the URIs.
 
 ```json
 {
@@ -28,12 +28,12 @@ Media type: `application/farvater-catalogue+json`. A plain base64 subscription (
 | `title` | shown to the user |
 | `fingerprint` | opaque hash of the path set; a change means "fleet changed" — the client refreshes seamlessly (new catalogue applies to new connections; live connections finish on their old transports) |
 | `paths[].id` | stable identifier; evidence and priors are keyed by it |
-| `paths[].uri` | standard share URI; the client supports `vless` (reality/xhttp/ws/tcp+tls), `hysteria2`; others ignored. A `vless` path must be encrypted: `security=none` or no `security` is refused |
+| `paths[].uri` | standard share URI; the client supports `vless`, `trojan` and `vmess` (each over reality, xhttp, ws, grpc or tcp+tls; `vmess` also as v2rayN's base64 JSON) and `hysteria2`; others ignored. Every path must look like HTTPS: `security=none`, or a `vless`/`vmess` path with no `security`, is refused (`trojan` means TLS when it names none), as is a TCP header disguise. Shadowsocks is not supported |
 | `labels.rail` | informational: `reality`, `xhttp`, `ws`, `hy2`, … |
 | `labels.net` | `any` / `cell` / `wifi` — a hint about where the path is intended; never a restriction |
 | `labels.white` | the path goes through an allow-listed entry; the client avoids spending probes on it. In a restricted network (only allow-listed addresses pass) it starts ahead of unlabelled paths until the client has its own memory of that network |
 | `labels.budget_bytes` | remaining traffic budget on a metered path; shown to the user, nothing is sold |
-| `labels.udp` | informational: the path is meant to carry UDP. The client tries UDP on every `vless` and `hysteria2` path and moves one that refuses it to the back |
+| `labels.udp` | informational: the path is meant to carry UDP. The client tries UDP on every path and moves one that refuses it to the back |
 | `probe_urls` | large objects for the 256 KB volume check right after connect (HTTP Range is used) |
 | `priors` | optional weak priors per network context (`wifi`, `cell`, `wired`; `cell:wl` for a restricted mobile network): Beta(a, b) per path id; capped so that 5 fresh receipts outweigh them. The client's own memory of a network takes precedence |
 | `feedback_url` | optional; if present AND the user opted in, the client POSTs aggregated receipts (no destinations) |

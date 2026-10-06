@@ -42,7 +42,7 @@ replaces it.
  │          Memory (per network context, TTL) + Priors (from catalogue)         │
  │          Journal (decision -> outcome)                                       │
  │                                           ▼                                  │
- │   WIRES (dumb): VLESS+Reality(+Vision) · VLESS+XHTTP · VLESS+WS · Hysteria2  │
+ │   WIRES (dumb): VLESS · Trojan · VMess over Reality/TLS/WS/XHTTP/gRPC · Hy2  │
  └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -87,8 +87,8 @@ quarter weight; priors never outweigh 5 fresh receipts.
 - **UDP:** an association (one per app socket and destination) rides the leader, then the other paths in the
   brain's order (a path that looks like no HTTP only as the first try, see §6); a path that cannot carry UDP is
   passed over, and one that ends an association at once with no answer goes to the back of that order for
-  10 minutes (reordered, never removed). VLESS carries UDP as XUDP — the framing Vision requires, naming each
-  datagram's address — and Hysteria 2 in its QUIC datagrams. UDP gives no delivery evidence and files no
+  10 minutes (reordered, never removed). VLESS and VMess carry UDP as XUDP — the framing Vision requires, naming
+  each datagram's address — Trojan in its own address-framed packets, and Hysteria 2 in its QUIC datagrams. UDP gives no delivery evidence and files no
   receipts. UDP/443 (QUIC) is refused, so browsers and apps fall back to TCP, where delivery is measured.
 - **Idle:** one 256 KB volume probe (HTTP Range to `probe_urls`) on the leader right after connect; status is
   "connecting" until it passes. Exploration probes ≤1 per 10 min per path, never on metered paths, never in bursts.
@@ -196,7 +196,8 @@ See `CATALOGUE-SPEC.md`. The schema has no `only/skip/pin` directives by design.
 
 ## 11. Engine and licensing
 
-Own Go module. Wires from Xray-core packages (MPL-2.0: Reality dialer, VLESS encoding, XHTTP, WebSocket),
+Own Go module. Wires from Xray-core packages (MPL-2.0: Reality dialer, VLESS, Trojan and VMess encoding, XHTTP,
+WebSocket, gRPC),
 Hysteria `core/v2` (MIT), tun2socks via hev-socks5-tunnel (MIT), uTLS (BSD-3). No GPL/AGPL code is linked;
 CI fails if any `sagernet/*` module appears in `go list -deps`. Built with `gomobile` into an xcframework / aar,
 `-trimpath -ldflags="-s -w"`.

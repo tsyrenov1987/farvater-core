@@ -96,6 +96,10 @@ func Build(spec PathSpec) (Wire, error) {
 	switch spec.Kind {
 	case KindVLESS:
 		return newVLESS(spec)
+	case KindTrojan:
+		return newTrojan(spec)
+	case KindVMess:
+		return newVMess(spec)
 	case KindHysteria2:
 		return newHysteria(spec)
 	}

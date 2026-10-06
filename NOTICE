@@ -21,8 +21,9 @@ by the Go module system at their pinned versions (see go.sum) and linked into
 the binary. Each remains under its own license.
 
 Transports and TLS:
-  github.com/xtls/xray-core              MPL-2.0   VLESS, Vision, REALITY/TLS,
-                                                    WebSocket, XHTTP and gRPC transport
+  github.com/xtls/xray-core              MPL-2.0   VLESS, Vision, Trojan, VMess,
+                                                    REALITY/TLS, WebSocket, XHTTP and gRPC
+                                                    transport
   github.com/xtls/reality                MPL-2.0   REALITY handshake
   github.com/refraction-networking/utls  BSD-3     TLS ClientHello fingerprints
   github.com/apernet/hysteria/core/v2    MIT       Hysteria 2 client

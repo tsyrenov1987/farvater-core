@@ -286,19 +286,5 @@ func (s *vlessPacketSession) ReadPacket() ([]byte, Target, error) {
 			s.r = xudp.NewPacketReader(s.conn)
 		}
 	}
-	for len(s.pend) == 0 {
-		mb, err := s.r.ReadMultiBuffer()
-		s.pend = append(s.pend, mb...)
-		if err != nil && len(s.pend) == 0 {
-			return nil, Target{}, err
-		}
-	}
-	b := s.pend[0]
-	s.pend = s.pend[1:]
-	defer b.Release()
-	var from Target
-	if b.UDP != nil {
-		from = Target{Host: b.UDP.Address.String(), Port: int(b.UDP.Port)}
-	}
-	return append([]byte(nil), b.Bytes()...), from, nil
+	return nextPacket(s.r, &s.pend)
 }

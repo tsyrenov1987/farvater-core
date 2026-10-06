@@ -88,3 +88,23 @@ func settle(ctx context.Context, upErr, downErr <-chan error, cancel func(), tim
 		}
 	}
 }
+
+// nextPacket returns the next datagram r yields and the address it came from,
+// keeping the rest of what one read brought in pend.
+func nextPacket(r buf.Reader, pend *buf.MultiBuffer) ([]byte, Target, error) {
+	for len(*pend) == 0 {
+		mb, err := r.ReadMultiBuffer()
+		*pend = append(*pend, mb...)
+		if err != nil && len(*pend) == 0 {
+			return nil, Target{}, err
+		}
+	}
+	b := (*pend)[0]
+	*pend = (*pend)[1:]
+	defer b.Release()
+	var from Target
+	if b.UDP != nil {
+		from = Target{Host: b.UDP.Address.String(), Port: int(b.UDP.Port)}
+	}
+	return append([]byte(nil), b.Bytes()...), from, nil
+}

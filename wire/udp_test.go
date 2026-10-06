@@ -27,8 +27,12 @@ import (
 	feature_inbound "github.com/xtls/xray-core/features/inbound"
 	feature_outbound "github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/routing"
+	"github.com/xtls/xray-core/proxy"
+	"github.com/xtls/xray-core/proxy/trojan"
 	"github.com/xtls/xray-core/proxy/vless"
 	vlessin "github.com/xtls/xray-core/proxy/vless/inbound"
+	"github.com/xtls/xray-core/proxy/vmess"
+	vmessin "github.com/xtls/xray-core/proxy/vmess/inbound"
 	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	xtls "github.com/xtls/xray-core/transport/internet/tls"
@@ -82,7 +86,7 @@ func udpEcho(t *testing.T) *net.UDPAddr {
 }
 
 // testDispatcher stands in for Xray's routing on the server side: Mux.Cool
-// goes to Xray's own mux server worker, where XUDP lives, and each UDP
+// goes to Xray's own mux server worker, where XUDP lives, and each UDP or TCP
 // destination gets a direct socket, as the freedom outbound would.
 type testDispatcher struct{}
 
@@ -105,16 +109,45 @@ func (d testDispatcher) DispatchLink(ctx context.Context, dest xnet.Destination,
 	return nil
 }
 
-func (testDispatcher) Dispatch(ctx context.Context, dest xnet.Destination) (*transport.Link, error) {
-	if dest.Network != xnet.Network_UDP {
-		return nil, fmt.Errorf("unexpected destination %v", dest)
-	}
-	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		return nil, err
-	}
+func (d testDispatcher) Dispatch(ctx context.Context, dest xnet.Destination) (*transport.Link, error) {
 	upR, upW := pipe.New()
 	downR, downW := pipe.New()
+	switch {
+	case dest.Address.String() == "v1.mux.cool": // inbounds that dispatch rather than link (VMess)
+		if _, err := mux.NewServerWorker(ctx, d, &transport.Link{Reader: upR, Writer: downW}); err != nil {
+			return nil, err
+		}
+	case dest.Network == xnet.Network_TCP:
+		c, err := net.Dial("tcp", dest.NetAddr())
+		if err != nil {
+			return nil, err
+		}
+		go func() {
+			_ = buf.Copy(upR, buf.NewWriter(c))
+			_ = c.(*net.TCPConn).CloseWrite()
+		}()
+		go func() {
+			_ = buf.Copy(buf.NewReader(c), downW)
+			downW.Close()
+			c.Close()
+		}()
+	case dest.Network == xnet.Network_UDP:
+		if err := udpRelay(dest, upR, downW); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unexpected destination %v", dest)
+	}
+	return &transport.Link{Reader: downR, Writer: upW}, nil
+}
+
+// udpRelay sends what comes up to each datagram's address from a socket of
+// its own and writes the answers down, marked with where they came from.
+func udpRelay(dest xnet.Destination, upR *pipe.Reader, downW *pipe.Writer) error {
+	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		return err
+	}
 	go func() {
 		defer c.Close()
 		for {
@@ -149,7 +182,7 @@ func (testDispatcher) Dispatch(ctx context.Context, dest xnet.Destination) (*tra
 			}
 		}
 	}()
-	return &transport.Link{Reader: downR, Writer: upW}, nil
+	return nil
 }
 
 // The VLESS inbound only stores these managers.
@@ -159,10 +192,10 @@ type testOutbounds struct{ feature_outbound.Manager }
 func (testInbounds) Type() interface{}  { return feature_inbound.ManagerType() }
 func (testOutbounds) Type() interface{} { return feature_outbound.ManagerType() }
 
-// xrayVLESS serves Xray's own VLESS inbound over TLS with the given flow. The
-// whole Xray server cannot be linked here: its outbound manager imports sing,
-// which this repository does not link (NOTICE).
-func xrayVLESS(t *testing.T, flow string) int {
+// xrayInbound serves Xray's own inbound for cfg over TLS, as farvater.test.
+// The whole Xray server cannot be linked here: its outbound manager imports
+// sing, which this repository does not link (NOTICE).
+func xrayInbound(t *testing.T, cfg interface{}) int {
 	t.Helper()
 	inst, err := core.New(&core.Config{})
 	if err != nil {
@@ -173,14 +206,11 @@ func xrayVLESS(t *testing.T, flow string) int {
 			t.Fatal(err)
 		}
 	}
-	h, err := core.CreateObject(inst, &vlessin.Config{
-		Clients:    []*protocol.User{{Email: "t", Account: xserial.ToTypedMessage(&vless.Account{Id: testUUID, Flow: flow})}},
-		Decryption: "none",
-	})
+	h, err := core.CreateObject(inst, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := h.(*vlessin.Handler)
+	handler := h.(proxy.Inbound)
 	certPEM, keyPEM := selfSigned(t)
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
@@ -206,6 +236,27 @@ func xrayVLESS(t *testing.T, flow string) int {
 		}
 	}()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// xrayVLESS serves VLESS with the given flow.
+func xrayVLESS(t *testing.T, flow string) int {
+	t.Helper()
+	return xrayInbound(t, &vlessin.Config{
+		Clients:    []*protocol.User{{Email: "t", Account: xserial.ToTypedMessage(&vless.Account{Id: testUUID, Flow: flow})}},
+		Decryption: "none",
+	})
+}
+
+// xrayTrojan serves Trojan for the password "pw".
+func xrayTrojan(t *testing.T) int {
+	t.Helper()
+	return xrayInbound(t, &trojan.ServerConfig{Users: []*protocol.User{{Email: "t", Account: xserial.ToTypedMessage(&trojan.Account{Password: "pw"})}}})
+}
+
+// xrayVMess serves VMess.
+func xrayVMess(t *testing.T) int {
+	t.Helper()
+	return xrayInbound(t, &vmessin.Config{User: []*protocol.User{{Email: "t", Account: xserial.ToTypedMessage(&vmess.Account{Id: testUUID})}}})
 }
 
 type hyAuth struct{}
@@ -299,4 +350,12 @@ func TestVLESSUDPWithVision(t *testing.T) {
 func TestHysteria2UDP(t *testing.T) {
 	port := hysteriaServer(t)
 	roundTrips(t, fmt.Sprintf("hysteria2://pw@127.0.0.1:%d/?sni=farvater.test&insecure=1#t", port))
+}
+
+func TestTrojanUDP(t *testing.T) {
+	roundTrips(t, fmt.Sprintf("trojan://pw@127.0.0.1:%d?sni=farvater.test&allowInsecure=1#t", xrayTrojan(t)))
+}
+
+func TestVMessUDPOverXUDP(t *testing.T) {
+	roundTrips(t, fmt.Sprintf("vmess://%s@127.0.0.1:%d?security=tls&sni=farvater.test&allowInsecure=1&type=tcp#t", testUUID, xrayVMess(t)))
 }

@@ -1,6 +1,9 @@
 package wire
 
-import "testing"
+import (
+	"encoding/base64"
+	"testing"
+)
 
 func TestParseVLESSReality(t *testing.T) {
 	s, err := ParseURI("vless://11111111-2222-3333-4444-555555555555@203.0.113.10:33443?security=reality&encryption=none&pbk=cV6nKp-RGtPLOht6cg1Up0Tos0qaw8nITDsJCxOKvQk&fp=firefox&sni=www.example.com&sid=0123abcd&spx=%2F&flow=xtls-rprx-vision&type=tcp#p-reality-1")
@@ -96,6 +99,61 @@ func TestHTTPLike(t *testing.T) {
 		}
 		if got := s.HTTPLike(); got != want {
 			t.Errorf("%s: HTTPLike = %v, want %v", s.ID, got, want)
+		}
+	}
+}
+
+func TestParseTrojan(t *testing.T) {
+	// The password is the whole userinfo; with no security given, Trojan is TLS.
+	s, err := ParseURI("trojan://p%40ss@203.0.113.13:443?peer=www.example.com&type=ws&path=%2Ft&host=cdn.example.net#tr")
+	if err != nil || s.Kind != KindTrojan || s.Password != "p@ss" || s.Security != "tls" || s.SNI != "www.example.com" ||
+		s.Network != "ws" || s.Path != "/t" || s.HostHeader != "cdn.example.net" || s.Rail() != "ws" || s.ID != "tr" {
+		t.Fatalf("trojan ws: %v %+v", err, s)
+	}
+	r, err := ParseURI("trojan://pw@203.0.113.13:443?security=reality&pbk=cV6nKp-RGtPLOht6cg1Up0Tos0qaw8nITDsJCxOKvQk&fp=firefox&sni=www.example.com&sid=0123#r")
+	if err != nil || r.Security != "reality" || r.Rail() != "reality" {
+		t.Fatalf("trojan reality: %v %+v", err, r)
+	}
+	if _, err := Build(r); err != nil {
+		t.Fatalf("trojan wire must build: %v", err)
+	}
+}
+
+func TestParseVMess(t *testing.T) {
+	// v2rayN's form: gRPC keeps the service name in path, the authority in host
+	// and the mode in type; the port may be a number.
+	js := base64.StdEncoding.EncodeToString([]byte(`{"v":"2","ps":"vm 1","add":"203.0.113.14","port":443,"id":"11111111-2222-3333-4444-555555555555","aid":"0","scy":"chacha20-poly1305","net":"grpc","type":"multi","host":"auth.example.com","path":"svc","tls":"tls","sni":"www.example.com"}`))
+	s, err := ParseURI("vmess://" + js)
+	if err != nil || s.Kind != KindVMess || s.ID != "vm 1" || s.Host != "203.0.113.14" || s.Port != 443 ||
+		s.UUID != "11111111-2222-3333-4444-555555555555" || s.Cipher != "chacha20-poly1305" || s.Network != "grpc" ||
+		s.ServiceName != "svc" || s.Authority != "auth.example.com" || s.Mode != "multi" || s.Security != "tls" || s.SNI != "www.example.com" {
+		t.Fatalf("vmess json: %v %+v", err, s)
+	}
+	if _, err := Build(s); err != nil {
+		t.Fatalf("vmess wire must build: %v", err)
+	}
+	if n, err := ParseURI("vmess://" + js + "#renamed"); err != nil || n.ID != "renamed" {
+		t.Fatalf("vmess json with a name: %v %+v", err, n)
+	}
+	u, err := ParseURI("vmess://11111111-2222-3333-4444-555555555555@203.0.113.14:8443?security=tls&type=ws&path=%2Fv&sni=www.example.com#u")
+	if err != nil || u.Kind != KindVMess || u.Cipher != "auto" || u.Network != "ws" || u.Rail() != "ws" || u.ID != "u" {
+		t.Fatalf("vmess url: %v %+v", err, u)
+	}
+}
+
+// Every path looks like HTTPS: no Trojan in the clear, no VMess without TLS or
+// REALITY, and no TCP header disguise, which this core cannot speak.
+func TestTrojanAndVMessMustLookLikeHTTPS(t *testing.T) {
+	bare := base64.StdEncoding.EncodeToString([]byte(`{"add":"203.0.113.14","port":"80","id":"11111111-2222-3333-4444-555555555555","net":"ws","path":"/v"}`))
+	header := base64.StdEncoding.EncodeToString([]byte(`{"add":"203.0.113.14","port":"443","id":"11111111-2222-3333-4444-555555555555","net":"tcp","type":"http","tls":"tls"}`))
+	for _, raw := range []string{
+		"trojan://pw@203.0.113.13:80?security=none&type=ws#bare",
+		"vmess://11111111-2222-3333-4444-555555555555@203.0.113.14:80?type=ws#bare",
+		"vmess://" + bare,
+		"vmess://" + header,
+	} {
+		if s, err := ParseURI(raw); err == nil {
+			t.Fatalf("accepted %+v", s)
 		}
 	}
 }

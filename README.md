@@ -3,8 +3,8 @@
 **Path selection by proven delivery, not by ping.** The routing core of Farvater VPN.
 
 Status (05 Oct 2026): **Phases 0–1 done** — the decision core (`brain`) with an anti-interference circuit breaker,
-a deterministic simulator (`sim`), real transports (`wire`: VLESS+Vision over Reality/TLS/WebSocket/XHTTP/gRPC, and
-Hysteria 2 with Salamander), a SOCKS5 switchboard (`switchboard`) that turns live flows into receipts, and a reference CLI
+a deterministic simulator (`sim`), real transports (`wire`: VLESS+Vision, Trojan and VMess over Reality/TLS/WebSocket/
+XHTTP/gRPC, and Hysteria 2 with Salamander), a SOCKS5 switchboard (`switchboard`) that turns live flows into receipts, and a reference CLI
 (`cmd/farvater`). Full design: [docs/DESIGN.md](docs/DESIGN.md).
 
 ```
@@ -52,7 +52,7 @@ silently stops carrying after 16–20 KB. farvater-core inverts the hierarchy:
 
 - **Receipts, not probes.** The unit of evidence is a *delivery receipt* of a real user connection:
   time to first byte, bytes delivered, longest gap, how it ended, bytes at failure.
-- **The brain owns the choice; transports are dumb.** Transports (VLESS+Reality, XHTTP, WebSocket, Hysteria2)
+- **The brain owns the choice; transports are dumb.** Transports (VLESS+Reality, XHTTP, WebSocket, Trojan, VMess, Hysteria2)
   contain no selection logic, groups or fallbacks.
 - **Bayesian selection.** Per (path, network context): Beta posterior of "a ≥16 KB connection completed
   without a stall" with exponential forgetting, Thompson sampling, hysteresis for the leader, and a small

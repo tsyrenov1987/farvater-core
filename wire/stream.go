@@ -1,13 +1,17 @@
 package wire
 
 import (
+	"context"
 	"fmt"
 
+	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
+	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/transport/internet"
 	xgrpc "github.com/xtls/xray-core/transport/internet/grpc"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/splithttp"
+	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tcp"
 	"github.com/xtls/xray-core/transport/internet/tls"
 	"github.com/xtls/xray-core/transport/internet/websocket"
@@ -68,4 +72,10 @@ func buildStream(s PathSpec) (*internet.MemoryStreamConfig, error) {
 		return nil, fmt.Errorf("security %q is not supported", s.Security)
 	}
 	return internet.ToMemoryStreamConfig(sc)
+}
+
+// dialStream establishes the outer transport of a Trojan or VMess path (TCP +
+// TLS/REALITY, the WebSocket upgrade, the gRPC stream or the XHTTP session).
+func dialStream(ctx context.Context, name string, dest xnet.Destination, mss *internet.MemoryStreamConfig) (stat.Connection, error) {
+	return internet.Dial(session.ContextWithOutbounds(ctx, []*session.Outbound{{Name: name}}), dest, mss)
 }
