@@ -132,6 +132,18 @@ func (b *Brain) Wake(path string, now int64) {
 // Asleep reports whether a path is out of the fan (see Sleep).
 func (b *Brain) Asleep(path string) bool { return b.asleep[path] }
 
+// NetDown suspects the local network: ≥2 distinct paths failed at the wire
+// inside the diagnoser's window and nothing connected there. Sleeping paths
+// cannot fail, so with fewer than two awake every awake one failing is
+// enough; otherwise a sleeping path would never be wanted (see Switchboard.Hosted).
+func (b *Brain) NetDown(now int64) bool {
+	need := 2
+	if len(b.asleep) > 0 {
+		need = max(1, min(2, len(b.paths)-len(b.asleep)))
+	}
+	return b.Diag.NetDown(now, need)
+}
+
 func (b *Brain) available(now int64) []string {
 	out := make([]string, 0, len(b.paths))
 	for _, p := range b.paths {
@@ -387,7 +399,7 @@ func (b *Brain) Observe(r Receipt) {
 	}
 	s := b.st[r.Path]
 	b.Diag.NoteWire(r.Path, wireOK, now)
-	if !wireOK && b.Diag.NetDown(now) && !b.networkUp(now) {
+	if !wireOK && b.NetDown(now) && !b.networkUp(now) {
 		b.Dropped++
 		b.J.Add(now, "drop_netdown", "no path connects: not evidence against the path", r.Path)
 		return

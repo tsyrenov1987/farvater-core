@@ -53,9 +53,9 @@ func (d *Diagnoser) sniOf(path string) string {
 	return ""
 }
 
-// NetDown suspects the local network when ≥2 distinct paths failed at the wire
-// inside the window and nothing connected in that window.
-func (d *Diagnoser) NetDown(now int64) bool {
+// NetDown suspects the local network when need distinct paths failed at the
+// wire inside the window and nothing connected in that window (see Brain.NetDown).
+func (d *Diagnoser) NetDown(now int64, need int) bool {
 	for _, t := range d.lastWireOK {
 		if now-t <= d.NetWindowMs {
 			return false
@@ -67,7 +67,7 @@ func (d *Diagnoser) NetDown(now int64) bool {
 			fails++
 		}
 	}
-	return fails >= 2
+	return fails >= need
 }
 
 // Parked reports whether a path is parked after a freeze suspicion.

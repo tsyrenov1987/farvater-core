@@ -101,6 +101,19 @@ func TestHostedWantedOnNeed(t *testing.T) {
 	}
 }
 
+// With the only awake path shut out and allow-listed sites answering, the
+// network reads as restricted and the sleeping call is wanted: one silent
+// path is enough when the rest of the fan sleeps.
+func TestHostedWantedWhenTheAwakePathIsShutOut(t *testing.T) {
+	s := hostedBoard(t, runOlc, deadLink, olcLink)
+	s.probe = func(context.Context, []string) bool { return true }
+	s.observe(wireFailed("a"))
+	waitCtx(t, s, "default:wl")
+	if !s.Hosted()[0].Want {
+		t.Fatal("restricted, yet the call is not wanted")
+	}
+}
+
 // fixedDoor is the app's door stand-in: any CONNECT goes to the echo at to.
 func fixedDoor(t *testing.T, to string) string {
 	t.Helper()

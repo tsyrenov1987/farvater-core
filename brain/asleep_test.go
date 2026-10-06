@@ -61,3 +61,31 @@ func TestAsleepLeaderAndNoneAwake(t *testing.T) {
 		t.Fatalf("everything asleep, UDP order %v", o)
 	}
 }
+
+// Sleeping paths cannot fail, so they do not count towards "the network is
+// down": with the rest asleep one awake path failing is enough, where two
+// awake paths still need two failures. A context switch keeps the count.
+func TestNetDownCountsOnlyAwakePaths(t *testing.T) {
+	paths := []PathInfo{{ID: "A", SNI: "a", IP: "1", Rail: "reality"}, {ID: "B", SNI: "b", IP: "2", Rail: "xhttp"}, {ID: "O", Rail: "olcrtc", NotHTTP: true}}
+	b := New(DefaultConfig(), "t", paths, 1)
+	b.Observe(wirefail("A", 1000))
+	if b.NetDown(1000) {
+		t.Fatal("two awake paths, one failed: not the network yet")
+	}
+	b.Sleep("B", 1100)
+	b.Sleep("O", 1100)
+	b.SwitchContext("u", 1200)
+	b.Observe(wirefail("A", 1300))
+	if !b.NetDown(1300) {
+		t.Fatal("the only awake path failed: the network is suspect")
+	}
+	b.Wake("B", 1400)
+	if b.NetDown(1400) {
+		t.Fatal("B awake again: one failure is not enough")
+	}
+	b.Sleep("A", 1500)
+	b.Sleep("B", 1500)
+	if b.NetDown(60_000) {
+		t.Fatal("nothing awake and nothing failed: no verdict on the network")
+	}
+}

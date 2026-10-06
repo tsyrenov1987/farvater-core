@@ -229,9 +229,10 @@ CI fails if any `sagernet/*` module appears in `go list -deps`. Built with `gomo
   the door and judges the path like any other; it looks like no HTTP, so it is never a backup (§6). A call sits in a
   room other people share and costs traffic even idle, so the core asks for it only on need — while the network is
   restricted, while the path leads, or when the catalogue has nothing else — and for ten minutes after. The rest of
-  the time the path sleeps: it is neither picked nor tried, its silence is no evidence, and once its door is up
-  again the exploration floor gives it a flow at once. The iOS app runs no call (the extension's memory budget), so
-  there such paths are skipped. Calls carry TCP only.
+  the time the path sleeps: it is neither picked nor tried, its silence is no evidence (with fewer than two paths
+  awake, every awake one failing reads as "no path connects"), and once its door is up again the exploration floor
+  gives it a flow at once. The iOS app runs no call (the extension's memory budget), so there such paths are
+  skipped. Calls carry TCP only.
 
 ## 13. Verification
 

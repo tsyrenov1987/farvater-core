@@ -156,7 +156,7 @@ func TestRestrictedNetwork(t *testing.T) {
 	}
 	b.Observe(wirefail("A", now))
 	b.Observe(wirefail("B", now+1000))
-	if !b.Diag.NetDown(now + 1000) {
+	if !b.NetDown(now + 1000) {
 		t.Fatal("setup: two silent paths should read as the network down")
 	}
 	b.EnterRestricted(now + 2000)

@@ -472,7 +472,7 @@ func (s *Switchboard) observe(r brain.Receipt) {
 	}
 	now := nowMs()
 	check := ""
-	if len(s.cfg.WhiteProbes) > 0 && !s.probing && now-s.probedAt >= whiteProbeEveryMs && s.b.Diag.NetDown(now) {
+	if len(s.cfg.WhiteProbes) > 0 && !s.probing && now-s.probedAt >= whiteProbeEveryMs && s.b.NetDown(now) {
 		s.probing, s.probedAt, check = true, now, s.b.Ctx()
 	}
 	var data []byte

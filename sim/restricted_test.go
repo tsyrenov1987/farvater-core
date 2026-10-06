@@ -20,7 +20,7 @@ type checkingPolicy struct {
 
 func (p *checkingPolicy) Observe(r brain.Receipt) {
 	p.B.Observe(r)
-	if !p.B.Diag.NetDown(r.AtMs) || p.probed && r.AtMs-p.probedAt < 60_000 {
+	if !p.B.NetDown(r.AtMs) || p.probed && r.AtMs-p.probedAt < 60_000 {
 		return
 	}
 	p.probed, p.probedAt = true, r.AtMs
