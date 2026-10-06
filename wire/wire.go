@@ -74,6 +74,23 @@ type Wire interface {
 	Close() error
 }
 
+// PacketSession carries the UDP datagrams of one app socket over a path.
+type PacketSession interface {
+	// WritePacket sends one datagram to target. One writer at a time.
+	WritePacket(p []byte, target Target) error
+	// ReadPacket returns the next datagram and the address it came from (a
+	// zero Target when the path does not say). One reader at a time; it
+	// fails once the session is closed or the path drops it.
+	ReadPacket() ([]byte, Target, error)
+	Close() error
+}
+
+// PacketWire is a wire that can also carry UDP.
+type PacketWire interface {
+	// DialPacket opens a UDP association over the path.
+	DialPacket(ctx context.Context) (PacketSession, error)
+}
+
 // Build makes a wire for a parsed path.
 func Build(spec PathSpec) (Wire, error) {
 	switch spec.Kind {

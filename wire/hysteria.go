@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -209,6 +210,57 @@ func (s *hySession) Run(ctx context.Context, target Target, prelude []byte, up <
 	idle := time.AfterFunc(IdleTimeout, cancel)
 	defer idle.Stop()
 	return settle(ctx, upErr, downErr, cancel, nil, func() { idle.Reset(2 * time.Second) })
+}
+
+// DialPacket opens a UDP session inside the path's QUIC connection, making
+// the connection first when there is none.
+func (w *hyWire) DialPacket(ctx context.Context) (PacketSession, error) {
+	sess, err := w.Dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cl := sess.(*hySession).cl
+	u, err := cl.UDP()
+	if err != nil {
+		var closed coreErrs.ClosedError
+		if errors.As(err, &closed) {
+			w.dropIf(cl)
+			return nil, ErrWireDead
+		}
+		return nil, err // the server does not carry UDP
+	}
+	return &hyPacketSession{w: w, cl: cl, u: u}, nil
+}
+
+type hyPacketSession struct {
+	w  *hyWire
+	cl client.Client
+	u  client.HyUDPConn
+}
+
+func (s *hyPacketSession) Close() error { return s.u.Close() }
+
+func (s *hyPacketSession) WritePacket(p []byte, target Target) error {
+	err := s.u.Send(p, target.String())
+	var closed coreErrs.ClosedError
+	if errors.As(err, &closed) {
+		s.w.dropIf(s.cl)
+		return ErrWireDead
+	}
+	return err
+}
+
+func (s *hyPacketSession) ReadPacket() ([]byte, Target, error) {
+	p, addr, err := s.u.Receive()
+	if err != nil {
+		return nil, Target{}, err
+	}
+	var from Target
+	if h, port, err := net.SplitHostPort(addr); err == nil {
+		from.Host = h
+		from.Port, _ = strconv.Atoi(port)
+	}
+	return p, from, nil
 }
 
 func itoa(i int) string {

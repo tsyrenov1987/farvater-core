@@ -98,6 +98,7 @@ type Switchboard struct {
 	probing  bool   // a restricted-network check is out
 	probedAt int64
 	probe    func(ctx context.Context, hosts []string) bool
+	udpBack  map[string]int64 // path → until when UDP tries it last (udp.go)
 
 	saveMu  sync.Mutex // one memory write at a time, never an older snapshot over a newer one
 	written uint64
@@ -106,11 +107,12 @@ type Switchboard struct {
 	flows   atomic.Int64
 	active  atomic.Int64
 	retries atomic.Int64
+	udp     atomic.Int64
 }
 
 // New builds wires for every supported path of the catalogue and a brain over them.
 func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
-	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite}
+	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}}
 	var infos []brain.PathInfo
 	for _, e := range cat.Paths {
 		w, err := wire.Build(e.Spec)
@@ -370,6 +372,10 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 		c.Close()
 		return
 	}
+	if req.Cmd == socksFwdUDP {
+		s.serveUDP(ctx, c)
+		return
+	}
 	if !routable(req.Host) {
 		// Refused at once, with no dial and no receipt: such a flow would only
 		// file failures against healthy paths. The usual case is Android probing
@@ -416,6 +422,21 @@ func (s *Switchboard) pick(now int64, dst string, class brain.DstClass) brain.De
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.Pick(now, dst, class)
+}
+
+// pace waits for the governor's slot when dialling path means a handshake.
+func (s *Switchboard) pace(ctx context.Context, path string) error {
+	if !s.wires[path].NeedsHandshake() {
+		return nil
+	}
+	if wait := s.acquire(path) - nowMs(); wait > 0 {
+		select {
+		case <-time.After(time.Duration(wait) * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func (s *Switchboard) acquire(path string) int64 {
@@ -516,6 +537,7 @@ type Status struct {
 	Flows     int64         `json:"flows"`
 	Active    int64         `json:"active"`
 	Retries   int64         `json:"retries"`
+	UDP       int64         `json:"udp"` // UDP associations that reached a path
 	Dropped   int           `json:"dropped"`
 	Paths     []PathStatus  `json:"paths"`
 	Skipped   []string      `json:"skipped"`
@@ -531,7 +553,7 @@ func (s *Switchboard) Status() Status {
 	st := Status{
 		Version: Version, UptimeSec: int64(time.Since(s.started).Seconds()),
 		Listen: s.cfg.Listen, Ctx: s.b.Ctx(), Catalogue: s.cat.Title, Leader: s.b.Leader(),
-		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), Dropped: s.b.Dropped,
+		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Dropped: s.b.Dropped,
 		Skipped: s.Skipped, Journal: len(s.b.J.Entries()),
 	}
 	for _, id := range s.order {

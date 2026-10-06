@@ -202,15 +202,8 @@ func (f *flow) dialOne(ctx context.Context, a *attempt) (wire.Session, error) {
 	if w == nil {
 		return nil, errors.New("no wire")
 	}
-	if w.NeedsHandshake() {
-		slot := f.s.acquire(a.path)
-		if wait := slot - nowMs(); wait > 0 {
-			select {
-			case <-time.After(time.Duration(wait) * time.Millisecond):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
+	if err := f.s.pace(ctx, a.path); err != nil {
+		return nil, err
 	}
 	dctx, cancel := context.WithTimeout(ctx, f.s.cfg.DialTimeout)
 	defer cancel()

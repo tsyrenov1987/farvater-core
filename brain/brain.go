@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"sort"
 )
 
 // PathInfo identifies a path of the catalogue. White: the catalogue says the
@@ -293,6 +294,32 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		deadline = cap
 	}
 	return Decision{Primary: primary, Secondary: secondary, Tertiary: tertiary, Explore: explore, Reason: reason, StaggerMs: stagger, FirstByteDeadlineMs: deadline}
+}
+
+// UDPOrder lists every path in the order a UDP association tries them: the
+// leader, the other available paths by posterior mean, then the parked and
+// tripped ones. UDP yields no receipts, so it follows what TCP flows proved,
+// and asking is not a pick.
+func (b *Brain) UDPOrder(now int64) []string {
+	avail := b.available(now)
+	out := make([]string, 0, len(b.paths))
+	if contains(avail, b.leader) {
+		out = append(out, b.leader)
+	}
+	rest := make([]string, 0, len(avail))
+	for _, p := range avail {
+		if p != b.leader {
+			rest = append(rest, p)
+		}
+	}
+	sort.SliceStable(rest, func(i, j int) bool { return b.st[rest[i]].Mean() > b.st[rest[j]].Mean() })
+	out = append(out, rest...)
+	for _, p := range b.paths {
+		if !contains(out, p.ID) {
+			out = append(out, p.ID)
+		}
+	}
+	return out
 }
 
 // Observe folds a receipt into the evidence, after differential diagnosis.

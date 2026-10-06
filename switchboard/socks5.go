@@ -11,16 +11,24 @@ import (
 	"strconv"
 )
 
-// socksRequest is a parsed SOCKS5 CONNECT.
+// socksRequest is a parsed SOCKS5 request: CONNECT or socksFwdUDP.
 type socksRequest struct {
+	Cmd  byte
 	Host string // domain or IP literal
 	Port int
 }
 
-// readSocks5 negotiates SOCKS5 and parses a CONNECT request. With user set the
-// client must authenticate as user/pass (RFC 1929); otherwise no
-// authentication is asked. It does not send the success reply; the caller
-// replies after the wire is ready (or fails).
+const (
+	socksConnect = 1
+	// socksFwdUDP is hev-socks5-tunnel's UDP-in-TCP association: after the
+	// reply, datagrams travel both ways on the same connection (udp.go).
+	socksFwdUDP = 5
+)
+
+// readSocks5 negotiates SOCKS5 and parses a CONNECT or socksFwdUDP request.
+// With user set the client must authenticate as user/pass (RFC 1929);
+// otherwise no authentication is asked. It does not send the success reply;
+// the caller replies after the wire is ready (or fails).
 func readSocks5(c net.Conn, user, pass string) (socksRequest, error) {
 	var hdr [2]byte
 	if _, err := io.ReadFull(c, hdr[:]); err != nil {
@@ -44,9 +52,9 @@ func readSocks5(c net.Conn, user, pass string) (socksRequest, error) {
 	if _, err := io.ReadFull(c, req[:]); err != nil {
 		return socksRequest{}, err
 	}
-	if req[1] != 1 {
+	if req[1] != socksConnect && req[1] != socksFwdUDP {
 		_ = replySocks5(c, 7)
-		return socksRequest{}, errors.New("socks: only CONNECT is supported")
+		return socksRequest{}, errors.New("socks: only CONNECT and UDP-in-TCP are supported")
 	}
 	var host string
 	switch req[3] {
@@ -80,7 +88,7 @@ func readSocks5(c net.Conn, user, pass string) (socksRequest, error) {
 	if _, err := io.ReadFull(c, p[:]); err != nil {
 		return socksRequest{}, err
 	}
-	return socksRequest{Host: host, Port: int(binary.BigEndian.Uint16(p[:]))}, nil
+	return socksRequest{Cmd: req[1], Host: host, Port: int(binary.BigEndian.Uint16(p[:]))}, nil
 }
 
 // authSocks5 selects username/password and checks the client's credentials
@@ -120,7 +128,7 @@ func authSocks5(c net.Conn, methods []byte, user, pass string) error {
 	return err
 }
 
-// replySocks5 sends a CONNECT reply with the given status (0 = success).
+// replySocks5 sends a reply with the given status (0 = success).
 func replySocks5(c net.Conn, status byte) error {
 	_, err := c.Write([]byte{5, status, 0, 1, 0, 0, 0, 0, 0, 0})
 	return err

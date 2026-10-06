@@ -84,8 +84,12 @@ quarter weight; priors never outweigh 5 fresh receipts.
 - **Connect stage:** no first byte within `T_stagger = min(T_fb, p90_fb(leader)+300 ms)` → repeat the same connect
   (with the held first client segment) over the runner-up; first responder wins, the other is closed. The duplicate
   first segment is harmless for TLS and server-speaks-first protocols; accepted knowingly for the rest.
-- **UDP/DNS:** DNS only through the wire (DoH/DoT); receipt = answer in time. UDP/443 follows the leader; if the
-  leader cannot carry UDP or UDP first-byte rate < 30 %, UDP/443 is dropped (apps fall back to TCP).
+- **UDP:** an association (one per app socket and destination) rides the leader, then the other paths in the
+  brain's order; a path that cannot carry UDP is passed over, and one that ends an association at once with no
+  answer goes to the back of that order for 10 minutes (reordered, never removed). VLESS carries UDP as XUDP —
+  the framing Vision requires, naming each datagram's address — and Hysteria 2 in its QUIC datagrams. UDP gives
+  no delivery evidence and files no receipts. UDP/443 (QUIC) is refused, so browsers and apps fall back to TCP,
+  where delivery is measured.
 - **Idle:** one 256 KB volume probe (HTTP Range to `probe_urls`) on the leader right after connect; status is
   "connecting" until it passes. Exploration probes ≤1 per 10 min per path, never on metered paths, never in bursts.
 
@@ -199,6 +203,9 @@ CI fails if any `sagernet/*` module appears in `go list -deps`. Built with `gomo
 - Android: VpnService + the same aar. The app excludes itself from the VPN (its own connections to the paths go out
   directly), routes 0.0.0.0/0 and ::/0 into hev-socks5-tunnel, and answers DNS with mapped addresses so the
   switchboard receives names. The interface comes up only after a delivery proof through the switchboard.
+- Both apps hand UDP to the switchboard inside TCP (hev-socks5-tunnel's UDP-in-TCP command): every datagram is
+  framed on the association's own loopback connection, so no UDP port is opened on the device. hev holds one
+  returning datagram in 1500 bytes with its address; a larger one would end its session, so the switchboard drops it.
 - Destinations that mean nothing at a path's exit (loopback, private, link-local, 100.64/10, 198.18/15) are refused
   at the SOCKS step with no dial and no receipt; otherwise Android's DNS-over-TLS probe of the tunnel's own DNS
   address files failures against healthy paths.
