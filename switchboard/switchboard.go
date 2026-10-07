@@ -48,6 +48,11 @@ type Config struct {
 	// door to SetEndpoint. A path of a hosted kind not named here is skipped.
 	Hosted []wire.Kind
 
+	// Direct names the sites whose flows go straight to the network, around
+	// every path (serveDirect): a name covers its subdomains, an IP address
+	// only itself. In DirectNames form. Empty: none.
+	Direct []string
+
 	// User and Pass, when set, make SOCKS5 clients authenticate (RFC 1929).
 	// The mobile apps set fresh random ones each session: every app on the
 	// device can reach a loopback port, and an open proxy there would show it
@@ -121,6 +126,7 @@ type Switchboard struct {
 	active  atomic.Int64
 	retries atomic.Int64
 	udp     atomic.Int64
+	direct  atomic.Int64
 }
 
 // New builds wires for every supported path of the catalogue and a brain over them.
@@ -407,6 +413,10 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 		c.Close()
 		return
 	}
+	if s.isDirect(req.Host) {
+		s.serveDirect(ctx, c, req)
+		return
+	}
 	if err := replySocks5(c, 0); err != nil {
 		c.Close()
 		return
@@ -563,7 +573,8 @@ type Status struct {
 	Flows     int64         `json:"flows"`
 	Active    int64         `json:"active"`
 	Retries   int64         `json:"retries"`
-	UDP       int64         `json:"udp"` // UDP associations that reached a path
+	UDP       int64         `json:"udp"`    // UDP associations that reached a path
+	Direct    int64         `json:"direct"` // flows that went around the paths (Config.Direct)
 	Dropped   int           `json:"dropped"`
 	Paths     []PathStatus  `json:"paths"`
 	Skipped   []string      `json:"skipped"`
@@ -579,7 +590,7 @@ func (s *Switchboard) Status() Status {
 	st := Status{
 		Version: Version, UptimeSec: int64(time.Since(s.started).Seconds()),
 		Listen: s.cfg.Listen, Ctx: s.b.Ctx(), Catalogue: s.cat.Title, Leader: s.b.Leader(),
-		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Dropped: s.b.Dropped,
+		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Dropped: s.b.Dropped,
 		Skipped: s.Skipped, Journal: len(s.b.J.Entries()),
 	}
 	for _, id := range s.order {

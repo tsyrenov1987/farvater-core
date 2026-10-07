@@ -31,6 +31,7 @@ import (
 	"github.com/tsyrenov1987/farvater-core/catalogue"
 	"github.com/tsyrenov1987/farvater-core/switchboard"
 	"github.com/tsyrenov1987/farvater-core/wire"
+	"golang.org/x/net/idna"
 )
 
 // DefaultProbeURL is fetched by ProveDelivery when neither the caller nor the
@@ -46,6 +47,7 @@ var (
 	probe      string
 	memoryFile string
 	hosted     []wire.Kind
+	direct     []string
 )
 
 // Version is the core version string.
@@ -139,6 +141,7 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 	}
 	cfg.MemoryFile = memoryFile
 	cfg.Hosted = hosted
+	cfg.Direct = withoutProbes(direct, append([]string{DefaultProbeURL}, cat.ProbeURLs...))
 	s, err := switchboard.New(cfg, cat)
 	if err != nil {
 		return err
@@ -180,6 +183,48 @@ func Stop() {
 		cancel()
 	}
 	sb, cancel = nil, nil
+}
+
+// SetDirect names the sites that go straight to the network, around every
+// path (banks that refuse foreign addresses, say), as DirectNames reads them;
+// the apps call it before Start. Empty: none.
+func SetDirect(names string) {
+	mu.Lock()
+	defer mu.Unlock()
+	direct = switchboard.DirectNames(names)
+}
+
+// withoutProbes leaves out the direct names that cover a delivery probe's
+// host: a probe that went around the paths would prove a delivery no path made.
+func withoutProbes(names, probeURLs []string) []string {
+	var out []string
+	for _, n := range names {
+		covers := false
+		for _, p := range probeURLs {
+			if u, err := url.Parse(p); err == nil {
+				h := strings.ToLower(u.Hostname())
+				covers = covers || h == n || strings.HasSuffix(h, "."+n)
+			}
+		}
+		if !covers {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// DirectNames returns, as a JSON array, the names SetDirect keeps from input,
+// so the apps show exactly what the core will match; names in their own
+// script ("сбербанк.рф", not "xn--80abap1arsf.xn--p1ai"), which SetDirect
+// takes back as they are.
+func DirectNames(input string) string {
+	names := switchboard.DirectNames(input)
+	for i, n := range names {
+		if u, err := idna.Lookup.ToUnicode(n); err == nil {
+			names[i] = u
+		}
+	}
+	return toJSON(names)
 }
 
 // SetHostedKinds names the kinds of path the app runs beside the core,
