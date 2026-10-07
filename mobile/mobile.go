@@ -321,6 +321,30 @@ func FetchCatalogue(catalogueURL string) string {
 	return toJSON(map[string]any{"ok": true, "text": string(body), "paths": runnable(cat), "title": cat.Title})
 }
 
+// ImportCatalogue checks what a person pasted where a catalogue goes: a
+// subscription link (as it is, without its scheme, inside another client's
+// import link or inside a message), share links, a base64 subscription or a
+// JSON catalogue. Returns JSON {"ok":true,"source":"...","text":"...","paths":n,
+// "title":"..."}, source being what the app keeps and refreshes from (the link,
+// or the text itself) and text the catalogue to start from; or
+// {"ok":false,"error":"..."}.
+func ImportCatalogue(input string) string {
+	src := catalogue.Resolve(input)
+	text := src
+	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+		body, err := catalogue.Fetch(src)
+		if err != nil {
+			return toJSON(map[string]any{"ok": false, "error": err.Error()})
+		}
+		text = string(body)
+	}
+	cat, err := catalogue.Parse([]byte(text))
+	if err != nil {
+		return toJSON(map[string]any{"ok": false, "error": err.Error()})
+	}
+	return toJSON(map[string]any{"ok": true, "source": src, "text": text, "paths": runnable(cat), "title": cat.Title})
+}
+
 // MergeCatalogues joins catalogue texts into one for Start: the apps' "several
 // catalogues at once". textsJSON is a JSON array of strings, each a catalogue
 // JSON, a base64 subscription or share links (fetched already: no URLs). A text
