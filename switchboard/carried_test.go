@@ -101,9 +101,19 @@ func TestPathsCountBytesAsTheyFlow(t *testing.T) {
 	if _, err := readDatagram(u); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range s.Status().Paths {
-		if p.ID == "b" && (p.UpBytes != 4+upBy["b"] || p.DownBytes != 4+by["b"]) {
-			t.Fatalf("UDP over b: up %d down %d, want 4 more each way", p.UpBytes, p.DownBytes)
+	// The answer reaches the app a moment before its bytes are counted.
+	var b PathStatus
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		for _, p := range s.Status().Paths {
+			if p.ID == "b" {
+				b = p
+			}
 		}
+		if b.UpBytes == 4+upBy["b"] && b.DownBytes == 4+by["b"] || time.Now().After(deadline) {
+			break
+		}
+	}
+	if b.UpBytes != 4+upBy["b"] || b.DownBytes != 4+by["b"] {
+		t.Fatalf("UDP over b: up %d down %d, want 4 more each way", b.UpBytes, b.DownBytes)
 	}
 }
