@@ -154,3 +154,23 @@ func TestH2MuxFailsOverWhenConnectionDies(t *testing.T) {
 		t.Fatalf("expected a redial after the connection died, got %d dials", got)
 	}
 }
+
+// TestH2MuxCloseBeforeReadIsRaceFree closes a stream before anything reads it,
+// racing the in-flight RoundTrip that sets the stream's down side. Run with
+// -race it guards the synchronization in Close (before it, Close read s.down
+// without waiting for the goroutine that writes it).
+func TestH2MuxCloseBeforeReadIsRaceFree(t *testing.T) {
+	d := &h2EchoDialer{}
+	m := newH2Mux(d.dial, 0, 0)
+	defer m.Close()
+	for i := 0; i < 50; i++ {
+		s, err := m.openStream(context.Background(), http.MethodPost, "https://x/t", http.Header{})
+		if err != nil {
+			t.Fatalf("openStream: %v", err)
+		}
+		// Let RoundTrip reach its success branch, where it sets the stream's
+		// down side, so Close races that write unless Close waits for it.
+		time.Sleep(time.Millisecond)
+		s.Close() // before any Read
+	}
+}

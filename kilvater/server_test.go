@@ -147,6 +147,7 @@ func TestTunnelTCP(t *testing.T) {
 		body := []byte{kilvater.NetTCP}
 		body, _ = kilvater.AppendAddr(body, echo.Addr().String())
 		kilvater.WriteFrame(pw, kilvater.FrameOpen, body)
+		kilvater.WritePad(pw) // the server must skip this
 		kilvater.WriteFrame(pw, kilvater.FrameData, []byte("hello"))
 		kilvater.WriteFrame(pw, kilvater.FrameClose, []byte{0})
 	}()
@@ -164,11 +165,18 @@ func TestTunnelTCP(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 
-	// Read echoed data back.
-	var buf []byte
-	typ, data, err := kilvater.ReadFrame(resp.Body, buf)
-	if err != nil {
-		t.Fatal(err)
+	// Read echoed data back, skipping any PAD the server sent to vary sizes.
+	var data []byte
+	var typ byte
+	for {
+		var buf []byte
+		typ, data, err = kilvater.ReadFrame(resp.Body, buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ != kilvater.FramePad {
+			break
+		}
 	}
 	if typ != kilvater.FrameData || string(data) != "hello" {
 		t.Fatalf("expected DATA 'hello', got type=%d data=%q", typ, data)

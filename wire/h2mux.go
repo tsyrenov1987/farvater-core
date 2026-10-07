@@ -208,6 +208,10 @@ func (s *h2MuxStream) Close() error {
 		s.up.Close()
 	}
 	s.cancel()
+	// cancel makes the in-flight RoundTrip return, so ready closes shortly;
+	// waiting for it is what lets us read s.down without racing the goroutine
+	// that sets it.
+	<-s.ready
 	if s.down != nil {
 		s.down.Close()
 	}

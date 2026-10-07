@@ -20,6 +20,10 @@ type Server struct {
 	Logger   *log.Logger
 }
 
+// openReadTimeout bounds how long the server waits for a client's OPEN frame
+// after it has authenticated, so a client that never opens cannot hold a stream.
+var openReadTimeout = 15 * time.Second
+
 func (s *Server) log(format string, args ...any) {
 	if s.Logger != nil {
 		s.Logger.Printf(format, args...)
@@ -43,23 +47,44 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	fl.Flush()
+	down := &flushed{w: w, f: fl}
+	WritePad(down) // vary the size of the first record the client sees
 
-	var buf []byte
-	typ, body, err := ReadFrame(r.Body, buf)
-	if err != nil || typ != FrameOpen || len(body) < 2 {
+	// Read the OPEN frame, but never let a client that authenticated yet never
+	// opens hold the stream: bound the wait. Returning resets the stream, which
+	// unblocks the read goroutine.
+	type opened struct {
+		typ  byte
+		body []byte
+		err  error
+	}
+	ch := make(chan opened, 1)
+	go func() {
+		var buf []byte
+		typ, body, err := ReadFrame(r.Body, buf)
+		ch <- opened{typ, body, err}
+	}()
+	var f opened
+	select {
+	case f = <-ch:
+	case <-time.After(openReadTimeout):
+		return
+	case <-r.Context().Done():
 		return
 	}
-	network := body[0]
-	addr, _, err := ParseAddr(body[1:])
+	if f.err != nil || f.typ != FrameOpen || len(f.body) < 2 {
+		return
+	}
+	addr, _, err := ParseAddr(f.body[1:])
 	if err != nil {
 		return
 	}
 
-	switch network {
+	switch f.body[0] {
 	case NetTCP:
-		s.tcp(r.Context(), addr, r.Body, &flushed{w: w, f: fl})
+		s.tcp(r.Context(), addr, r.Body, down)
 	default:
-		WriteFrame(&flushed{w: w, f: fl}, FrameClose, []byte{1})
+		WriteFrame(down, FrameClose, []byte{1})
 	}
 }
 
@@ -74,6 +99,13 @@ func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Wri
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// When the stream goes away (client reset, or the request context ended),
+	// close the remote so the downstream reader cannot block on it forever.
+	go func() {
+		<-ctx.Done()
+		remote.Close()
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(2)

@@ -20,19 +20,18 @@ import (
 	"time"
 )
 
-// Frame types.
+// Frame types. Type 4 is reserved for a future datagram frame: Kilvater
+// carries TCP, and UDP flows ride the other paths in the fan.
 const (
 	FrameOpen  byte = 1 // body: network byte, target address
 	FrameData  byte = 2 // body: payload
 	FramePad   byte = 3 // body: ignored
-	FrameDgram byte = 4 // body: address, payload
 	FrameClose byte = 5 // body: one code byte
 )
 
 // Networks named in an OPEN frame.
 const (
 	NetTCP byte = 1
-	NetUDP byte = 2
 )
 
 // MaxFrame caps a frame body. A length above it is a protocol error, never an
@@ -52,6 +51,16 @@ func WriteFrame(w io.Writer, typ byte, body []byte) error {
 	copy(b[4:], body)
 	_, err := w.Write(b)
 	return err
+}
+
+// WritePad writes a PAD frame of a random length, so the size of the first
+// records a session puts on the wire varies run to run. The body is ignored
+// on read; only its length, which TLS passes through to the record size,
+// carries any signal.
+func WritePad(w io.Writer) error {
+	var n [1]byte
+	rand.Read(n[:])
+	return WriteFrame(w, FramePad, make([]byte, 16+int(n[0])))
 }
 
 // ReadFrame reads one frame into buf (grown as needed) and returns its type and body.

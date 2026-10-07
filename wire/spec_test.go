@@ -190,3 +190,30 @@ func TestParseOlcRTC(t *testing.T) {
 		}
 	}
 }
+
+func TestParseKilvater(t *testing.T) {
+	s, err := ParseURI("kilvater://" + testOlcKey + "@node.example.com:443/connect?sni=www.example.com&fp=chrome&host=www.example.com")
+	if err != nil || s.Kind != KindKilvater || s.Key != testOlcKey || s.Host != "node.example.com" || s.Port != 443 ||
+		s.Path != "/connect" || s.SNI != "www.example.com" || s.Fingerprint != "chrome" || s.HostHeader != "www.example.com" ||
+		s.Rail() != "kilvater" || !s.HTTPLike() {
+		t.Fatalf("kilvater: %v %+v", err, s)
+	}
+	// The link's URL path is honoured, not dropped for the default.
+	if s, err = ParseURI("kilvater://" + testOlcKey + "@n:443/secret?sni=x"); err != nil || s.Path != "/secret" {
+		t.Fatalf("path from url: %v %+v", err, s)
+	}
+	// SNI falls back to the host; path falls back to /connect.
+	if s, err = ParseURI("kilvater://" + testOlcKey + "@n:8443"); err != nil || s.SNI != "n" || s.Path != "/connect" {
+		t.Fatalf("defaults: %v %+v", err, s)
+	}
+	// Insecure is refused outright; a missing key too.
+	for _, bad := range []string{
+		"kilvater://" + testOlcKey + "@n:443/connect?insecure=1",
+		"kilvater://" + testOlcKey + "@n:443/connect?allowInsecure=1",
+		"kilvater://n:443/connect",
+	} {
+		if s, err := ParseURI(bad); err == nil {
+			t.Errorf("%s parsed: %+v", bad, s)
+		}
+	}
+}

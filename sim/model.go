@@ -15,6 +15,7 @@ type PathModel struct {
 	ID, SNI, IP  string
 	Rail         string // protocol family label, for escape-diversity
 	NotHTTP      bool   // looks like no HTTP (Hysteria 2 under Salamander)
+	Reuses       bool   // one TLS handshake carries many streams (kilvater): a flow rides a live connection instead of handshaking
 	RTTMs        int64
 	CutAtBytes   int64 // 0 = carries everything; else the stream stalls after this many bytes (throttle/shaping)
 	OnsetMs      int64 // the cut applies from this time on (0 = always)

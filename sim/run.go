@@ -102,24 +102,51 @@ func (h recHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 func (h *recHeap) Push(x any)        { *h = append(*h, x.(brain.Receipt)) }
 func (h *recHeap) Pop() any          { o := *h; x := o[len(o)-1]; *h = o[:len(o)-1]; return x }
 
+// A reusing path (kilvater) opens one TLS handshake and carries many streams on
+// it; a flow handshakes only when none is live, the slots ran out, or the
+// connection outlived its life. These bound a connection the way the client does.
+const (
+	reuseConnLifeMs = int64(20 * 60_000) // 20 minutes
+	reuseMaxStreams = 100
+)
+
+type reuseConn struct {
+	deadAt int64
+	left   int
+}
+
 // Runner executes flows of a scenario over the modelled paths.
 type Runner struct {
 	sc    Scenario
 	net   *Network
 	rng   *rand.Rand
 	paths map[string]*PathModel
+	conns map[string]*reuseConn
 	gov   *brain.Governor
 }
 
 // NewRunner prepares a runner; gov may be nil (no handshake pacing, as in the baseline).
 func NewRunner(sc Scenario, gov *brain.Governor) *Runner {
-	r := &Runner{sc: sc, net: &sc.Net, rng: rand.New(rand.NewPCG(sc.Seed, sc.Seed+1)), paths: map[string]*PathModel{}, gov: gov}
+	r := &Runner{sc: sc, net: &sc.Net, rng: rand.New(rand.NewPCG(sc.Seed, sc.Seed+1)), paths: map[string]*PathModel{}, conns: map[string]*reuseConn{}, gov: gov}
 	r.net.init()
 	for i := range sc.Paths {
 		p := sc.Paths[i]
 		r.paths[p.ID] = &p
 	}
 	return r
+}
+
+// reusing reports whether a live connection on a reusing path can carry a flow
+// starting at `at` without a fresh handshake, spending a stream slot when it
+// can; otherwise it opens a new connection (the one handshake) and returns false.
+func (r *Runner) reusing(id string, at int64) bool {
+	c := r.conns[id]
+	if c != nil && at < c.deadAt && c.left > 0 {
+		c.left--
+		return true
+	}
+	r.conns[id] = &reuseConn{deadAt: at + reuseConnLifeMs, left: reuseMaxStreams - 1}
+	return false
 }
 
 // Probe implements baseline.Prober: a tiny request that a cut path answers happily.
@@ -141,9 +168,12 @@ const stallWindowMs = 4000
 
 func (r *Runner) execute(pathID string, f Flow, startAt, fbTimeout int64) (rec brain.Receipt, success bool, waited int64) {
 	p := r.paths[pathID]
+	// A reusing path rides a live connection: no handshake, so neither the
+	// governor nor the freeze rule sees one.
+	reuse := p.Reuses && r.reusing(pathID, startAt)
 	rec = brain.Receipt{Path: pathID, Ctx: "sim", WireReadyMs: -1, FirstByteMs: -1, DownAtFail: -1, Dst: f.Dst, DstClass: f.Class, Up: 800}
 	hsAt := startAt
-	if r.gov != nil {
+	if r.gov != nil && !reuse {
 		hsAt = r.gov.Acquire(p.SNI, p.IP, startAt)
 	}
 	waited = hsAt - startAt
@@ -153,7 +183,10 @@ func (r *Runner) execute(pathID string, f Flow, startAt, fbTimeout int64) (rec b
 		rec.AtMs = startAt + rec.DurMs
 		return rec, false, waited
 	}
-	if r.net.IsDown(hsAt) || r.net.Handshake(p.SNI, hsAt) || r.rng.Float64() < p.WireFailProb || p.WireDeadFrom > 0 && hsAt >= p.WireDeadFrom && (p.WireDeadTo == 0 || hsAt < p.WireDeadTo) {
+	if r.net.IsDown(hsAt) || (!reuse && r.net.Handshake(p.SNI, hsAt)) || r.rng.Float64() < p.WireFailProb || p.WireDeadFrom > 0 && hsAt >= p.WireDeadFrom && (p.WireDeadTo == 0 || hsAt < p.WireDeadTo) {
+		if p.Reuses {
+			delete(r.conns, pathID) // a broken connection forces a fresh handshake next time
+		}
 		return fail()
 	}
 	rec.WireReadyMs = waited + p.RTTMs

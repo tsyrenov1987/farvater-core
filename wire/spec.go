@@ -182,10 +182,16 @@ func ParseURI(raw string) (PathSpec, error) {
 		if u.User == nil {
 			return spec, errors.New("kilvater: missing key")
 		}
+		if q.Get("insecure") == "1" || q.Get("allowInsecure") == "1" {
+			return spec, errors.New("kilvater: insecure certificates are not allowed")
+		}
 		spec.Key = u.User.Username()
 		spec.SNI = q.Get("sni")
 		spec.Fingerprint = first(q.Get("fp"), "chrome")
-		spec.Path = first(q.Get("path"), "/connect")
+		spec.Path = u.Path
+		if spec.Path == "" || spec.Path == "/" {
+			spec.Path = "/connect"
+		}
 		spec.HostHeader = q.Get("host")
 		if spec.SNI == "" {
 			spec.SNI = spec.Host

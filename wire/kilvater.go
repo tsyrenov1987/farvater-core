@@ -35,9 +35,16 @@ func (w *kilWire) Spec() PathSpec { return w.spec }
 
 func (w *kilWire) NeedsHandshake() bool {
 	w.mux.mu.Lock()
-	needs := w.mux.cc == nil
+	cc := w.mux.cc
 	w.mux.mu.Unlock()
-	return needs
+	if cc == nil {
+		return true
+	}
+	// A connection the readLoop dropped (freeze, GOAWAY) is still held here
+	// until the next openStream replaces it; the next Dial over it handshakes,
+	// so the governor must count it as one.
+	st := cc.State()
+	return st.Closed || st.Closing
 }
 
 func (w *kilWire) Close() error { return w.mux.Close() }
@@ -75,6 +82,11 @@ func (s *kilSession) Run(ctx context.Context, target Target, prelude []byte, up 
 		return OutcomeError, err
 	}
 	if err := kilvater.WriteFrame(s.conn, kilvater.FrameOpen, body); err != nil {
+		s.conn.Close()
+		return OutcomeError, err
+	}
+	// Vary the size of the first record we put on the wire.
+	if err := kilvater.WritePad(s.conn); err != nil {
 		s.conn.Close()
 		return OutcomeError, err
 	}
