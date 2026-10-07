@@ -79,9 +79,17 @@ func TestPathsCountBytesAsTheyFlow(t *testing.T) {
 	if total != 70_000 || s.Status().Active != 1 {
 		t.Fatalf("while the flow runs: %d bytes down %v, %d active; want 70000 on one path", total, by, s.Status().Active)
 	}
+	// The flow rides whichever path won the race, not necessarily the leader;
+	// its up bytes belong to that carrier (the one path with the 70000 down).
+	carrier := ""
+	for id, n := range by {
+		if n == 70_000 {
+			carrier = id
+		}
+	}
 	sent, upBy := carriedBytes(s, up)
-	if sent != 5 || upBy[s.Status().Leader] != 5 {
-		t.Fatalf("while the flow runs: %d bytes up %v; want the app's 5 on the leader", sent, upBy)
+	if sent != 5 || upBy[carrier] != 5 {
+		t.Fatalf("while the flow runs: %d bytes up %v; want the app's 5 on the carrier %q", sent, upBy, carrier)
 	}
 
 	for _, id := range []string{"a", "b", "c"} {
