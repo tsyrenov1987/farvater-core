@@ -12,13 +12,14 @@ import (
 type trojanWire struct {
 	spec PathSpec
 	key  []byte // the 56-hex-byte SHA-224 password hash Trojan sends
+	tr   *outerTransport
 }
 
 func newTrojan(spec PathSpec) (*trojanWire, error) {
 	if spec.Network == "" {
 		spec.Network = "tcp"
 	}
-	return &trojanWire{spec: spec, key: trojanKey(spec.Password)}, nil
+	return &trojanWire{spec: spec, key: trojanKey(spec.Password), tr: newOuterTransport(spec)}, nil
 }
 
 // trojanKey is Trojan's password authenticator: the lowercase hex of the
@@ -33,10 +34,10 @@ func trojanKey(password string) []byte {
 func (w *trojanWire) ID() string           { return w.spec.ID }
 func (w *trojanWire) Spec() PathSpec       { return w.spec }
 func (w *trojanWire) NeedsHandshake() bool { return true }
-func (w *trojanWire) Close() error         { return nil }
+func (w *trojanWire) Close() error         { return w.tr.Close() }
 
 func (w *trojanWire) Dial(ctx context.Context) (Session, error) {
-	conn, err := dialTransport(ctx, w.spec)
+	conn, err := w.tr.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +79,7 @@ func (s *trojanSession) Run(ctx context.Context, target Target, prelude []byte, 
 }
 
 func (w *trojanWire) DialPacket(ctx context.Context) (PacketSession, error) {
-	conn, err := dialTransport(ctx, w.spec)
+	conn, err := w.tr.dial(ctx)
 	if err != nil {
 		return nil, err
 	}

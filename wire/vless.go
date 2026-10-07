@@ -24,6 +24,7 @@ type vlessWire struct {
 	spec   PathSpec
 	uuid   []byte
 	vision bool
+	tr     *outerTransport
 }
 
 func newVLESS(spec PathSpec) (*vlessWire, error) {
@@ -38,13 +39,13 @@ func newVLESS(spec PathSpec) (*vlessWire, error) {
 	if vision && spec.Network != "tcp" {
 		return nil, errors.New("xtls-rprx-vision needs a raw TCP transport")
 	}
-	return &vlessWire{spec: spec, uuid: uuid, vision: vision}, nil
+	return &vlessWire{spec: spec, uuid: uuid, vision: vision, tr: newOuterTransport(spec)}, nil
 }
 
 func (w *vlessWire) ID() string           { return w.spec.ID }
 func (w *vlessWire) Spec() PathSpec       { return w.spec }
 func (w *vlessWire) NeedsHandshake() bool { return true }
-func (w *vlessWire) Close() error         { return nil }
+func (w *vlessWire) Close() error         { return w.tr.Close() }
 
 func (w *vlessWire) Dial(ctx context.Context) (Session, error) {
 	if w.vision {
@@ -54,7 +55,7 @@ func (w *vlessWire) Dial(ctx context.Context) (Session, error) {
 		}
 		return &vlessSession{w: w, conn: u, utls: u}, nil
 	}
-	conn, err := dialTransport(ctx, w.spec)
+	conn, err := w.tr.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +190,7 @@ func (w *vlessWire) DialPacket(ctx context.Context) (PacketSession, error) {
 		u, err = dialSecure(ctx, w.spec, false)
 		conn = u
 	} else {
-		conn, err = dialTransport(ctx, w.spec)
+		conn, err = w.tr.dial(ctx)
 	}
 	if err != nil {
 		return nil, err

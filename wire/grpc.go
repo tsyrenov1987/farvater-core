@@ -22,11 +22,7 @@ import (
 // Multi mode packs several Hunks into one MultiHunk message (repeated field
 // 1); on the wire a one-element MultiHunk is identical to a Hunk, so the
 // framing is shared and mode only changes the stream name.
-func dialGRPC(ctx context.Context, s PathSpec) (net.Conn, error) {
-	u, err := dialSecure(ctx, s, false)
-	if err != nil {
-		return nil, err
-	}
+func dialGRPC(ctx context.Context, m *h2Mux, s PathSpec) (net.Conn, error) {
 	service := strings.TrimPrefix(s.ServiceName, "/")
 	stream := "Tun"
 	if s.Mode == "multi" {
@@ -42,9 +38,8 @@ func dialGRPC(ctx context.Context, s PathSpec) (net.Conn, error) {
 	h.Set("TE", "trailers")
 	h.Set("grpc-accept-encoding", "identity")
 	browserHeaders(h, "fetch")
-	st, err := openH2(ctx, u, http.MethodPost, reqURL.String(), h)
+	st, err := m.openStream(ctx, http.MethodPost, reqURL.String(), h)
 	if err != nil {
-		u.Close()
 		return nil, err
 	}
 	return &grpcConn{st: st, br: bufio.NewReader(st)}, nil
@@ -53,7 +48,7 @@ func dialGRPC(ctx context.Context, s PathSpec) (net.Conn, error) {
 // grpcConn frames tunnel bytes as length-delimited gRPC Hunk messages over an
 // HTTP/2 stream.
 type grpcConn struct {
-	st  *h2Stream
+	st  net.Conn
 	br  *bufio.Reader
 	rmu sync.Mutex
 	wmu sync.Mutex

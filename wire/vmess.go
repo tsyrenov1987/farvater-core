@@ -37,6 +37,7 @@ type vmessWire struct {
 	uuid   []byte
 	cmdKey []byte
 	sec    byte
+	tr     *outerTransport
 }
 
 func newVMess(spec PathSpec) (*vmessWire, error) {
@@ -47,7 +48,7 @@ func newVMess(spec PathSpec) (*vmessWire, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &vmessWire{spec: spec, uuid: uuid, cmdKey: vmessCmdKey(uuid), sec: vmessSecurity(spec.Cipher)}, nil
+	return &vmessWire{spec: spec, uuid: uuid, cmdKey: vmessCmdKey(uuid), sec: vmessSecurity(spec.Cipher), tr: newOuterTransport(spec)}, nil
 }
 
 // vmessSecurity maps a link's cipher name to the security byte. auto (and an
@@ -71,10 +72,10 @@ func vmessSecurity(name string) byte {
 func (w *vmessWire) ID() string           { return w.spec.ID }
 func (w *vmessWire) Spec() PathSpec       { return w.spec }
 func (w *vmessWire) NeedsHandshake() bool { return true }
-func (w *vmessWire) Close() error         { return nil }
+func (w *vmessWire) Close() error         { return w.tr.Close() }
 
 func (w *vmessWire) Dial(ctx context.Context) (Session, error) {
-	conn, err := dialTransport(ctx, w.spec)
+	conn, err := w.tr.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +316,7 @@ func (s *vmessSession) Run(ctx context.Context, target Target, prelude []byte, u
 }
 
 func (w *vmessWire) DialPacket(ctx context.Context) (PacketSession, error) {
-	conn, err := dialTransport(ctx, w.spec)
+	conn, err := w.tr.dial(ctx)
 	if err != nil {
 		return nil, err
 	}

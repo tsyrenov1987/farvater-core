@@ -23,7 +23,7 @@ import (
 //     uplink chunk, numbered by a sequence. Plain-TLS paths default to it.
 //
 // mode "auto" (and "") picks stream-one under REALITY, else packet-up.
-func dialXHTTP(ctx context.Context, s PathSpec) (net.Conn, error) {
+func dialXHTTP(ctx context.Context, m *h2Mux, s PathSpec) (net.Conn, error) {
 	mode := s.Mode
 	if mode == "" || mode == "auto" {
 		if s.Security == "reality" {
@@ -41,20 +41,15 @@ func dialXHTTP(ctx context.Context, s PathSpec) (net.Conn, error) {
 
 	switch mode {
 	case "stream-one":
-		u, err := dialSecure(ctx, s, false)
-		if err != nil {
-			return nil, err
-		}
 		h := xhttpHeaders(base.String())
 		h.Set("Content-Type", "application/grpc")
-		st, err := openH2(ctx, u, http.MethodPost, base.String(), h)
+		st, err := m.openStream(ctx, http.MethodPost, base.String(), h)
 		if err != nil {
-			u.Close()
 			return nil, err
 		}
 		return st, nil
 	case "packet-up", "stream-up":
-		return dialXHTTPPacketUp(ctx, s, base, mode == "stream-up")
+		return dialXHTTPPacketUp(ctx, m, base, mode == "stream-up")
 	default:
 		return nil, errors.New("xhttp: unsupported mode " + mode)
 	}
@@ -106,38 +101,27 @@ func appendXHTTPPath(base url.URL, parts ...string) string {
 // dialXHTTPPacketUp runs the packet-up / stream-up shape: a GET for the
 // downlink and per-chunk POSTs (or one streamed POST) for the uplink, keyed
 // by a shared session id.
-func dialXHTTPPacketUp(ctx context.Context, s PathSpec, base url.URL, streamUp bool) (net.Conn, error) {
+func dialXHTTPPacketUp(ctx context.Context, m *h2Mux, base url.URL, streamUp bool) (net.Conn, error) {
 	var sid [16]byte
 	if _, err := rand.Read(sid[:]); err != nil {
 		return nil, err
 	}
 	session := hex.EncodeToString(sid[:])
 
-	down, err := dialSecure(ctx, s, false)
-	if err != nil {
-		return nil, err
-	}
 	downURL := appendXHTTPPath(base, session)
-	st, err := openH2(ctx, down, http.MethodGet, downURL, xhttpHeaders(downURL))
+	st, err := m.openStream(ctx, http.MethodGet, downURL, xhttpHeaders(downURL))
 	if err != nil {
-		down.Close()
 		return nil, err
 	}
-	// Detach the session context from the dial context (see openH2): the
-	// per-chunk uploads run for the whole flow, not just the dial.
+	// Detach the session context from the dial context (see h2Mux.openStream):
+	// the per-chunk uploads run for the whole flow, not just the dial.
 	sctx, scancel := context.WithCancel(context.Background())
-	c := &xhttpPacketUp{ctx: sctx, cancel: scancel, spec: s, base: base, session: session, down: st, streamUp: streamUp}
+	c := &xhttpPacketUp{ctx: sctx, cancel: scancel, mux: m, base: base, session: session, down: st, streamUp: streamUp}
 	if streamUp {
-		up, err := dialSecure(ctx, s, false)
-		if err != nil {
-			st.Close()
-			return nil, err
-		}
 		h := xhttpHeaders(appendXHTTPPath(base, session))
 		h.Set("Content-Type", "application/grpc")
-		upst, err := openH2(ctx, up, http.MethodPost, appendXHTTPPath(base, session), h)
+		upst, err := m.openStream(ctx, http.MethodPost, appendXHTTPPath(base, session), h)
 		if err != nil {
-			up.Close()
 			st.Close()
 			return nil, err
 		}
@@ -152,11 +136,11 @@ func dialXHTTPPacketUp(ctx context.Context, s PathSpec, base url.URL, streamUp b
 type xhttpPacketUp struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
-	spec     PathSpec
+	mux      *h2Mux
 	base     url.URL
 	session  string
-	down     *h2Stream
-	upStream *h2Stream
+	down     net.Conn
+	upStream net.Conn
 	streamUp bool
 
 	wmu sync.Mutex
@@ -177,13 +161,9 @@ func (c *xhttpPacketUp) Write(p []byte) (int, error) {
 	seq := strconv.FormatInt(c.seq, 10)
 	c.seq++
 	reqURL := appendXHTTPPath(c.base, c.session, seq)
-	u, err := dialSecure(c.ctx, c.spec, false)
-	if err != nil {
-		return 0, err
-	}
 	h := xhttpHeaders(reqURL)
 	h.Set("Content-Type", "application/grpc")
-	if err := postH2(c.ctx, u, reqURL, h, p); err != nil {
+	if err := c.mux.post(c.ctx, reqURL, h, p); err != nil {
 		return 0, err
 	}
 	return len(p), nil

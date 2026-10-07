@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"bytes"
 	"io"
 	"sync"
 )
@@ -86,7 +87,7 @@ func (x *xudpReader) ReadPacket() ([]byte, Target, error) {
 		switch status {
 		case 2: // Keep
 			if metaLen > 4 && meta[4] == 2 { // names a UDP address
-				t, err := readPortAddr(bytesReader(meta[5:]))
+				t, err := readPortAddr(bytes.NewReader(meta[5:]))
 				if err != nil {
 					return nil, Target{}, err
 				}

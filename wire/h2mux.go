@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -19,8 +20,8 @@ import (
 // KILVATER-SPEC.md) is built on: one TLS handshake holds up to the server's
 // stream limit of concurrent streams, so the handshake governor barely moves.
 //
-// The gRPC and XHTTP transports keep using openH2/postH2 (one stream per
-// connection) unchanged; this type is additive and shares none of their code.
+// The gRPC and XHTTP transports ride their streams on this layer too (one
+// shared connection per path); kilvater adds its own stream kind on top.
 //
 // Freezes take care of themselves: the Transport's ReadIdleTimeout and
 // PingTimeout make each ClientConn PING after an idle gap and drop itself if
@@ -132,6 +133,32 @@ func (m *h2Mux) openStream(ctx context.Context, method, reqURL string, header ht
 	return s, nil
 }
 
+// post sends one complete request over the shared connection and discards the
+// response — the per-chunk upload packet-up XHTTP uses. The body is whole, so
+// it rides one stream on the shared connection and opens no new handshake.
+func (m *h2Mux) post(ctx context.Context, reqURL string, header http.Header, body []byte) error {
+	u, err := url.Parse(reqURL)
+	if err != nil {
+		return err
+	}
+	cc, _, err := m.client(ctx)
+	if err != nil {
+		return err
+	}
+	req := (&http.Request{Method: http.MethodPost, URL: u, Host: u.Host, Header: header,
+		Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body))}).WithContext(ctx)
+	resp, err := cc.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return errors.New("h2mux: upload answered " + resp.Status)
+	}
+	return nil
+}
+
 // Close tears the mux down: the current connection and its streams go away.
 func (m *h2Mux) Close() error {
 	m.mu.Lock()
@@ -149,8 +176,8 @@ func (m *h2Mux) Close() error {
 }
 
 // h2MuxStream is one stream on a shared h2Mux connection, presented as a
-// net.Conn. Unlike h2Stream it does not own the connection: Close ends the
-// stream alone.
+// net.Conn. It does not own the connection: Close ends the stream alone,
+// leaving the shared connection and its other streams running.
 type h2MuxStream struct {
 	up     *io.PipeWriter
 	down   io.ReadCloser
