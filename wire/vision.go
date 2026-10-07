@@ -224,7 +224,7 @@ func (w *visionWriter) Write(p []byte) (int, error) {
 			for _, rest := range pieces[i+1:] {
 				out = append(out, rest...)
 			}
-			i = len(pieces)
+			// wPadding is now false, so the loop breaks below.
 		default:
 			command := byte(visCmdContinue)
 			if i == len(pieces)-1 && !st.wPadding {
@@ -287,7 +287,6 @@ type visionReader struct {
 	raw    io.Reader // where to read after a Direct command (the TCP conn)
 	drain  func() []byte
 	buf    []byte // unpadded bytes not yet returned
-	tmp    []byte
 	direct bool
 }
 

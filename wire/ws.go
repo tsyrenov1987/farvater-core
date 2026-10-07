@@ -104,6 +104,13 @@ const (
 	wsClose  = 0x8
 	wsPing   = 0x9
 	wsPong   = 0xA
+
+	// wsMaxFrame caps a frame's declared length so a malformed or hostile
+	// server cannot make us allocate (or overflow int64 into) an arbitrary
+	// size. The tunnel's own frames are far smaller; 64 MiB is generous.
+	wsMaxFrame = 64 << 20
+	// wsMaxControl is RFC 6455's limit on a control frame's payload.
+	wsMaxControl = 125
 )
 
 func (w *wsConn) Read(p []byte) (int, error) {
@@ -170,6 +177,12 @@ func (w *wsConn) nextFrame() (op byte, n int64, err error) {
 		if _, err = io.ReadFull(w.br, m[:]); err != nil {
 			return 0, 0, err
 		}
+	}
+	if n < 0 || n > wsMaxFrame { // negative means the 8-byte length overflowed int64
+		return 0, 0, errors.New("ws: frame length out of range")
+	}
+	if op >= wsClose && n > wsMaxControl { // control frames carry at most 125 bytes
+		return 0, 0, errors.New("ws: control frame too long")
 	}
 	return op, n, nil
 }

@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -24,10 +23,9 @@ type h2Stream struct {
 	conn   net.Conn // the underlying TLS conn, for addresses and close
 	cancel context.CancelFunc
 
-	downOnce sync.Once
-	downErr  error
-	resp     *http.Response
-	ready    chan struct{}
+	downErr error
+	resp    *http.Response
+	ready   chan struct{}
 }
 
 // openH2 wraps an already-handshaked h2 connection and starts one streaming
