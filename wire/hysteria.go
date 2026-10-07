@@ -16,7 +16,6 @@ import (
 	"github.com/apernet/hysteria/core/v2/client"
 	coreErrs "github.com/apernet/hysteria/core/v2/errors"
 	"github.com/apernet/hysteria/extras/v2/obfs"
-	"github.com/xtls/xray-core/common/buf"
 )
 
 type hyWire struct {
@@ -184,7 +183,7 @@ func (s *hySession) Run(ctx context.Context, target Target, prelude []byte, up <
 		}
 	}
 	upErr := make(chan error, 1)
-	go func() { upErr <- pumpUp(ctx, up, buf.NewWriter(c), m, nil) }()
+	go func() { upErr <- pumpUp(ctx, up, c, m, nil) }()
 	downErr := make(chan error, 1)
 	go func() {
 		p := make([]byte, 32*1024)
@@ -209,7 +208,7 @@ func (s *hySession) Run(ctx context.Context, target Target, prelude []byte, up <
 	}()
 	idle := time.AfterFunc(IdleTimeout, cancel)
 	defer idle.Stop()
-	return settle(ctx, upErr, downErr, cancel, nil, func() { idle.Reset(2 * time.Second) })
+	return settle(ctx, upErr, downErr, cancel, func() { idle.Reset(2 * time.Second) })
 }
 
 // DialPacket opens a UDP session inside the path's QUIC connection, making

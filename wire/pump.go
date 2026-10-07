@@ -3,14 +3,12 @@ package wire
 import (
 	"context"
 	"io"
-
-	"github.com/xtls/xray-core/common/buf"
-	"github.com/xtls/xray-core/common/signal"
+	"time"
 )
 
-// pumpUp forwards app chunks to a buf.Writer until the channel closes
-// (returns io.EOF), the context ends, or a write fails.
-func pumpUp(ctx context.Context, up <-chan []byte, w buf.Writer, m Meter, timer *signal.ActivityTimer) error {
+// pumpUp forwards the app's chunks to w until the channel closes (returns
+// io.EOF), the context ends, or a write fails.
+func pumpUp(ctx context.Context, up <-chan []byte, w io.Writer, m Meter, it *idleTimer) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -20,40 +18,43 @@ func pumpUp(ctx context.Context, up <-chan []byte, w buf.Writer, m Meter, timer 
 				return io.EOF
 			}
 			m.Up(p)
-			if timer != nil {
-				timer.Update()
+			if it != nil {
+				it.touch()
 			}
-			if err := w.WriteMultiBuffer(buf.MergeBytes(nil, p)); err != nil {
+			if _, err := w.Write(p); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-// downWriter counts downstream bytes and hands them to the app.
-type downWriter struct {
-	w io.Writer
-	m Meter
-}
-
-func (d *downWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	defer buf.ReleaseMulti(mb)
-	for _, b := range mb {
-		if b.IsEmpty() {
-			continue
+// pumpDown hands what r yields to the app until r ends (nil) or fails.
+func pumpDown(r io.Reader, down io.Writer, m Meter, it *idleTimer) error {
+	p := make([]byte, 32*1024)
+	for {
+		n, err := r.Read(p)
+		if n > 0 {
+			if it != nil {
+				it.touch()
+			}
+			m.Down(p[:n])
+			if _, werr := down.Write(p[:n]); werr != nil {
+				return werr
+			}
 		}
-		d.m.Down(b.Bytes())
-		if _, err := d.w.Write(b.Bytes()); err != nil {
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
 	}
-	return nil
 }
 
 // settle waits for the two pumps and maps their results onto an Outcome.
-// upErr/downErr deliver exactly one value each; closeConn must unblock the
+// upErr/downErr deliver exactly one value each; cancel must unblock the
 // downstream reader.
-func settle(ctx context.Context, upErr, downErr <-chan error, cancel func(), timer *signal.ActivityTimer, afterClientFin func()) (Outcome, error) {
+func settle(ctx context.Context, upErr, downErr <-chan error, cancel func(), afterClientFin func()) (Outcome, error) {
 	clientDone := false
 	for {
 		select {
@@ -89,22 +90,31 @@ func settle(ctx context.Context, upErr, downErr <-chan error, cancel func(), tim
 	}
 }
 
-// nextPacket returns the next datagram r yields and the address it came from,
-// keeping the rest of what one read brought in pend.
-func nextPacket(r buf.Reader, pend *buf.MultiBuffer) ([]byte, Target, error) {
-	for len(*pend) == 0 {
-		mb, err := r.ReadMultiBuffer()
-		*pend = append(*pend, mb...)
-		if err != nil && len(*pend) == 0 {
-			return nil, Target{}, err
-		}
-	}
-	b := (*pend)[0]
-	*pend = (*pend)[1:]
-	defer b.Release()
-	var from Target
-	if b.UDP != nil {
-		from = Target{Host: b.UDP.Address.String(), Port: int(b.UDP.Port)}
-	}
-	return append([]byte(nil), b.Bytes()...), from, nil
+// runStream carries one flow over conn once the proxy request is out: the
+// app's chunks go up through w, what r yields comes down, and the flow ends
+// when either side finishes, nothing moves for IdleTimeout, or ctx ends.
+// After the app finishes, the remote gets 2 s of quiet to finish too.
+// conn is closed on return.
+func runStream(ctx context.Context, conn io.Closer, w io.Writer, r io.Reader, up <-chan []byte, down io.Writer, m Meter) (Outcome, error) {
+	defer conn.Close()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	it := newIdleTimer(IdleTimeout, cancel)
+	defer it.stop()
+	go func() {
+		<-ctx.Done()
+		conn.Close() // unblocks the downstream reader
+	}()
+	upErr := make(chan error, 1)
+	go func() { upErr <- pumpUp(ctx, up, w, m, it) }()
+	downErr := make(chan error, 1)
+	go func() { downErr <- pumpDown(r, down, m, it) }()
+	return settle(ctx, upErr, downErr, cancel, func() { it.setTimeout(2 * time.Second) })
+}
+
+// settleClose is settle for a flow whose caller set up its own pumps (to read
+// a response header first): it closes conn and maps the two pumps' results.
+func settleClose(ctx context.Context, conn io.Closer, upErr, downErr <-chan error, cancel func(), afterClientFin func()) (Outcome, error) {
+	defer conn.Close()
+	return settle(ctx, upErr, downErr, cancel, afterClientFin)
 }

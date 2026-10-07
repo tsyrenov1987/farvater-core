@@ -1,62 +1,44 @@
 package wire
 
 import (
-	"bytes"
 	"context"
-	gotls "crypto/tls"
+	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"io"
-	"reflect"
+	"net"
+	"strings"
+	"sync"
 	"time"
-	"unsafe"
 
 	utls "github.com/refraction-networking/utls"
-	"github.com/xtls/xray-core/common/buf"
-	xnet "github.com/xtls/xray-core/common/net"
-	"github.com/xtls/xray-core/common/protocol"
-	"github.com/xtls/xray-core/common/session"
-	"github.com/xtls/xray-core/common/signal"
-	"github.com/xtls/xray-core/common/xudp"
-	"github.com/xtls/xray-core/proxy"
-	"github.com/xtls/xray-core/proxy/vless"
-	"github.com/xtls/xray-core/proxy/vless/encoding"
-	"github.com/xtls/xray-core/transport/internet"
-	"github.com/xtls/xray-core/transport/internet/reality"
-	"github.com/xtls/xray-core/transport/internet/stat"
-	"github.com/xtls/xray-core/transport/internet/tls"
 )
 
 // IdleTimeout closes a flow with no traffic in either direction.
 var IdleTimeout = 5 * time.Minute
 
+// visionFlow is the flow name that turns on Vision.
+const visionFlow = "xtls-rprx-vision"
+
 type vlessWire struct {
-	spec PathSpec
-	dest xnet.Destination
-	mss  *internet.MemoryStreamConfig
-	user *protocol.MemoryUser
-	acc  *vless.MemoryAccount
+	spec   PathSpec
+	uuid   []byte
+	vision bool
 }
 
 func newVLESS(spec PathSpec) (*vlessWire, error) {
-	mss, err := buildStream(spec)
+	if spec.Network == "" {
+		spec.Network = "tcp"
+	}
+	uuid, err := parseUUID(spec.UUID)
 	if err != nil {
 		return nil, err
 	}
-	if spec.Flow == vless.XRV && spec.Network != "tcp" {
+	vision := spec.Flow == visionFlow
+	if vision && spec.Network != "tcp" {
 		return nil, errors.New("xtls-rprx-vision needs a raw TCP transport")
 	}
-	acc, err := (&vless.Account{Id: spec.UUID, Flow: spec.Flow, Encryption: "none"}).AsAccount()
-	if err != nil {
-		return nil, err
-	}
-	mem := acc.(*vless.MemoryAccount)
-	return &vlessWire{
-		spec: spec,
-		dest: xnet.TCPDestination(xnet.ParseAddress(spec.Host), xnet.Port(spec.Port)),
-		mss:  mss,
-		user: &protocol.MemoryUser{Account: mem, Email: spec.ID},
-		acc:  mem,
-	}, nil
+	return &vlessWire{spec: spec, uuid: uuid, vision: vision}, nil
 }
 
 func (w *vlessWire) ID() string           { return w.spec.ID }
@@ -64,227 +46,262 @@ func (w *vlessWire) Spec() PathSpec       { return w.spec }
 func (w *vlessWire) NeedsHandshake() bool { return true }
 func (w *vlessWire) Close() error         { return nil }
 
-// Dial establishes the outer transport (TCP + TLS/REALITY, WebSocket upgrade or
-// the XHTTP session). Nothing about the target is sent yet.
 func (w *vlessWire) Dial(ctx context.Context) (Session, error) {
-	ob := &session.Outbound{Name: "vless"}
-	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{ob})
-	conn, err := internet.Dial(ctx, w.dest, w.mss)
+	if w.vision {
+		u, err := dialSecure(ctx, w.spec, false)
+		if err != nil {
+			return nil, err
+		}
+		return &vlessSession{w: w, conn: u, utls: u}, nil
+	}
+	conn, err := dialTransport(ctx, w.spec)
 	if err != nil {
 		return nil, err
 	}
-	return &vlessSession{w: w, conn: conn, ob: ob}, nil
+	return &vlessSession{w: w, conn: conn}, nil
 }
 
 type vlessSession struct {
 	w    *vlessWire
-	conn stat.Connection
-	ob   *session.Outbound
+	conn net.Conn
+	utls *utls.UConn // set only for Vision, which needs the raw TLS buffers
 }
 
 func (s *vlessSession) Close() error { return s.conn.Close() }
 
-func (s *vlessSession) Run(ctx context.Context, target Target, prelude []byte, up <-chan []byte, down io.Writer, m Meter) (Outcome, error) {
-	conn := s.conn
-	defer conn.Close()
-	iConn := stat.TryUnwrapStatsConn(conn)
-
-	s.ob.Target = xnet.TCPDestination(xnet.ParseAddress(target.Host), xnet.Port(target.Port))
-	s.ob.Conn = conn
-	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{s.ob})
-
-	request := &protocol.RequestHeader{
-		Version: encoding.Version,
-		User:    s.w.user,
-		Command: protocol.RequestCommandTCP,
-		Address: s.ob.Target.Address,
-		Port:    s.ob.Target.Port,
+// vlessHeader is the VLESS request: version 0, the UUID, the addons (the flow
+// name for Vision, else none), the command, then the destination (omitted for
+// Mux). cmd: 1 TCP, 2 UDP, 3 Mux.
+func vlessHeader(uuid []byte, cmd byte, vision bool, t *Target) ([]byte, error) {
+	b := append([]byte{0}, uuid...)
+	if vision {
+		addons := appendVarintField(nil, 1, []byte(visionFlow)) // Addons.Flow
+		b = append(b, byte(len(addons)))
+		b = append(b, addons...)
+	} else {
+		b = append(b, 0)
 	}
-	addons := &encoding.Addons{Flow: s.w.acc.Flow}
-
-	var input *bytes.Reader
-	var rawInput *bytes.Buffer
-	if addons.Flow == vless.XRV {
-		s.ob.CanSpliceCopy = 2
+	b = append(b, cmd)
+	if t != nil {
 		var err error
-		if input, rawInput, err = visionBuffers(iConn); err != nil {
+		if b, err = appendPortAddr(b, *t); err != nil {
+			return nil, err
+		}
+	}
+	return b, nil
+}
+
+// readVLESSResponse reads the response header: version, then the addons the
+// server echoes (a length byte and that many bytes).
+func readVLESSResponse(r io.Reader) error {
+	var h [2]byte
+	if _, err := io.ReadFull(r, h[:]); err != nil {
+		return err
+	}
+	if h[0] != 0 {
+		return errors.New("vless: unexpected response version")
+	}
+	if n := int(h[1]); n > 0 {
+		if _, err := io.ReadFull(r, make([]byte, n)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *vlessSession) Run(ctx context.Context, target Target, prelude []byte, up <-chan []byte, down io.Writer, m Meter) (Outcome, error) {
+	head, err := vlessHeader(s.w.uuid, 1, s.w.vision, &target)
+	if err != nil {
+		s.conn.Close()
+		return OutcomeError, err
+	}
+	if !s.w.vision {
+		if _, err := s.conn.Write(append(head, prelude...)); err != nil {
+			s.conn.Close()
 			return OutcomeError, err
 		}
-	} else {
-		s.ob.CanSpliceCopy = 3
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		it := newIdleTimer(IdleTimeout, cancel)
+		defer it.stop()
+		stop := context.AfterFunc(ctx, func() { s.conn.Close() })
+		defer stop()
+		upErr := make(chan error, 1)
+		go func() { upErr <- pumpUp(ctx, up, s.conn, m, it) }()
+		downErr := make(chan error, 1)
+		go func() {
+			if err := readVLESSResponse(s.conn); err != nil {
+				downErr <- err
+				return
+			}
+			downErr <- pumpDown(s.conn, down, m, it)
+		}()
+		return settleClose(ctx, s.conn, upErr, downErr, cancel, func() { it.setTimeout(2 * time.Second) })
+	}
+	return s.runVision(ctx, head, prelude, up, down, m)
+}
+
+func (s *vlessSession) runVision(ctx context.Context, head, prelude []byte, up <-chan []byte, down io.Writer, m Meter) (Outcome, error) {
+	st := newVisionState(s.w.uuid)
+	drain, raw, err := utlsBuffers(s.utls)
+	if err != nil {
+		s.conn.Close()
+		return OutcomeError, err
+	}
+	// The VLESS header goes out plain; the first body frame carries the UUID.
+	if _, err := s.conn.Write(head); err != nil {
+		s.conn.Close()
+		return OutcomeError, err
+	}
+	vw := newVisionWriter(s.conn, st)
+	if err := vw.writeFirst(prelude); err != nil {
+		s.conn.Close()
+		return OutcomeError, err
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	timer := signal.CancelAfterInactivity(ctx, cancel, IdleTimeout)
-	go func() {
-		<-ctx.Done()
-		conn.Close() // unblocks the downstream reader
-	}()
-	ts := proxy.NewTrafficState(s.w.acc.ID.Bytes())
-
-	bw := buf.NewBufferedWriter(buf.NewWriter(conn))
-	if err := encoding.EncodeRequestHeader(bw, request, addons); err != nil {
-		return OutcomeError, err
-	}
-	serverWriter := encoding.EncodeBodyAddons(bw, request, addons, ts, true, ctx, conn, s.ob)
-	if len(prelude) > 0 {
-		if err := serverWriter.WriteMultiBuffer(buf.MergeBytes(nil, prelude)); err != nil {
-			return OutcomeError, err
-		}
-	} else if addons.Flow == vless.XRV {
-		if err := serverWriter.WriteMultiBuffer(make(buf.MultiBuffer, 1)); err != nil {
-			return OutcomeError, err
-		}
-	}
-	if err := bw.SetBuffered(false); err != nil {
-		return OutcomeError, err
-	}
-
+	it := newIdleTimer(IdleTimeout, cancel)
+	defer it.stop()
+	stop := context.AfterFunc(ctx, func() { s.conn.Close() })
+	defer stop()
 	upErr := make(chan error, 1)
-	go func() { upErr <- pumpUp(ctx, up, serverWriter, m, timer) }()
+	go func() { upErr <- pumpUp(ctx, up, vw, m, it) }()
 	downErr := make(chan error, 1)
 	go func() {
-		responseAddons, err := encoding.DecodeResponseHeader(conn, request)
-		if err != nil {
+		if err := readVLESSResponse(s.conn); err != nil {
 			downErr <- err
 			return
 		}
-		serverReader := encoding.DecodeBodyAddons(conn, request, responseAddons)
-		dw := &downWriter{w: down, m: m}
-		if addons.Flow == vless.XRV {
-			serverReader = proxy.NewVisionReader(serverReader, ts, false, ctx, conn, input, rawInput, s.ob)
-			downErr <- encoding.XtlsRead(serverReader, dw, timer, conn, ts, false, ctx)
-			return
-		}
-		downErr <- buf.Copy(serverReader, dw, buf.UpdateActivity(timer))
+		vr := newVisionReader(s.conn, st, raw, drain)
+		downErr <- pumpDown(vr, down, m, it)
 	}()
-	return settle(ctx, upErr, downErr, cancel, timer, func() { timer.SetTimeout(2 * time.Second) })
+	return settleClose(ctx, s.conn, upErr, downErr, cancel, func() { it.setTimeout(2 * time.Second) })
 }
 
-// visionBuffers reaches the TLS connection's input and rawInput, which Vision
-// drains when it switches to direct copy.
-func visionBuffers(iConn stat.Connection) (*bytes.Reader, *bytes.Buffer, error) {
-	var t reflect.Type
-	var base unsafe.Pointer
-	switch c := iConn.(type) {
-	case *tls.Conn:
-		if c.ConnectionState().Version != gotls.VersionTLS13 {
-			return nil, nil, errors.New("vision needs TLS 1.3")
-		}
-		t = reflect.TypeOf(c.Conn).Elem()
-		base = unsafe.Pointer(c.Conn)
-	case *tls.UConn:
-		if c.ConnectionState().Version != utls.VersionTLS13 {
-			return nil, nil, errors.New("vision needs TLS 1.3")
-		}
-		t = reflect.TypeOf(c.Conn).Elem()
-		base = unsafe.Pointer(c.Conn)
-	case *reality.UConn:
-		t = reflect.TypeOf(c.Conn).Elem()
-		base = unsafe.Pointer(c.Conn)
-	default:
-		return nil, nil, errors.New("vision needs TLS or REALITY directly")
-	}
-	i, _ := t.FieldByName("input")
-	r, _ := t.FieldByName("rawInput")
-	return (*bytes.Reader)(unsafe.Add(base, i.Offset)), (*bytes.Buffer)(unsafe.Add(base, r.Offset)), nil
-}
-
-// DialPacket establishes the outer transport for a UDP association. Datagrams
-// travel as XUDP (Mux.Cool to v1.mux.cool:666), as Xray's own client sends
-// them: the framing Vision requires, naming each datagram's address.
+// DialPacket carries UDP as XUDP (Mux.Cool to v1.mux.cool:666), framed as
+// Vision needs it when the flow is Vision.
 func (w *vlessWire) DialPacket(ctx context.Context) (PacketSession, error) {
-	ob := &session.Outbound{Name: "vless"}
-	conn, err := internet.Dial(session.ContextWithOutbounds(ctx, []*session.Outbound{ob}), w.dest, w.mss)
+	var conn net.Conn
+	var u *utls.UConn
+	var err error
+	if w.vision {
+		u, err = dialSecure(ctx, w.spec, false)
+		conn = u
+	} else {
+		conn, err = dialTransport(ctx, w.spec)
+	}
 	if err != nil {
 		return nil, err
 	}
-	s := &vlessPacketSession{
-		conn:    conn,
-		ob:      ob,
-		addons:  &encoding.Addons{Flow: w.acc.Flow},
-		ts:      proxy.NewTrafficState(w.acc.ID.Bytes()),
-		request: &protocol.RequestHeader{Version: encoding.Version, User: w.user, Command: protocol.RequestCommandMux, Address: xnet.DomainAddress("v1.mux.cool"), Port: 666},
-	}
-	if s.addons.Flow == vless.XRV {
-		ob.CanSpliceCopy = 2
-		if s.input, s.rawInput, err = visionBuffers(stat.TryUnwrapStatsConn(conn)); err != nil {
-			conn.Close()
-			return nil, err
-		}
-	} else {
-		ob.CanSpliceCopy = 3
-	}
-	s.ctx, s.cancel = context.WithCancel(session.ContextWithOutbounds(context.Background(), []*session.Outbound{ob}))
-	return s, nil
+	return &vlessPacketSession{w: w, conn: conn, utls: u}, nil
 }
 
 type vlessPacketSession struct {
-	conn     stat.Connection
-	ob       *session.Outbound
-	addons   *encoding.Addons
-	ts       *proxy.TrafficState
-	request  *protocol.RequestHeader
-	input    *bytes.Reader
-	rawInput *bytes.Buffer
-	ctx      context.Context
-	cancel   context.CancelFunc
+	w    *vlessWire
+	conn net.Conn
+	utls *utls.UConn
 
-	w    buf.Writer // set by the first WritePacket, which sends the request
-	r    buf.Reader // set by the first ReadPacket, which reads the response header
-	pend buf.MultiBuffer
+	writeOnce sync.Once
+	readOnce  sync.Once
+	st        *visionState // Vision only, shared by the writer and reader
+	drain     func() []byte
+	raw       io.Reader
+	init      error
+	xw        *xudpWriter
+	xr        *xudpReader
 }
 
-func (s *vlessPacketSession) Close() error {
-	s.cancel()
-	return s.conn.Close()
+func (s *vlessPacketSession) Close() error { return s.conn.Close() }
+
+// writeInit sends the VLESS Mux request header and sets up the XUDP writer.
+// For Vision it also makes the shared state and the writer that pads the
+// uplink. It does not read the response; that is readInit's job, so writing
+// the request and reading the reply never wait on each other.
+func (s *vlessPacketSession) writeInit() {
+	head, err := vlessHeader(s.w.uuid, 3, s.w.vision, nil) // Mux: no address
+	if err != nil {
+		s.init = err
+		return
+	}
+	if _, err := s.conn.Write(head); err != nil {
+		s.init = err
+		return
+	}
+	if s.w.vision {
+		s.st = newVisionState(s.w.uuid)
+		s.drain, s.raw, err = utlsBuffers(s.utls)
+		if err != nil {
+			s.init = err
+			return
+		}
+		s.xw = newXUDPWriter(newVisionWriter(s.conn, s.st))
+		return
+	}
+	s.xw = newXUDPWriter(s.conn)
 }
 
-func udpDest(t Target) xnet.Destination {
-	return xnet.UDPDestination(xnet.ParseAddress(t.Host), xnet.Port(t.Port))
+// readInit makes sure the request header is out, then reads the VLESS
+// response header and sets up the XUDP reader.
+func (s *vlessPacketSession) readInit() {
+	s.writeOnce.Do(s.writeInit)
+	if s.init != nil {
+		return
+	}
+	if err := readVLESSResponse(s.conn); err != nil {
+		s.init = err
+		return
+	}
+	if s.w.vision {
+		s.xr = newXUDPReader(newVisionReader(s.conn, s.st, s.raw, s.drain))
+		return
+	}
+	s.xr = newXUDPReader(s.conn)
 }
 
 func (s *vlessPacketSession) WritePacket(p []byte, target Target) error {
-	dest := udpDest(target)
-	b := buf.New()
-	if _, err := b.Write(p); err != nil {
-		b.Release()
-		return err // larger than a buffer: XUDP could not carry it either
+	s.writeOnce.Do(s.writeInit)
+	if s.init != nil {
+		return s.init
 	}
-	b.UDP = &dest
-	if s.w != nil {
-		return s.w.WriteMultiBuffer(buf.MultiBuffer{b})
-	}
-	s.ob.Target = dest
-	bw := buf.NewBufferedWriter(buf.NewWriter(s.conn))
-	if err := encoding.EncodeRequestHeader(bw, s.request, s.addons); err != nil {
-		b.Release()
-		return err
-	}
-	w := xudp.NewPacketWriter(encoding.EncodeBodyAddons(bw, s.request, s.addons, s.ts, true, s.ctx, s.conn, s.ob), dest, [8]byte{})
-	if err := w.WriteMultiBuffer(buf.MultiBuffer{b}); err != nil {
-		return err
-	}
-	if err := bw.SetBuffered(false); err != nil {
-		return err
-	}
-	s.w = w
-	return nil
+	return s.xw.WritePacket(p, target)
 }
 
 func (s *vlessPacketSession) ReadPacket() ([]byte, Target, error) {
-	if s.r == nil {
-		responseAddons, err := encoding.DecodeResponseHeader(s.conn, s.request)
-		if err != nil {
-			return nil, Target{}, err
-		}
-		if s.addons.Flow == vless.XRV {
-			vr := proxy.NewVisionReader(encoding.DecodeBodyAddons(s.conn, s.request, responseAddons), s.ts, false, s.ctx, s.conn, s.input, s.rawInput, s.ob)
-			s.r = xudp.NewPacketReader(&buf.BufferedReader{Reader: vr})
-		} else {
-			s.r = xudp.NewPacketReader(s.conn)
+	s.readOnce.Do(s.readInit)
+	if s.init != nil {
+		return nil, Target{}, s.init
+	}
+	return s.xr.ReadPacket()
+}
+
+// parseUUID reads a UUID in the 8-4-4-4-12 hex form, or derives one from an
+// arbitrary string the way Xray does (SHA-1, version/variant bits set).
+func parseUUID(s string) ([]byte, error) {
+	clean := strings.ReplaceAll(s, "-", "")
+	if len(clean) == 32 {
+		b, err := hex.DecodeString(clean)
+		if err == nil && len(b) == 16 {
+			return b, nil
 		}
 	}
-	return nextPacket(s.r, &s.pend)
+	if s == "" {
+		return nil, errors.New("vless: empty uuid")
+	}
+	return deriveUUID(s), nil
 }
+
+// deriveUUID maps an arbitrary string to a UUID, as Xray does for a
+// non-standard id: SHA-1 of 16 zero bytes followed by the string, with the
+// version (5) and variant bits set.
+func deriveUUID(s string) []byte {
+	h := sha1.New()
+	h.Write(make([]byte, 16))
+	h.Write([]byte(s))
+	u := h.Sum(nil)[:16]
+	u[6] = (u[6] & 0x0f) | (5 << 4)
+	u[8] = (u[8] & 0x3f) | 0x80
+	return u
+}
+
+var _ PacketWire = (*vlessWire)(nil)

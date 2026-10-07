@@ -10,9 +10,6 @@ import (
 	"net/netip"
 	"sync"
 	"time"
-
-	"github.com/xtls/xray-core/common/buf"
-	"github.com/xtls/xray-core/common/signal"
 )
 
 // A hosted path is one whose transport the app runs beside the core: an
@@ -95,35 +92,24 @@ func (s *hostedSession) Close() error { return s.conn.Close() }
 
 func (s *hostedSession) Run(ctx context.Context, target Target, prelude []byte, up <-chan []byte, down io.Writer, m Meter) (Outcome, error) {
 	conn := s.conn
-	defer conn.Close()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	timer := signal.CancelAfterInactivity(ctx, cancel, IdleTimeout)
-	go func() {
-		<-ctx.Done()
-		conn.Close() // unblocks the reads
-	}()
+	stop := context.AfterFunc(ctx, func() { conn.Close() }) // unblocks the door's answer
 
 	// The door answers once the far end has reached the target.
 	if err := socksConnect(conn, target); err != nil {
+		conn.Close()
 		if ctx.Err() != nil {
 			return OutcomeCanceled, ctx.Err()
 		}
 		return OutcomeError, err
 	}
+	stop()
 	if len(prelude) > 0 {
 		if _, err := conn.Write(prelude); err != nil {
+			conn.Close()
 			return OutcomeError, err
 		}
 	}
-
-	upErr := make(chan error, 1)
-	go func() { upErr <- pumpUp(ctx, up, buf.NewWriter(conn), m, timer) }()
-	downErr := make(chan error, 1)
-	go func() {
-		downErr <- buf.Copy(buf.NewReader(conn), &downWriter{w: down, m: m}, buf.UpdateActivity(timer))
-	}()
-	return settle(ctx, upErr, downErr, cancel, timer, func() { timer.SetTimeout(2 * time.Second) })
+	return runStream(ctx, conn, conn, conn, up, down, m)
 }
 
 // socksLogin is the client side of the SOCKS5 greeting (RFC 1928), with

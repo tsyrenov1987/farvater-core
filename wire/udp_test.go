@@ -96,7 +96,20 @@ func (testDispatcher) Close() error      { return nil }
 
 func (d testDispatcher) DispatchLink(ctx context.Context, dest xnet.Destination, link *transport.Link) error {
 	if dest.Address.String() != "v1.mux.cool" {
-		return fmt.Errorf("unexpected destination %v", dest)
+		if dest.Network != xnet.Network_TCP {
+			return fmt.Errorf("unexpected destination %v", dest)
+		}
+		c, err := net.Dial("tcp", dest.NetAddr())
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		go func() {
+			_ = buf.Copy(link.Reader, buf.NewWriter(c))
+			_ = c.(*net.TCPConn).CloseWrite()
+		}()
+		_ = buf.Copy(buf.NewReader(c), link.Writer)
+		return nil
 	}
 	w, err := mux.NewServerWorker(ctx, d, link)
 	if err != nil {
@@ -238,13 +251,18 @@ func xrayInbound(t *testing.T, cfg interface{}) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+// vlessServer is Xray's VLESS inbound for testUUID with the given flow.
+func vlessServer(flow string) *vlessin.Config {
+	return &vlessin.Config{
+		Clients:    []*protocol.User{{Email: "t", Account: xserial.ToTypedMessage(&vless.Account{Id: testUUID, Flow: flow})}},
+		Decryption: "none",
+	}
+}
+
 // xrayVLESS serves VLESS with the given flow.
 func xrayVLESS(t *testing.T, flow string) int {
 	t.Helper()
-	return xrayInbound(t, &vlessin.Config{
-		Clients:    []*protocol.User{{Email: "t", Account: xserial.ToTypedMessage(&vless.Account{Id: testUUID, Flow: flow})}},
-		Decryption: "none",
-	})
+	return xrayInbound(t, vlessServer(flow))
 }
 
 // xrayTrojan serves Trojan for the password "pw".
