@@ -23,6 +23,7 @@ const (
 	KindVMess     Kind = "vmess"
 	KindHysteria2 Kind = "hysteria2"
 	KindOlcRTC    Kind = "olcrtc"
+	KindKilvater  Kind = "kilvater"
 )
 
 // PathSpec is a parsed, provider-neutral description of one path.
@@ -70,6 +71,8 @@ type PathSpec struct {
 // Rail is the informational label of the path's transport.
 func (p PathSpec) Rail() string {
 	switch p.Kind {
+	case KindKilvater:
+		return "kilvater"
 	case KindHysteria2:
 		return "hy2"
 	case KindVLESS, KindTrojan, KindVMess:
@@ -174,6 +177,19 @@ func ParseURI(raw string) (PathSpec, error) {
 		spec.UUID = u.User.Username()
 		spec.Cipher = strings.ToLower(first(q.Get("encryption"), "auto"))
 		return spec, parseStream(q, &spec, "none")
+	case "kilvater":
+		spec.Kind = KindKilvater
+		if u.User == nil {
+			return spec, errors.New("kilvater: missing key")
+		}
+		spec.Key = u.User.Username()
+		spec.SNI = q.Get("sni")
+		spec.Fingerprint = first(q.Get("fp"), "chrome")
+		spec.Path = first(q.Get("path"), "/connect")
+		spec.HostHeader = q.Get("host")
+		if spec.SNI == "" {
+			spec.SNI = spec.Host
+		}
 	case "hysteria2", "hy2":
 		// Mirrors the reference client (apernet/hysteria app/v2, cmd/client.go
 		// parseURI): the auth string is the whole userinfo, "user:pass" when a

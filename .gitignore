@@ -6,3 +6,4 @@ dist/
 *.map
 coverage.out
 local/
+/kilvaterd

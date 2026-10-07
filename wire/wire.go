@@ -104,6 +104,8 @@ func Build(spec PathSpec) (Wire, error) {
 		return newHysteria(spec)
 	case KindOlcRTC:
 		return newHosted(spec), nil
+	case KindKilvater:
+		return newKilvater(spec)
 	}
 	return nil, errors.New("wire: unsupported kind " + string(spec.Kind))
 }
