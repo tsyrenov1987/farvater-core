@@ -198,9 +198,10 @@ See `CATALOGUE-SPEC.md`. The schema has no `only/skip/pin` directives by design.
 
 ## 11. Engine and licensing
 
-Own Go module. Wires from Xray-core packages (MPL-2.0: Reality dialer, VLESS, Trojan and VMess encoding, XHTTP,
-WebSocket, gRPC),
-Hysteria `core/v2` (MIT), tun2socks via hev-socks5-tunnel (MIT), uTLS (BSD-3). No GPL/AGPL code is linked;
+Own Go module. The wires are our own code: VLESS with Vision and XUDP, Trojan, VMess AEAD, the REALITY client,
+WebSocket, and gRPC and XHTTP over HTTP/2, on uTLS (BSD-3) fingerprints. Xray-core (MPL-2.0) is not linked; the
+tests run it as the reference server every wire must interoperate with. Hysteria `core/v2` (MIT), tun2socks via
+hev-socks5-tunnel (MIT). No GPL/AGPL code is linked;
 CI fails if any `sagernet/*` module appears in `go list -deps`. Built with `gomobile` into an xcframework / aar,
 `-trimpath -ldflags="-s -w"`. olcRTC is not linked: the Android app runs olcRTC's own program beside the core (§12).
 

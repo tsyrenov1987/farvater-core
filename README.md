@@ -75,8 +75,9 @@ apps built on it decide their own UI and business model.
 
 ## Stack
 
-Go module built with `gomobile`; transports from Xray-core packages (MPL-2.0), Hysteria `core/v2` (MIT),
-TUN via hev-socks5-tunnel (MIT). License gate in CI: no GPL/AGPL in the dependency graph. What is inside an app
+Go module built with `gomobile`; our own wires (VLESS with Vision and XUDP, Trojan, VMess, the REALITY client,
+WebSocket, gRPC, XHTTP) on uTLS (BSD-3), Hysteria `core/v2` (MIT), TUN via hev-socks5-tunnel (MIT). Xray-core is
+not linked: the tests run it as the reference server every wire must interoperate with. License gate in CI: no GPL/AGPL in the dependency graph. What is inside an app
 build, module by module: [docs/TRANSPARENCY.md](docs/TRANSPARENCY.md).
 
 ## License

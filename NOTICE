@@ -7,65 +7,57 @@ farvater-core authors, licensed under the Apache License, Version 2.0
 
 The path-selection brain (package brain), the simulator (package sim), the
 local switchboard (package switchboard), the share-link/catalogue loader
-(packages wire, catalogue) and the reference CLI (cmd/farvater) are original
-works of this project.
+(package catalogue), the wires (package wire: VLESS with Vision and XUDP,
+Trojan, VMess, the REALITY client, WebSocket, gRPC and XHTTP) and the
+reference CLI (cmd/farvater) are original works of this project. Xray-core
+served as the protocol reference for the wires; none of its code is linked
+into the compiled binary.
 
 ------------------------------------------------------------------------------
 Third-party components linked into the compiled binary
 ------------------------------------------------------------------------------
 
-This project builds on established open-source transports rather than
-reimplementing them. The brain never calls these libraries to decide anything;
-they are dialled as interchangeable "wires". The components below are retrieved
-by the Go module system at their pinned versions (see go.sum) and linked into
-the binary. Each remains under its own license.
+The components below are retrieved by the Go module system at their pinned
+versions (see go.sum) and linked into the binary. Each remains under its own
+license.
 
 Transports and TLS:
-  github.com/xtls/xray-core              MPL-2.0   VLESS, Vision, Trojan, VMess,
-                                                    REALITY/TLS, WebSocket, XHTTP and gRPC
-                                                    transport
-  github.com/xtls/reality                MPL-2.0   REALITY handshake
   github.com/refraction-networking/utls  BSD-3     TLS ClientHello fingerprints
   github.com/apernet/hysteria/core/v2    MIT       Hysteria 2 client
   github.com/apernet/hysteria/extras/v2  MIT       Salamander obfuscation
   github.com/apernet/quic-go             MIT       QUIC
   github.com/quic-go/qpack               MIT       QPACK for QUIC
-  github.com/gorilla/websocket           BSD-3     WebSocket framing
 
-Support libraries pulled in transitively by the transports above:
+Support libraries:
   github.com/andybalholm/brotli          MIT
-  github.com/cloudflare/circl            BSD-3
   github.com/klauspost/compress          Apache-2.0
-  github.com/klauspost/cpuid/v2          MIT
-  github.com/miekg/dns                   BSD-3
-  github.com/pires/go-proxyproto         Apache-2.0
-  github.com/juju/ratelimit              LGPL-3.0 WITH a static/dynamic linking
-                                         exception granted by the copyright
-                                         holder (see that module's LICENSE);
-                                         the exception permits conveying a
-                                         combined work that links this library
-                                         without extending LGPL terms to the
-                                         combined work.
   go.yaml.in/yaml/v3                      Apache-2.0
-  google.golang.org/grpc                 Apache-2.0
-  google.golang.org/genproto/googleapis/rpc  Apache-2.0
-  google.golang.org/protobuf             BSD-3
   golang.org/x/crypto                    BSD-3
   golang.org/x/net                       BSD-3
   golang.org/x/sys                       BSD-3
   golang.org/x/text                      BSD-3
   golang.org/x/exp                       BSD-3
-  lukechampine.com/blake3                MIT
   github.com/stretchr/testify            MIT   (linked via a mock file in hysteria core/v2/client)
   github.com/stretchr/objx               MIT   (same)
   golang.org/x/mobile                    BSD-3 (Android/iOS bindings: gobind and bind/seq)
 
 ------------------------------------------------------------------------------
+Used only by the tests (not linked into the compiled binary)
+------------------------------------------------------------------------------
+
+  github.com/xtls/xray-core              MPL-2.0   reference server for the wire
+                                                    interoperability tests
+  github.com/xtls/reality                MPL-2.0   its REALITY server
+  and their own dependencies (google.golang.org/grpc, google.golang.org/protobuf,
+  github.com/gorilla/websocket, github.com/miekg/dns and others; see go.mod).
+
+------------------------------------------------------------------------------
 github.com/sagernet/sing — NOT linked
 ------------------------------------------------------------------------------
 
-Some transport packages reference a small socket-control helper API under the
-import path github.com/sagernet/sing/common/control. The upstream sing project
+Xray-core's transport package, which the tests run, references a small
+socket-control helper API under the import path
+github.com/sagernet/sing/common/control. The upstream sing project
 is GPL-licensed, so this repository does NOT use it. The directory
 third_party/sing-shim is an independent, clean-room implementation of only the
 tiny API surface actually referenced, under the Apache License 2.0, and is
