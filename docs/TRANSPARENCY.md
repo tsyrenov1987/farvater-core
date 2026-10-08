@@ -1,7 +1,7 @@
 # Transparency — what is inside a Farvater VPN build
 
-Build: **Farvater VPN for iPhone 1.0 (10)**. Core: tag [`ios-1.0-10`](https://github.com/tsyrenov1987/farvater-core/tree/ios-1.0-10).
-The core's Go code at that tag is the code of commit `a6e22f7`, from which the build's `FarvaterCore.xcframework` was made;
+Build: **Farvater VPN for iPhone 1.0 (11)**. Core: tag [`ios-1.0-11`](https://github.com/tsyrenov1987/farvater-core/tree/ios-1.0-11).
+The core's Go code at that tag is the code of commit `aea2248`, from which the build's `FarvaterCore.xcframework` was made;
 the tag adds only this document.
 
 ## The app around the core
@@ -40,7 +40,7 @@ path that `replace` points at our clean-room shim, `third_party/sing-shim`).
 ### How to reproduce
 
 ```sh
-git checkout ios-1.0-10
+git checkout ios-1.0-11
 gomobile bind -target=ios/arm64 -iosversion 17.0 -trimpath -ldflags="-s -w" ./mobile   # upstream golang.org/x/mobile
 lipo FarvaterCore.xcframework/ios-arm64/FarvaterCore.framework/FarvaterCore -thin arm64 -output core.a
 ar -x core.a go.o
