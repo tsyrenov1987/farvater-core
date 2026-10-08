@@ -172,21 +172,24 @@ func (st *visionState) filterTLS(b []byte) {
 
 // visionWriter wraps the TLS connection and pads the client's uplink.
 type visionWriter struct {
-	raw  io.Writer // the TLS connection (and, after a Direct frame, written to directly)
-	st   *visionState
-	uuid []byte
+	raw    io.Writer // the TLS connection
+	direct io.Writer // the TCP connection under it: every write after a Direct frame goes here, as Xray reads it
+	st     *visionState
+	uuid   []byte
 }
 
-func newVisionWriter(raw io.Writer, st *visionState) *visionWriter {
-	return &visionWriter{raw: raw, st: st, uuid: append([]byte(nil), st.uuid...)}
+// newVisionWriter writes through raw; direct may be nil when the flow never
+// goes direct (XUDP).
+func newVisionWriter(raw, direct io.Writer, st *visionState) *visionWriter {
+	return &visionWriter{raw: raw, direct: direct, st: st, uuid: append([]byte(nil), st.uuid...)}
 }
 
 func (w *visionWriter) Write(p []byte) (int, error) {
 	st := w.st
 	st.mu.Lock()
-	if st.wDirect {
+	if st.wDirect && w.direct != nil {
 		st.mu.Unlock()
-		return w.raw.Write(p)
+		return w.direct.Write(p)
 	}
 	if st.numberOfPacketToFilter > 0 {
 		st.filterTLS(p)
@@ -201,6 +204,7 @@ func (w *visionWriter) Write(p []byte) (int, error) {
 	isComplete := isCompleteRecord(p)
 	longPadding := st.isTLS
 	var out []byte
+pad:
 	for i, piece := range pieces {
 		switch {
 		case st.isTLS && len(piece) >= 6 && bytes.Equal(piece[:3], tlsAppDataStart) && isComplete:
@@ -217,6 +221,8 @@ func (w *visionWriter) Write(p []byte) (int, error) {
 			out = append(out, xtlsPadding(piece, command, &w.uuid, true)...)
 			st.wPadding = false
 			longPadding = false
+			// The pieces after it are still padded, the last one carrying End
+			// or Direct (Xray's `continue`): the server reads them as frames.
 		case !st.isTLS12orAbove && st.numberOfPacketToFilter <= 1:
 			st.wPadding = false
 			out = append(out, xtlsPadding(piece, visCmdEnd, &w.uuid, longPadding)...)
@@ -224,7 +230,7 @@ func (w *visionWriter) Write(p []byte) (int, error) {
 			for _, rest := range pieces[i+1:] {
 				out = append(out, rest...)
 			}
-			// wPadding is now false, so the loop breaks below.
+			break pad
 		default:
 			command := byte(visCmdContinue)
 			if i == len(pieces)-1 && !st.wPadding {
@@ -235,16 +241,13 @@ func (w *visionWriter) Write(p []byte) (int, error) {
 			}
 			out = append(out, xtlsPadding(piece, command, &w.uuid, longPadding)...)
 		}
-		if !st.wPadding {
-			break
-		}
 	}
-	direct := st.wDirect
 	st.mu.Unlock()
+	// The frame that says Direct still goes through TLS; the writes after it
+	// go to the TCP connection.
 	if _, err := w.raw.Write(out); err != nil {
 		return 0, err
 	}
-	_ = direct
 	return len(p), nil
 }
 

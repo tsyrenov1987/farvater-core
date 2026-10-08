@@ -154,7 +154,7 @@ func (s *vlessSession) runVision(ctx context.Context, head, prelude []byte, up <
 		s.conn.Close()
 		return OutcomeError, err
 	}
-	vw := newVisionWriter(s.conn, st)
+	vw := newVisionWriter(s.conn, s.utls.NetConn(), st)
 	if err := vw.writeFirst(prelude); err != nil {
 		s.conn.Close()
 		return OutcomeError, err
@@ -236,7 +236,7 @@ func (s *vlessPacketSession) writeInit() {
 			s.init = err
 			return
 		}
-		s.xw = newXUDPWriter(newVisionWriter(s.conn, s.st))
+		s.xw = newXUDPWriter(newVisionWriter(s.conn, nil, s.st))
 		return
 	}
 	s.xw = newXUDPWriter(s.conn)
