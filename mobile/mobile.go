@@ -351,11 +351,12 @@ func JournalJSON() string {
 }
 
 // FetchCatalogue downloads a catalogue URL and returns JSON
-// {"ok":true,"text":"...","paths":n,"title":"..."} or {"ok":false,"error":"..."}.
-// The app stores text as the last good copy and starts from it when the URL
-// is unreachable.
+// {"ok":true,"text":"...","paths":n,"title":"...","provider":{...}} or
+// {"ok":false,"error":"..."}; provider (see catalogue.Provider) only when the
+// response headers carried it. The app stores text as the last good copy and
+// starts from it when the URL is unreachable.
 func FetchCatalogue(catalogueURL string) string {
-	body, err := catalogue.Fetch(strings.TrimSpace(catalogueURL))
+	body, prov, err := catalogue.FetchWithProvider(strings.TrimSpace(catalogueURL))
 	if err != nil {
 		return toJSON(map[string]any{"ok": false, "error": err.Error()})
 	}
@@ -363,31 +364,39 @@ func FetchCatalogue(catalogueURL string) string {
 	if err != nil {
 		return toJSON(map[string]any{"ok": false, "error": err.Error()})
 	}
-	return toJSON(map[string]any{"ok": true, "text": string(body), "paths": runnable(cat), "title": cat.Title})
+	return toJSON(withProvider(map[string]any{"ok": true, "text": string(body), "paths": runnable(cat), "title": cat.Title}, prov))
+}
+
+func withProvider(m map[string]any, p *catalogue.Provider) map[string]any {
+	if p != nil {
+		m["provider"] = p
+	}
+	return m
 }
 
 // ImportCatalogue checks what a person pasted where a catalogue goes: a
 // subscription link (as it is, without its scheme, inside another client's
 // import link or inside a message), share links, a base64 subscription or a
 // JSON catalogue. Returns JSON {"ok":true,"source":"...","text":"...","paths":n,
-// "title":"..."}, source being what the app keeps and refreshes from (the link,
+// "title":"...","provider":{...}}, source being what the app keeps and refreshes from (the link,
 // or the text itself) and text the catalogue to start from; or
 // {"ok":false,"error":"..."}.
 func ImportCatalogue(input string) string {
 	src := catalogue.Resolve(input)
 	text := src
+	var prov *catalogue.Provider
 	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
-		body, err := catalogue.Fetch(src)
+		body, p, err := catalogue.FetchWithProvider(src)
 		if err != nil {
 			return toJSON(map[string]any{"ok": false, "error": err.Error()})
 		}
-		text = string(body)
+		text, prov = string(body), p
 	}
 	cat, err := catalogue.Parse([]byte(text))
 	if err != nil {
 		return toJSON(map[string]any{"ok": false, "error": err.Error()})
 	}
-	return toJSON(map[string]any{"ok": true, "source": src, "text": text, "paths": runnable(cat), "title": cat.Title})
+	return toJSON(withProvider(map[string]any{"ok": true, "source": src, "text": text, "paths": runnable(cat), "title": cat.Title}, prov))
 }
 
 // MergeCatalogues joins catalogue texts into one for Start: the apps' "several

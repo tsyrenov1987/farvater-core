@@ -76,19 +76,30 @@ func Load(src string) (*Catalogue, error) {
 // Fetch downloads a catalogue or subscription body without parsing it, so a
 // client can keep the last good copy for when the source is unreachable.
 func Fetch(u string) ([]byte, error) {
+	body, _, err := FetchWithProvider(u)
+	return body, err
+}
+
+// FetchWithProvider is Fetch that also reads what the provider says in the
+// response headers (see Provider); the provider is nil when it said nothing.
+func FetchWithProvider(u string) ([]byte, *Provider, error) {
 	cl := &http.Client{Timeout: 20 * time.Second}
 	req, _ := http.NewRequest("GET", u, nil)
 	req.Header.Set("User-Agent", "farvater-core/0.1")
 	req.Header.Set("Accept", "application/farvater-catalogue+json, text/plain;q=0.9, */*;q=0.5")
 	resp, err := cl.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("catalogue: HTTP %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("catalogue: HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, nil, err
+	}
+	return body, ProviderFrom(resp.Header), nil
 }
 
 // Parse accepts the JSON catalogue, a base64 subscription, or plain share links.
