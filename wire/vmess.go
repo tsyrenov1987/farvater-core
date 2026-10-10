@@ -73,6 +73,7 @@ func (w *vmessWire) ID() string           { return w.spec.ID }
 func (w *vmessWire) Spec() PathSpec       { return w.spec }
 func (w *vmessWire) NeedsHandshake() bool { return true }
 func (w *vmessWire) Close() error         { return w.tr.Close() }
+func (w *vmessWire) Refresh(t time.Time)  { w.tr.Refresh(t) }
 
 func (w *vmessWire) Dial(ctx context.Context) (Session, error) {
 	conn, err := w.tr.dial(ctx)

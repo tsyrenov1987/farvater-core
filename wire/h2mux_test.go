@@ -174,3 +174,178 @@ func TestH2MuxCloseBeforeReadIsRaceFree(t *testing.T) {
 		s.Close() // before any Read
 	}
 }
+
+// freezeDialer is h2EchoDialer behind a relay that freeze turns into a black
+// hole for the connections made so far, the way a NAT that forgot a
+// connection, or a network the phone left, kills it in silence: bytes go out
+// and nothing comes back, and nothing closes. Connections dialed later work.
+type freezeDialer struct {
+	h2EchoDialer
+	mu     sync.Mutex
+	frozen []*atomic.Bool
+}
+
+func (d *freezeDialer) dial(ctx context.Context) (net.Conn, error) {
+	srv, err := d.h2EchoDialer.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c, mid := net.Pipe()
+	dead := &atomic.Bool{}
+	d.mu.Lock()
+	d.frozen = append(d.frozen, dead)
+	d.mu.Unlock()
+	relay := func(dst, src net.Conn) {
+		buf := make([]byte, 4096)
+		for {
+			n, err := src.Read(buf)
+			if err != nil {
+				dst.Close()
+				return
+			}
+			if !dead.Load() {
+				dst.Write(buf[:n])
+			}
+		}
+	}
+	go relay(srv, mid)
+	go relay(mid, srv)
+	return c, nil
+}
+
+func (d *freezeDialer) freeze() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, f := range d.frozen {
+		f.Store(true)
+	}
+}
+
+// answers reports whether msg comes back on s within wait.
+func answers(s net.Conn, msg string, wait time.Duration) bool {
+	if _, err := s.Write([]byte(msg)); err != nil {
+		return false
+	}
+	got := make(chan bool, 1)
+	go func() {
+		b := make([]byte, len(msg))
+		_, err := io.ReadFull(s, b)
+		got <- err == nil && string(b) == msg
+	}()
+	select {
+	case ok := <-got:
+		return ok
+	case <-time.After(wait):
+		return false
+	}
+}
+
+// After refresh, a connection that died in silence takes no new stream: the
+// next one dials afresh and works, and the stream stuck on the dead one is
+// released once the PING goes unanswered.
+func TestH2MuxRefreshLeavesADeadConnection(t *testing.T) {
+	defer func(d time.Duration) { retirePingTimeout = d }(retirePingTimeout)
+	retirePingTimeout = 300 * time.Millisecond
+	d := &freezeDialer{}
+	m := newH2Mux(d.dial, 0, 0)
+	defer m.Close()
+
+	a := openOrFail(t, m)
+	echo(t, a, "first")
+	a.Close()
+	d.freeze()
+	stuck := openOrFail(t, m)
+	if answers(stuck, "lost", 300*time.Millisecond) {
+		t.Fatal("setup: the frozen connection answered")
+	}
+	if got := d.count(); got != 1 {
+		t.Fatalf("setup: the stuck stream should have ridden the dead connection, %d dials", got)
+	}
+
+	m.refresh(time.Now())
+	b := openOrFail(t, m)
+	if !answers(b, "fresh", 2*time.Second) {
+		t.Fatal("the stream after refresh did not get through")
+	}
+	b.Close()
+	if got := d.count(); got != 2 {
+		t.Fatalf("expected a fresh dial after refresh, got %d dials", got)
+	}
+
+	released := make(chan struct{})
+	go func() {
+		stuck.Read(make([]byte, 1))
+		close(released)
+	}()
+	select {
+	case <-released:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream on the dead connection still hangs")
+	}
+	stuck.Close()
+}
+
+// refresh never cuts a live connection under its streams: they finish there
+// while new streams ride a fresh connection.
+func TestH2MuxRefreshKeepsLiveStreams(t *testing.T) {
+	defer func(d time.Duration) { retirePingTimeout = d }(retirePingTimeout)
+	retirePingTimeout = 300 * time.Millisecond
+	d := &h2EchoDialer{}
+	m := newH2Mux(d.dial, 0, 0)
+	defer m.Close()
+
+	a := openOrFail(t, m)
+	echo(t, a, "before")
+	m.refresh(time.Now())
+	b := openOrFail(t, m)
+	echo(t, b, "new")
+	time.Sleep(3 * retirePingTimeout)
+	echo(t, a, "still-here")
+	a.Close()
+	b.Close()
+	if got := d.count(); got != 2 {
+		t.Fatalf("expected 2 dials, got %d", got)
+	}
+}
+
+// A connection left with no streams for the Transport's IdleConnTimeout is
+// closed, so the next stream dials afresh (outerTransport sets h2IdleClose).
+func TestH2MuxIdleConnectionIsClosed(t *testing.T) {
+	d := &h2EchoDialer{}
+	m := newH2Mux(d.dial, 0, 0)
+	m.tr.IdleConnTimeout = 100 * time.Millisecond
+	defer m.Close()
+
+	a := openOrFail(t, m)
+	echo(t, a, "first")
+	a.Close()
+	time.Sleep(400 * time.Millisecond)
+	b := openOrFail(t, m)
+	echo(t, b, "second")
+	b.Close()
+	if got := d.count(); got != 2 {
+		t.Fatalf("expected the idle connection closed and a fresh dial, got %d dials", got)
+	}
+}
+
+// A refresh for flows that began before the current connection was made leaves
+// it alone: several flows that met a dead connection at once retire it once,
+// not each fresh one dialed after it.
+func TestH2MuxRefreshSparesANewerConnection(t *testing.T) {
+	d := &h2EchoDialer{}
+	m := newH2Mux(d.dial, 0, 0)
+	defer m.Close()
+
+	began := time.Now()
+	time.Sleep(10 * time.Millisecond)
+	a := openOrFail(t, m)
+	echo(t, a, "made after the flow began")
+	m.refresh(began)
+	b := openOrFail(t, m)
+	echo(t, b, "same connection")
+	a.Close()
+	b.Close()
+	if got := d.count(); got != 1 {
+		t.Fatalf("a connection newer than the flow was left behind: %d dials", got)
+	}
+}

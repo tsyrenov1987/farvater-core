@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"time"
 )
 
 // Target is the destination the app asked for.
@@ -72,6 +73,15 @@ type Wire interface {
 	NeedsHandshake() bool
 	Dial(ctx context.Context) (Session, error)
 	Close() error
+}
+
+// Refresher is a wire that rides its flows on one shared connection (gRPC,
+// XHTTP, kilvater). Refresh stops new flows from riding the current one if it
+// was made before t, as it may have died in silence since (a NAT that forgot
+// it, a network the phone left): the next flow dials a fresh connection, and
+// the flows already on the old one finish there if it is alive.
+type Refresher interface {
+	Refresh(t time.Time)
 }
 
 // PacketSession carries the UDP datagrams of one app socket over a path.

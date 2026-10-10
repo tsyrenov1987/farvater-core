@@ -46,6 +46,7 @@ func (w *vlessWire) ID() string           { return w.spec.ID }
 func (w *vlessWire) Spec() PathSpec       { return w.spec }
 func (w *vlessWire) NeedsHandshake() bool { return true }
 func (w *vlessWire) Close() error         { return w.tr.Close() }
+func (w *vlessWire) Refresh(t time.Time)  { w.tr.Refresh(t) }
 
 func (w *vlessWire) Dial(ctx context.Context) (Session, error) {
 	if w.vision {

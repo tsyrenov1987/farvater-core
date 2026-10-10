@@ -252,6 +252,19 @@ func (s *Switchboard) SetNetwork(ctx string) {
 	s.mu.Unlock()
 	s.logf("network %s → %s (leader %s)", old, ctx, leader)
 	_ = s.writeMemory(data, seq)
+	// Connections shared across flows were made on the network left behind.
+	at := time.Now()
+	for _, id := range s.order {
+		s.refresh(id, at)
+	}
+}
+
+// refresh makes the next flow over path dial a fresh connection when the
+// path's wire shares one across flows (wire.Refresher) and made it before at.
+func (s *Switchboard) refresh(path string, at time.Time) {
+	if r, ok := s.wires[path].(wire.Refresher); ok {
+		r.Refresh(at)
+	}
 }
 
 // checkRestricted runs when no path connects: if an allow-listed site answers

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 )
 
 // outerTransport is a path's outer transport, shared across every flow of one wire.
@@ -24,8 +25,12 @@ func newOuterTransport(s PathSpec) *outerTransport { return &outerTransport{spec
 
 // h2 returns the shared HTTP/2 connection manager, made on first use. Pings are
 // left off (the library default): this layer only reuses the connection, so the
-// wire looks as it did before bar the saved handshakes. Freeze-detection pacing
-// is a kilvater concern, tuned there.
+// wire looks as it did before bar the saved handshakes, and a gRPC server
+// closes a connection that pings it often (grpc-go's too_many_pings).
+// Freeze-detection pacing is a kilvater concern, tuned there. Instead a
+// connection left with no streams for h2IdleClose is closed, as Xray's XHTTP
+// client closes its idle ones (ConnIdleTimeout): one that sat idle while the
+// phone slept may have died in silence, and the next flow dials afresh.
 func (t *outerTransport) h2() *h2Mux {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -34,8 +39,22 @@ func (t *outerTransport) h2() *h2Mux {
 		t.mux = newH2Mux(func(ctx context.Context) (net.Conn, error) {
 			return dialSecure(ctx, s, false)
 		}, 0, 0)
+		t.mux.tr.IdleConnTimeout = h2IdleClose
 	}
 	return t.mux
+}
+
+// h2IdleClose: a shared connection with no streams this long is closed.
+const h2IdleClose = 5 * time.Minute
+
+// Refresh leaves the shared connection behind if it was made before at (see Refresher).
+func (t *outerTransport) Refresh(at time.Time) {
+	t.mu.Lock()
+	m := t.mux
+	t.mu.Unlock()
+	if m != nil {
+		m.refresh(at)
+	}
 }
 
 // dial establishes the outer transport and returns it as a net.Conn: the

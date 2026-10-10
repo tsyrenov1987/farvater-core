@@ -47,7 +47,8 @@ func (w *kilWire) NeedsHandshake() bool {
 	return st.Closed || st.Closing
 }
 
-func (w *kilWire) Close() error { return w.mux.Close() }
+func (w *kilWire) Close() error        { return w.mux.Close() }
+func (w *kilWire) Refresh(t time.Time) { w.mux.refresh(t) }
 
 func (w *kilWire) Dial(ctx context.Context) (Session, error) {
 	path := w.spec.Path

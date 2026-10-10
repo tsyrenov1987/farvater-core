@@ -172,6 +172,11 @@ func (f *flow) serve(ctx context.Context) {
 		out, rerr, fbTimeout, sawBytes := f.run(ctx, sess, a, prelude)
 		r := a.runReceipt(f, len(prelude), out, rerr, fbTimeout)
 		s.observe(r)
+		if fbTimeout {
+			// Ready yet unanswered: a connection the path shares across flows
+			// may have died in silence, so the next flow dials a fresh one.
+			s.refresh(a.path, a.start)
+		}
 		if sawBytes || out == wire.OutcomeRemoteFin || out == wire.OutcomeClientFin || ctx.Err() != nil {
 			return
 		}

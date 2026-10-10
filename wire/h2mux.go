@@ -35,6 +35,7 @@ type h2Mux struct {
 	mu   sync.Mutex
 	cc   *http2.ClientConn
 	conn net.Conn
+	at   time.Time // when cc was made
 }
 
 func newH2Mux(dial func(context.Context) (net.Conn, error), pingAfterIdle, pingTimeout time.Duration) *h2Mux {
@@ -68,19 +69,50 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 		c.Close()
 		return nil, nil, errors.New("h2mux: a fresh connection would not take a stream")
 	}
-	m.cc, m.conn = cc, c
+	m.cc, m.conn, m.at = cc, c, time.Now()
 	if old != nil {
-		// The replaced connection keeps serving its open streams, then closes;
-		// a stuck one is forced shut after a minute so it cannot leak.
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			defer cancel()
-			if err := old.Shutdown(ctx); err != nil {
-				old.Close()
-			}
-		}()
+		retire(old)
 	}
 	return cc, c, nil
+}
+
+// retire lets a connection that takes no new streams finish the ones it
+// carries, then closes it. A PING first tells a live connection from one that
+// died in silence: a dead one is closed at once, so the flows stuck on it end
+// instead of hanging until the system gives up on the socket (minutes), and a
+// live one is never cut under the flows it carries.
+func retire(cc *http2.ClientConn) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), retirePingTimeout)
+		err := cc.Ping(ctx)
+		cancel()
+		if err != nil {
+			cc.Close()
+			return
+		}
+		_ = cc.Shutdown(context.Background())
+	}()
+}
+
+// retirePingTimeout: a retired connection that does not answer a PING this
+// long is taken for dead.
+var retirePingTimeout = 10 * time.Second
+
+// refresh stops new streams from riding the current connection if it was made
+// before t, as it may have died in silence since (a NAT that forgot it, a
+// network the phone left): the next stream dials a fresh one. Streams already
+// on it finish there (retire). One made since is left alone: several flows
+// that met the dead connection at once retire it once, not each new one.
+func (m *h2Mux) refresh(t time.Time) {
+	m.mu.Lock()
+	old := m.cc
+	if old == nil || !m.at.Before(t) {
+		m.mu.Unlock()
+		return
+	}
+	m.cc, m.conn = nil, nil
+	m.mu.Unlock()
+	retire(old)
 }
 
 // openStream starts one request/response stream on the shared connection. The
