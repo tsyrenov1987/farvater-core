@@ -46,7 +46,7 @@ func main() {
 		log.Fatalf("tls: %v", err)
 	}
 
-	ln, err := tls.Listen("tcp", *listen, tlsCfg)
+	ln, err := listenTLS(*listen, tlsCfg)
 	if err != nil {
 		log.Fatal(err)
 	}
