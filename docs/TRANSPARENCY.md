@@ -1,14 +1,14 @@
 # Transparency — what is inside a Farvater VPN build
 
-Build: **Farvater VPN for iPhone 1.0 (16)**. Core: tag [`ios-1.0-16`](https://github.com/tsyrenov1987/farvater-core/tree/ios-1.0-16).
-The core's Go code at that tag is the code of commit `68bb7fb`, from which the build's `FarvaterCore.xcframework` was made;
+Build: **Farvater VPN for iPhone 1.0 (17)**. Core: tag [`ios-1.0-17`](https://github.com/tsyrenov1987/farvater-core/tree/ios-1.0-17).
+The core's Go code at that tag is the code of commit `96bf6e0`, from which the build's `FarvaterCore.xcframework` was made;
 the tag adds only this document.
 
 ## The app around the core
 
 | Part | Whose | What it does |
 |---|---|---|
-| Farvater app (SwiftUI) | ours | screens, catalogues, receipts, the live chart, the subscription screen, Farvater Pro (StoreKit) |
+| Farvater app (SwiftUI) | ours | screens, catalogues, receipts, the live chart, the subscription card on the main screen, Farvater Pro (StoreKit) |
 | Packet-tunnel extension (Swift) | ours | the iOS VPN (Network Extension); runs the core and hev-socks5-tunnel |
 | Widget (SwiftUI) | ours | the tunnel's state on the Home Screen; the VPN switch in Control Center (iOS 18) |
 | farvater-core (Go, this repository) | ours, Apache-2.0 | picks the path for every connection by delivery receipts; linked into the app (catalogue checks) and the tunnel extension |
@@ -20,9 +20,9 @@ Measured on the arm64 slice of this build's `FarvaterCore.xcframework`: text sym
 
 | Part | Machine code | Share |
 |---|---:|---:|
-| Go runtime, standard library, golang.org/x | 2.90 MB | 67.9 % |
+| Go runtime, standard library, golang.org/x | 2.90 MB | 67.8 % |
 | Third-party libraries (below) | 1.07 MB | 24.9 % |
-| Our core (`brain`, `switchboard`, `wire`, `kilvater`, `catalogue`, `mobile`) | 0.23 MB | 5.5 % |
+| Our core (`brain`, `switchboard`, `wire`, `kilvater`, `catalogue`, `mobile`) | 0.24 MB | 5.5 % |
 | Compiler-generated (type equality, wrappers, stubs) | 0.08 MB | 1.8 % |
 | Total | 4.28 MB | |
 
@@ -40,7 +40,7 @@ path that `replace` points at our clean-room shim, `third_party/sing-shim`).
 ### How to reproduce
 
 ```sh
-git checkout ios-1.0-16
+git checkout ios-1.0-17
 gomobile bind -target=ios/arm64 -iosversion 17.0 -trimpath -ldflags="-s -w" ./mobile   # upstream golang.org/x/mobile
 lipo FarvaterCore.xcframework/ios-arm64/FarvaterCore.framework/FarvaterCore -thin arm64 -output core.a
 ar -x core.a go.o
@@ -97,6 +97,7 @@ The license texts of all of them ship in the app (menu ⋯ → Open-source licen
 - **Log:** a receipt for every connection — bytes delivered, time to first byte, path, how it ended.
 - **Paths:** each path's delivered share, its p90 first byte (once it has five answered connections) and its state:
   leading, in reserve, scouting or bypassing.
-- **Subscription:** days and traffic left as the provider reports them, its notices and a Support button that opens
-  the provider's support page. The App Store build shows nothing that leads to a purchase: no renewal, site or
-  invite links, and no notice that carries a purchase button.
+- **Subscription** (a card under the connect button): days and traffic left as the provider reports them, its notices
+  and a Support button that opens the provider's support page. The App Store build shows nothing that leads to a
+  purchase: no renewal, site or invite links, no notice that carries a purchase button, and not the provider's own
+  note (`announce`), which can be a payment pitch.
