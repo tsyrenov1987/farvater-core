@@ -349,3 +349,33 @@ func TestH2MuxRefreshSparesANewerConnection(t *testing.T) {
 		t.Fatalf("a connection newer than the flow was left behind: %d dials", got)
 	}
 }
+
+// needsDial is what the handshake governor paces by: a stream that rides the
+// connection already up runs no handshake and must not wait for a slot.
+func TestH2MuxNeedsDialOnlyWithoutAUsableConnection(t *testing.T) {
+	d := &h2EchoDialer{}
+	m := newH2Mux(d.dial, 0, 0)
+	defer m.Close()
+	if !m.needsDial() {
+		t.Fatal("no connection yet, but no dial needed")
+	}
+	a := openOrFail(t, m)
+	echo(t, a, "up")
+	if m.needsDial() {
+		t.Fatal("a stream on the live connection was counted as a handshake")
+	}
+	m.refresh(time.Now().Add(time.Millisecond))
+	if !m.needsDial() {
+		t.Fatal("after refresh the next stream dials, but no dial needed")
+	}
+	a.Close()
+}
+
+// tcp and ws connect per flow: every dial is a handshake.
+func TestPerFlowTransportsAlwaysHandshake(t *testing.T) {
+	for _, n := range []string{"tcp", "ws"} {
+		if !newOuterTransport(PathSpec{Network: n}).needsHandshake() {
+			t.Fatalf("%s: a per-flow connection was not counted as a handshake", n)
+		}
+	}
+}

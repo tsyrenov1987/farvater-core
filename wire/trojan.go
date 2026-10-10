@@ -34,7 +34,7 @@ func trojanKey(password string) []byte {
 
 func (w *trojanWire) ID() string           { return w.spec.ID }
 func (w *trojanWire) Spec() PathSpec       { return w.spec }
-func (w *trojanWire) NeedsHandshake() bool { return true }
+func (w *trojanWire) NeedsHandshake() bool { return w.tr.needsHandshake() }
 func (w *trojanWire) Close() error         { return w.tr.Close() }
 func (w *trojanWire) Refresh(t time.Time)  { w.tr.Refresh(t) }
 

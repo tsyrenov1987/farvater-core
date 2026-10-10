@@ -313,8 +313,12 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 		o, e := sess.Run(rctx, f.target, prelude, f.up, f.client, a.m)
 		done <- res{o, e}
 	}()
+	// The first-byte deadline wants a fine clock; once the answer has come,
+	// stalls (StallMs) are judged as well on a coarse one, and a long idle
+	// flow (a messenger's) then wakes the phone once a second, not four times.
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
+	coarse := false
 	fbMs := f.fbDeadlineMs
 	if fbMs <= 0 {
 		fbMs = f.s.cfg.FirstByteTimeout.Milliseconds()
@@ -342,6 +346,10 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 					cancel()
 				}
 				continue
+			}
+			if !coarse {
+				coarse = true
+				tick.Reset(time.Second)
 			}
 			a.m.tick(now, f.s.cfg.StallMs)
 		}

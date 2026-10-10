@@ -57,6 +57,18 @@ func (t *outerTransport) Refresh(at time.Time) {
 	}
 }
 
+// needsHandshake reports whether the next dial runs a TLS handshake: always
+// for tcp and ws, which connect per flow; for grpc and xhttp only when the
+// shared connection is missing or full, so the handshake governor does not
+// queue flows that ride a connection already up.
+func (t *outerTransport) needsHandshake() bool {
+	switch t.spec.Network {
+	case "grpc", "xhttp":
+		return t.h2().needsDial()
+	}
+	return true
+}
+
 // dial establishes the outer transport and returns it as a net.Conn: the
 // TLS/REALITY stream itself for raw TCP, or a stream over it for WebSocket,
 // gRPC or XHTTP.

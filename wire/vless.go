@@ -44,7 +44,7 @@ func newVLESS(spec PathSpec) (*vlessWire, error) {
 
 func (w *vlessWire) ID() string           { return w.spec.ID }
 func (w *vlessWire) Spec() PathSpec       { return w.spec }
-func (w *vlessWire) NeedsHandshake() bool { return true }
+func (w *vlessWire) NeedsHandshake() bool { return w.tr.needsHandshake() }
 func (w *vlessWire) Close() error         { return w.tr.Close() }
 func (w *vlessWire) Refresh(t time.Time)  { w.tr.Refresh(t) }
 

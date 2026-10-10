@@ -76,6 +76,15 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 	return cc, c, nil
 }
 
+// needsDial reports whether the next stream would dial a connection, and so
+// run a TLS handshake: there is none yet, or the current one takes no more
+// streams (closed, closing or full).
+func (m *h2Mux) needsDial() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cc == nil || !m.cc.CanTakeNewRequest()
+}
+
 // retire lets a connection that takes no new streams finish the ones it
 // carries, then closes it. A PING first tells a live connection from one that
 // died in silence: a dead one is closed at once, so the flows stuck on it end

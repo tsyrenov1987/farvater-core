@@ -33,19 +33,10 @@ func newKilvater(s PathSpec) (Wire, error) {
 func (w *kilWire) ID() string     { return w.spec.ID }
 func (w *kilWire) Spec() PathSpec { return w.spec }
 
-func (w *kilWire) NeedsHandshake() bool {
-	w.mux.mu.Lock()
-	cc := w.mux.cc
-	w.mux.mu.Unlock()
-	if cc == nil {
-		return true
-	}
-	// A connection the readLoop dropped (freeze, GOAWAY) is still held here
-	// until the next openStream replaces it; the next Dial over it handshakes,
-	// so the governor must count it as one.
-	st := cc.State()
-	return st.Closed || st.Closing
-}
+// NeedsHandshake: a connection the readLoop dropped (freeze, GOAWAY) is still
+// held until the next openStream replaces it; the next Dial over it
+// handshakes, so the governor must count it as one (h2Mux.needsDial).
+func (w *kilWire) NeedsHandshake() bool { return w.mux.needsDial() }
 
 func (w *kilWire) Close() error        { return w.mux.Close() }
 func (w *kilWire) Refresh(t time.Time) { w.mux.refresh(t) }
