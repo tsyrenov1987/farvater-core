@@ -30,6 +30,11 @@ Especially interesting:
 Out of scope: the third-party code in `third_party/` (report it upstream), and traffic-analysis limits that
 [docs/KILVATER.md §8](docs/KILVATER.md#8-limits) already lists.
 
+## Known advisories that do not apply
+
+- **GO-2026-5288 (Hysteria, no fixed version).** The crash needs a Hysteria *server* with sniffing enabled.
+  farvater-core links only the Hysteria client. Scanners report the advisory for the whole module.
+
 ## Supported versions
 
 Only the latest release gets fixes.
@@ -37,7 +42,7 @@ Only the latest release gets fixes.
 ## Verifying releases
 
 Release binaries are built by GitHub Actions from the tagged commit. Each release has a `SHA256SUMS` file and
-build-provenance attestations. You can check an archive with:
+build-provenance attestations, also attached as `provenance.intoto.jsonl`. You can check an archive with:
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS
