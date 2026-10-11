@@ -26,6 +26,11 @@ type Server struct {
 	// other non-public addresses. Off by default: a key holder must not be
 	// able to talk to the server's own local services or its LAN.
 	AllowPrivate bool
+
+	// Pad is how the server shapes the record sizes and timing it sends
+	// downstream (PadMode). The zero value is PadModerate. It is one-sided:
+	// an old client reads any mode the same way.
+	Pad PadMode
 }
 
 var errForbiddenTarget = errors.New("kilvater: target address not allowed")
@@ -145,6 +150,11 @@ func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Wri
 		remote.Close()
 	}()
 
+	// The downstream direction is shaped: DATA is split into a web-like spread
+	// of sizes instead of a run of 16 KiB records, with PAD mixed in (shape.go).
+	sh := NewShaper(down, s.Pad)
+	defer sh.Close()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -181,20 +191,13 @@ func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Wri
 		for {
 			n, err := remote.Read(p)
 			if n > 0 {
-				chunk := p[:n]
-				for len(chunk) > 0 {
-					sz := len(chunk)
-					if sz > MaxFrame {
-						sz = MaxFrame
-					}
-					if werr := WriteFrame(down, FrameData, chunk[:sz]); werr != nil {
-						cancel()
-						return
-					}
-					chunk = chunk[sz:]
+				if werr := sh.WriteData(p[:n]); werr != nil {
+					cancel()
+					return
 				}
 			}
 			if err != nil {
+				sh.Close() // stop idle PAD so CLOSE is the last frame
 				WriteFrame(down, FrameClose, []byte{0})
 				cancel()
 				return

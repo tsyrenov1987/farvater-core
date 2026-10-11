@@ -101,7 +101,7 @@ After authentication the server answers `200`. Both directions of the stream the
 |---|---|---|
 | 1 | OPEN | network byte (`1` = TCP), then `[len:1]["host:port"]` |
 | 2 | DATA | payload |
-| 3 | PAD | ignored; its length varies the size of the first TLS records |
+| 3 | PAD | ignored; varies record sizes and fills pauses (see padding) |
 | 4 | — | reserved (datagrams); never sent |
 | 5 | CLOSE | one code byte: `0` normal end, `1` error / refused |
 
@@ -112,6 +112,13 @@ A length above 16384 is a protocol error. It is never turned into an allocation.
 1. The server's first frame is a PAD of random length (16–271 bytes).
 2. The client sends OPEN, then a PAD, then DATA in both directions, and finally CLOSE or end of stream.
 3. If OPEN does not arrive within 15 s of authentication, the stream is dropped.
+
+**Padding.** DATA is split into frames whose sizes follow a web-like spread rather than a run of
+maximum-size records, and PAD frames ride between them; a sender may also send a PAD during a pause. This
+is one-sided and needs no agreement: a peer joins DATA frames back together and ignores PAD regardless, so
+any padding mode interoperates with any other, in both directions. Both ends pad. The mode — `off`,
+`moderate` (default), or `heavy` — is set per server (`kilvaterd -pad`) and per client (the link's optional
+`pad` parameter); it only changes how many frames of what sizes are sent, never the bytes delivered.
 
 UDP is not carried. In Farvater, UDP flows take other paths.
 
@@ -156,8 +163,12 @@ UDP is not carried. In Farvater, UDP flows take other paths.
 These are known limits, not plans:
 
 - **No independent audit yet.**
-- **Traffic analysis.** Padding only varies the first records. Packet timing and volume of a long tunnel
-  differ from a browsing session, and nothing here hides that.
+- **Traffic analysis.** Padding (§4) now shapes record sizes across the whole stream, not just the first
+  records: in `moderate` (default) and `heavy` a bulk transfer no longer shows as an unbroken run of
+  maximum-size records but as a spread of sizes, measured at well under 1 % and about 1.4 % of extra bytes
+  respectively, and `heavy` also puts a small frame on the wire during a pause. What this does *not* hide:
+  the overall volume of a long transfer, and the fine timing correlation between the two directions. It
+  raises the cost of size-and-shape classification; it is not an unobservable channel.
 - **Server fingerprint.** On its own the server uses Go's `crypto/tls` and Go's HTTP/2: its ServerHello and
   its HTTP/2 SETTINGS are a Go server's, not nginx or a CDN. That is common on the web, but it is a
   fingerprint. An nginx `stream` proxy in front (see KILVATERD.md §9) turns the TLS layer into OpenSSL's, and

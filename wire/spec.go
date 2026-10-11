@@ -65,7 +65,11 @@ type PathSpec struct {
 	Transport     string // how bytes ride the call: vp8channel | datachannel | seichannel | videochannel
 	TransportOpts string // the transport's parameters, "key=value&key=value" as the link has them
 	Room          string
-	Key           string // the tunnel's key, 64 hex
+	Key           string // the tunnel's key, 64 hex (also kilvater)
+
+	// Pad is the kilvater padding mode (off | moderate | heavy), from the
+	// link's optional "pad" parameter. Empty means the default (moderate).
+	Pad string
 }
 
 // Rail is the informational label of the path's transport.
@@ -188,6 +192,7 @@ func ParseURI(raw string) (PathSpec, error) {
 		spec.Key = u.User.Username()
 		spec.SNI = q.Get("sni")
 		spec.Fingerprint = first(q.Get("fp"), "chrome")
+		spec.Pad = q.Get("pad")
 		spec.Path = u.Path
 		if spec.Path == "" || spec.Path == "/" {
 			spec.Path = "/connect"

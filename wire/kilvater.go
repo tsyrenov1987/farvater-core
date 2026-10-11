@@ -23,6 +23,7 @@ type kilWire struct {
 	spec PathSpec
 	key  kilvater.Key
 	mux  *h2Mux
+	pad  kilvater.PadMode // how the client shapes the frames it sends up
 	now  func() time.Time
 	skew atomic.Int64 // the server's clock minus ours, from the last page fetched
 }
@@ -53,7 +54,7 @@ func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilW
 	if err != nil {
 		return nil, err
 	}
-	w := &kilWire{spec: s, key: k, now: time.Now}
+	w := &kilWire{spec: s, key: k, pad: kilvater.ParsePadMode(s.Pad), now: time.Now}
 	const pingAfterIdle, pingTimeout = 15 * time.Second, 5 * time.Second
 	if p := h2ProfileFor(s.Fingerprint); p != nil {
 		w.mux = newH2Mux(shapedDial(dial, p), pingAfterIdle, pingTimeout)
@@ -115,7 +116,7 @@ func (w *kilWire) Dial(ctx context.Context) (Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &kilSession{conn: st}, nil
+	return &kilSession{conn: st, pad: w.pad}, nil
 }
 
 // warmTimeout bounds the page fetch that opens a connection. Past it the
@@ -275,7 +276,10 @@ func newGet(ctx context.Context, rawURL string, h http.Header) (*http.Request, e
 	return (&http.Request{Method: http.MethodGet, URL: u, Host: u.Host, Header: h}).WithContext(ctx), nil
 }
 
-type kilSession struct{ conn net.Conn }
+type kilSession struct {
+	conn net.Conn
+	pad  kilvater.PadMode
+}
 
 func (s *kilSession) Close() error { return s.conn.Close() }
 
@@ -286,42 +290,35 @@ func (s *kilSession) Run(ctx context.Context, target Target, prelude []byte, up 
 		s.conn.Close()
 		return OutcomeError, err
 	}
+	// OPEN is a control frame, sent before the shaper so the idle goroutine
+	// (PadHeavy) never races it; the shaper carries everything after.
 	if err := kilvater.WriteFrame(s.conn, kilvater.FrameOpen, body); err != nil {
 		s.conn.Close()
 		return OutcomeError, err
 	}
+	sh := kilvater.NewShaper(s.conn, s.pad)
+	defer sh.Close()
 	// Vary the size of the first record we put on the wire.
-	if err := kilvater.WritePad(s.conn); err != nil {
+	if err := sh.WritePad(); err != nil {
 		s.conn.Close()
 		return OutcomeError, err
 	}
 	if len(prelude) > 0 {
-		if err := writeDataFrames(s.conn, prelude); err != nil {
+		if err := sh.WriteData(prelude); err != nil {
 			s.conn.Close()
 			return OutcomeError, err
 		}
 	}
-	return runStream(ctx, s.conn, &kilFrameWriter{w: s.conn}, &kilFrameReader{r: s.conn}, up, down, m)
+	return runStream(ctx, s.conn, &kilFrameWriter{sh: sh}, &kilFrameReader{r: s.conn}, up, down, m)
 }
 
-func writeDataFrames(w io.Writer, p []byte) error {
-	for len(p) > 0 {
-		n := len(p)
-		if n > kilvater.MaxFrame {
-			n = kilvater.MaxFrame
-		}
-		if err := kilvater.WriteFrame(w, kilvater.FrameData, p[:n]); err != nil {
-			return err
-		}
-		p = p[n:]
-	}
-	return nil
-}
-
-type kilFrameWriter struct{ w io.Writer }
+type kilFrameWriter struct{ sh *kilvater.Shaper }
 
 func (fw *kilFrameWriter) Write(p []byte) (int, error) {
-	return len(p), writeDataFrames(fw.w, p)
+	if err := fw.sh.WriteData(p); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 type kilFrameReader struct {

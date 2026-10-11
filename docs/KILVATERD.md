@@ -101,6 +101,7 @@ Open the port in your firewall, for example `sudo ufw allow 443/tcp`.
 | `-decoy` | `/var/www/html` | static files served to everyone without a key |
 | `-allow-private` | off | let clients reach loopback/private/link-local addresses |
 | `-h2c` | off | serve cleartext HTTP/2 for a TLS-terminating proxy in front (§9); `-listen` may be `unix:/path` |
+| `-pad` | `moderate` | downstream padding: `off` \| `moderate` \| `heavy`. Shapes record sizes so a tunnel looks less like one bulk transfer (KILVATER.md §4, §8). `moderate` adds well under 1 % of bytes and no goroutine; `heavy` adds ~1.4 % and keeps a pause from looking idle; `off` is v1 framing. One-sided — old clients read any mode the same way. |
 | `-genkey` | — | print a new random key and exit |
 | `-version` | — | print the version and exit |
 
@@ -113,7 +114,8 @@ kilvater://<key>@your.domain:443?sni=your.domain&fp=chrome#my-server
 ```
 
 If you connect by IP, put the IP in the host part and keep `sni=your.domain`. The path defaults to `/connect`.
-Farvater and the reference CLI read this link directly:
+An optional `pad=off|moderate|heavy` parameter sets how the client shapes the frames it sends up (§5,
+KILVATER.md §4); left out, it is `moderate`. Farvater and the reference CLI read this link directly:
 
 ```sh
 farvater probe -catalogue links.txt -url https://cp.cloudflare.com/generate_204
