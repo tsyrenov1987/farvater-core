@@ -157,8 +157,10 @@ These are known limits, not plans:
 - **No independent audit yet.**
 - **Traffic analysis.** Padding only varies the first records. Packet timing and volume of a long tunnel
   differ from a browsing session, and nothing here hides that.
-- **Server TLS fingerprint.** The server uses Go's `crypto/tls`. Its ServerHello and HTTP/2 SETTINGS are
-  those of a Go server, not nginx or a CDN. That is common on the web, but it is a fingerprint.
+- **Server TLS fingerprint.** On its own the server uses Go's `crypto/tls`: its ServerHello and HTTP/2
+  SETTINGS are a Go server's, not nginx or a CDN. That is common on the web, but it is a fingerprint. An
+  nginx `stream` proxy in front turns the TLS layer into OpenSSL's (see KILVATERD.md §9); the HTTP/2 SETTINGS
+  stay the Go server's until kilvaterd shapes them itself.
 - **Static decoy.** The decoy is only as convincing as the files you put in it. With an empty directory every
   URL returns 404, and the server warns about it at start.
 - **Clock skew.** The client corrects its clock from the `Date` of the page it loads on each new

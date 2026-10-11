@@ -15,6 +15,7 @@ import (
 	"github.com/tsyrenov1987/farvater-core/kilvater"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 // version is set at release build time with -ldflags "-X main.version=...".
@@ -29,6 +30,7 @@ func main() {
 	acmeDomain := flag.String("acme", "", "domain to get a Let's Encrypt certificate for (TLS-ALPN-01); empty uses -cert/-key")
 	acmeCache := flag.String("acme-cache", "/var/lib/kilvaterd/acme", "directory where autocert stores certificates")
 	allowPrivate := flag.Bool("allow-private", false, "let clients reach loopback, private and link-local addresses (off: only public addresses)")
+	h2cMode := flag.Bool("h2c", false, "serve cleartext HTTP/2 for a TLS-terminating proxy (nginx/Caddy) in front; -listen may be unix:/path, and -cert/-key/-acme are ignored")
 	genKey := flag.Bool("genkey", false, "print a new random client key and exit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
@@ -64,25 +66,41 @@ func main() {
 		AllowPrivate: *allowPrivate,
 	}
 
-	tlsCfg, err := tlsConfig(*acmeDomain, *acmeCache, *certFile, *keyFile)
-	if err != nil {
-		log.Fatalf("tls: %v", err)
-	}
-
-	ln, err := listenTLS(*listen, tlsCfg)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	httpSrv := &http.Server{
 		Handler:           srv,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	if err := http2.ConfigureServer(httpSrv, &http2.Server{IdleTimeout: 120 * time.Second}); err != nil {
-		log.Fatal(err)
+	h2s := &http2.Server{IdleTimeout: 120 * time.Second}
+
+	if *h2cMode {
+		// A TLS-terminating proxy stands in front and reaches us over cleartext
+		// HTTP/2. The proxy's own ServerHello and H2 SETTINGS are what an
+		// observer sees, not Go's; the certificate lives on the proxy, so a
+		// renewal never restarts us and never cuts a session. We must not be
+		// reachable from the outside here: -listen is a unix socket or a
+		// loopback address.
+		warnIfExposed(*listen)
+		ln, err := listenPlain(*listen)
+		if err != nil {
+			log.Fatal(err)
+		}
+		httpSrv.Handler = h2c.NewHandler(srv, h2s)
+		log.Printf("kilvaterd listening on %s (cleartext h2c, behind a TLS proxy)", *listen)
+		log.Fatal(httpSrv.Serve(ln))
 	}
 
+	tlsCfg, err := tlsConfig(*acmeDomain, *acmeCache, *certFile, *keyFile)
+	if err != nil {
+		log.Fatalf("tls: %v", err)
+	}
+	ln, err := listenTLS(*listen, tlsCfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := http2.ConfigureServer(httpSrv, h2s); err != nil {
+		log.Fatal(err)
+	}
 	log.Printf("kilvaterd listening on %s", *listen)
 	log.Fatal(httpSrv.Serve(ln))
 }

@@ -2,10 +2,54 @@ package main
 
 import (
 	"crypto/tls"
+	"log"
 	"net"
+	"net/netip"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
+
+// listenPlain is the cleartext listener kilvaterd serves on behind a proxy.
+// "unix:/path" is a unix socket (a stale one from a past run is removed first,
+// and the socket is group-readable so the proxy's user can reach it); anything
+// else is a TCP address.
+func listenPlain(addr string) (net.Listener, error) {
+	if path, ok := strings.CutPrefix(addr, "unix:"); ok {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		ln, err := net.Listen("unix", path)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Chmod(path, 0o660); err != nil {
+			ln.Close()
+			return nil, err
+		}
+		return ln, nil
+	}
+	return net.Listen("tcp", addr)
+}
+
+// warnIfExposed logs if a cleartext (h2c) listener would take connections from
+// outside the host. Behind a proxy the socket must be a unix socket or a
+// loopback address; a wider bind serves the tunnel unencrypted to anyone who
+// reaches the port.
+func warnIfExposed(addr string) {
+	if strings.HasPrefix(addr, "unix:") {
+		return
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		log.Printf("warning: -h2c with -listen %q serves cleartext HTTP/2 on all interfaces; bind a loopback address or a unix: socket so only the local proxy can reach it", addr)
+		return
+	}
+	if ip, err := netip.ParseAddr(host); err != nil || !ip.IsLoopback() {
+		log.Printf("warning: -h2c with -listen %q serves cleartext HTTP/2 off the loopback; put it on 127.0.0.1, ::1 or a unix: socket so only the local proxy can reach it", addr)
+	}
+}
 
 // handshakeListener finishes the TLS handshake before net/http sees a
 // connection. Given a raw *tls.Conn, net/http answers a plain-HTTP request
