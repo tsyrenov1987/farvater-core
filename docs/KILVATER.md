@@ -139,7 +139,8 @@ UDP is not carried. In Farvater, UDP flows take other paths.
 - **On the wire:** a TLS 1.3 connection to a host name with a valid certificate, ALPN `h2`. It opens with
   a page request and its assets, and then carries long-lived HTTP/2 traffic.
 - **To an active prober:** a static website at every URL. With a real certificate and real-looking pages, the
-  answers are those of a small site served by Go's HTTP/2 server.
+  answers are those of a small static site — served by Go's HTTP/2, or, behind an nginx `stream` proxy with
+  `-h2c`, by what reads as nginx at both the TLS and HTTP/2-SETTINGS layers (§8).
 
 ## 7. Keys and trust
 
@@ -157,10 +158,12 @@ These are known limits, not plans:
 - **No independent audit yet.**
 - **Traffic analysis.** Padding only varies the first records. Packet timing and volume of a long tunnel
   differ from a browsing session, and nothing here hides that.
-- **Server TLS fingerprint.** On its own the server uses Go's `crypto/tls`: its ServerHello and HTTP/2
-  SETTINGS are a Go server's, not nginx or a CDN. That is common on the web, but it is a fingerprint. An
-  nginx `stream` proxy in front turns the TLS layer into OpenSSL's (see KILVATERD.md §9); the HTTP/2 SETTINGS
-  stay the Go server's until kilvaterd shapes them itself.
+- **Server fingerprint.** On its own the server uses Go's `crypto/tls` and Go's HTTP/2: its ServerHello and
+  its HTTP/2 SETTINGS are a Go server's, not nginx or a CDN. That is common on the web, but it is a
+  fingerprint. An nginx `stream` proxy in front (see KILVATERD.md §9) turns the TLS layer into OpenSSL's, and
+  in that mode (`-h2c`) kilvaterd shapes its own HTTP/2 SETTINGS and connection window to a stock nginx's, so
+  both layers read as nginx. What is not shaped even then is the HTTP/2 behaviour below the SETTINGS (the
+  order of a response's header fields, flow-control and timing).
 - **Static decoy.** The decoy is only as convincing as the files you put in it. With an empty directory every
   URL returns 404, and the server warns about it at start.
 - **Clock skew.** The client corrects its clock from the `Date` of the page it loads on each new

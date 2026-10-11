@@ -181,11 +181,14 @@ Renew the certificate with your ACME client's reload hook pointed at the proxy
 (`--reloadcmd "nginx -s reload"`); nginx reloads gracefully and keeps live tunnels, and kilvaterd is never
 restarted. A unix socket is group-readable (0660), so the proxy's user must share kilvaterd's group.
 
-**What this does and does not hide.** The TLS layer becomes the proxy's (OpenSSL). The HTTP/2 layer —
-SETTINGS and window, the server-side counterpart of the client shaping in
-[KILVATER.md §1](KILVATER.md#1-layers) — is still kilvaterd's, because kilvaterd, not the proxy, speaks
-HTTP/2 end to end through the `stream`. Making the HTTP/2 layer look like a common server too is separate
-work on kilvaterd, not something this proxy does.
+**What this does and does not hide.** The TLS layer becomes the proxy's (OpenSSL). The HTTP/2 layer is still
+kilvaterd's, because kilvaterd, not the proxy, speaks HTTP/2 end to end through the `stream` — so kilvaterd
+shapes its own server fingerprint: in `-h2c` mode it sends its SETTINGS and connection window in the order
+and values of a stock nginx (`SETTINGS` MAX_CONCURRENT_STREAMS=128, INITIAL_WINDOW_SIZE=65536,
+MAX_FRAME_SIZE=16777215, then a `WINDOW_UPDATE` to a 2³¹−1 window), the server-side counterpart of the
+client shaping in [KILVATER.md §1](KILVATER.md#1-layers). An active prober reads those before it sends any
+request, and they now read as nginx, not Go. What is not shaped is the HTTP/2 behaviour below the SETTINGS —
+the order of a response's header fields, flow control, timing — so this is not a complete server disguise.
 
 **Sharing the port with a real site.** If the host already serves a site on 443, split by SNI with
 `ssl_preread` in a `stream` map: the site's names go to the existing server, your tunnel's name to the

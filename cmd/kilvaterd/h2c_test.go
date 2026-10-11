@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/hex"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -61,17 +63,80 @@ func h2cClient() *http2.Transport {
 }
 
 // serveH2C starts kilvaterd's h2c branch on a loopback listener and returns
-// its address.
+// its address — the same construction main uses: nginxH2Server behind
+// shapeServerSettings, so the tests exercise the shipped HTTP/2 shape.
 func serveH2C(t *testing.T, srv *kilvater.Server) string {
 	t.Helper()
 	ln, err := listenPlain("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpSrv := &http.Server{Handler: h2c.NewHandler(srv, &http2.Server{IdleTimeout: 120 * time.Second})}
+	ln = shapeServerSettings(ln)
+	httpSrv := &http.Server{Handler: h2c.NewHandler(srv, nginxH2Server(120*time.Second))}
 	go httpSrv.Serve(ln)
 	t.Cleanup(func() { httpSrv.Close() })
 	return ln.Addr().String()
+}
+
+// A prober that finishes TLS and starts HTTP/2 — with no key — reads the
+// server's SETTINGS and connection window before sending any request, so that
+// is all it can fingerprint of kilvaterd's HTTP/2. Behind a TLS-terminating
+// proxy the TLS is the proxy's OpenSSL, so this layer must read as a stock
+// nginx's too, not as Go's x/net/http2.
+func TestH2CServerSettingsLookLikeNginx(t *testing.T) {
+	key, _ := h2cTestKey(t)
+	srv := &kilvater.Server{Verifier: kilvater.NewVerifier([]kilvater.Key{key})}
+	addr := serveH2C(t, srv)
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	// The client preface and an empty SETTINGS, the way any HTTP/2 client opens.
+	if _, err := c.Write([]byte(http2.ClientPreface)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Write([]byte{0, 0, 0, 0x4, 0, 0, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotSettings [][2]uint32
+	var connWindow uint32
+	haveSettings, haveWindow := false, false
+	var hdr [9]byte
+	for !haveSettings || !haveWindow {
+		if _, err := io.ReadFull(c, hdr[:]); err != nil {
+			t.Fatalf("reading server frames: %v (have settings=%v window=%v)", err, haveSettings, haveWindow)
+		}
+		n := int(hdr[0])<<16 | int(hdr[1])<<8 | int(hdr[2])
+		typ, flags := hdr[3], hdr[4]
+		body := make([]byte, n)
+		if _, err := io.ReadFull(c, body); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case typ == 0x4 && flags&0x1 == 0: // SETTINGS, not an ACK
+			for i := 0; i+6 <= len(body); i += 6 {
+				gotSettings = append(gotSettings, [2]uint32{
+					uint32(binary.BigEndian.Uint16(body[i:])), binary.BigEndian.Uint32(body[i+2:])})
+			}
+			haveSettings = true
+		case typ == 0x8 && binary.BigEndian.Uint32(hdr[5:9])&(1<<31-1) == 0: // connection WINDOW_UPDATE
+			connWindow = binary.BigEndian.Uint32(body) & (1<<31 - 1)
+			haveWindow = true
+		}
+	}
+
+	// Stock nginx, measured 2026-10-11 (see h2server.go).
+	want := [][2]uint32{{0x3, 128}, {0x4, 65536}, {0x5, 16777215}}
+	if !reflect.DeepEqual(gotSettings, want) {
+		t.Errorf("server SETTINGS = %v, want nginx's %v", gotSettings, want)
+	}
+	if connWindow != 2147418112 {
+		t.Errorf("connection WINDOW_UPDATE = %d, want nginx's 2147418112", connWindow)
+	}
 }
 
 // A TLS-terminating proxy reaching kilvaterd over cleartext HTTP/2 can both

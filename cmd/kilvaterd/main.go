@@ -75,17 +75,20 @@ func main() {
 
 	if *h2cMode {
 		// A TLS-terminating proxy stands in front and reaches us over cleartext
-		// HTTP/2. The proxy's own ServerHello and H2 SETTINGS are what an
-		// observer sees, not Go's; the certificate lives on the proxy, so a
-		// renewal never restarts us and never cuts a session. We must not be
-		// reachable from the outside here: -listen is a unix socket or a
-		// loopback address.
+		// HTTP/2. The proxy terminates TLS, so its OpenSSL ServerHello is what an
+		// observer sees, not Go's, and the certificate lives on the proxy, so a
+		// renewal never restarts us and never cuts a session. The HTTP/2 is still
+		// ours (the proxy forwards the stream), so we shape its SETTINGS to a
+		// stock nginx's (h2server.go) rather than leave Go's showing under the
+		// proxy's OpenSSL. We must not be reachable from the outside here:
+		// -listen is a unix socket or a loopback address.
 		warnIfExposed(*listen)
 		ln, err := listenPlain(*listen)
 		if err != nil {
 			log.Fatal(err)
 		}
-		httpSrv.Handler = h2c.NewHandler(srv, h2s)
+		ln = shapeServerSettings(ln)
+		httpSrv.Handler = h2c.NewHandler(srv, nginxH2Server(120*time.Second))
 		log.Printf("kilvaterd listening on %s (cleartext h2c, behind a TLS proxy)", *listen)
 		log.Fatal(httpSrv.Serve(ln))
 	}
