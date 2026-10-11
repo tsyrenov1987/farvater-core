@@ -1,0 +1,37 @@
+[Unit]
+Description=kilvaterd — Kilvater private HTTPS transport
+Documentation=https://github.com/tsyrenov1987/farvater-core/blob/main/docs/KILVATERD.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kilvaterd
+Group=kilvaterd
+ExecStart=/usr/local/bin/kilvaterd -listen :443 -acme example.org -keys /etc/kilvaterd/keys.txt -decoy /etc/kilvaterd/decoy
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+
+# a low port without root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+# autocert cache lives in /var/lib/kilvaterd
+StateDirectory=kilvaterd
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

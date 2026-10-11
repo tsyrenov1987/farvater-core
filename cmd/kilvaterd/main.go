@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -15,6 +17,9 @@ import (
 	"golang.org/x/net/http2"
 )
 
+// version is set at release build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	listen := flag.String("listen", ":443", "address to listen on")
 	certFile := flag.String("cert", "cert.pem", "TLS certificate file (ignored with -acme)")
@@ -23,7 +28,23 @@ func main() {
 	decoyDir := flag.String("decoy", "/var/www/html", "static files served to non-tunnel visitors")
 	acmeDomain := flag.String("acme", "", "domain to get a Let's Encrypt certificate for (TLS-ALPN-01); empty uses -cert/-key")
 	acmeCache := flag.String("acme-cache", "/var/lib/kilvaterd/acme", "directory where autocert stores certificates")
+	allowPrivate := flag.Bool("allow-private", false, "let clients reach loopback, private and link-local addresses (off: only public addresses)")
+	genKey := flag.Bool("genkey", false, "print a new random client key and exit")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("kilvaterd", version)
+		return
+	}
+	if *genKey {
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(hex.EncodeToString(b))
+		return
+	}
 
 	keys, err := readKeys(*keysFile)
 	if err != nil {
@@ -39,6 +60,8 @@ func main() {
 		Verifier: kilvater.NewVerifier(keys),
 		Decoy:    http.FileServer(http.Dir(*decoyDir)),
 		Logger:   log.Default(),
+
+		AllowPrivate: *allowPrivate,
 	}
 
 	tlsCfg, err := tlsConfig(*acmeDomain, *acmeCache, *certFile, *keyFile)

@@ -17,7 +17,7 @@ import (
 // h2Mux carries many streams over one HTTP/2 connection and dials a fresh
 // connection only when the current one is full or gone. It is the browser-like
 // connection layer the private HTTPS transport ("kilvater", see
-// KILVATER-SPEC.md) is built on: one TLS handshake holds up to the server's
+// docs/KILVATER.md) is built on: one TLS handshake holds up to the server's
 // stream limit of concurrent streams, so the handshake governor barely moves.
 //
 // The gRPC and XHTTP transports ride their streams on this layer too (one

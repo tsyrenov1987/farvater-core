@@ -68,6 +68,16 @@ silently stops carrying after 16–20 KB. farvater-core inverts the hierarchy:
 - **Provider-neutral.** Paths come from an open *catalogue* format ([docs/CATALOGUE-SPEC.md](docs/CATALOGUE-SPEC.md));
   the schema has no `only/skip/pin` directives — servers may send priors, never commands.
 
+## Kilvater: our own transport
+
+[Kilvater](docs/KILVATER.md) is a private HTTPS transport. TCP connections ride HTTP/2 streams inside TLS 1.3
+with a valid certificate. Clients authenticate with an HMAC tag in a cookie. Everyone else, including active
+probers, sees an ordinary static website. The server is `cmd/kilvaterd`; the setup guide is
+[docs/KILVATERD.md](docs/KILVATERD.md). Status: **experimental**, not independently audited yet.
+
+Release binaries (`kilvaterd`, `farvater`) come with `SHA256SUMS` and GitHub build-provenance attestations.
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
 ## Non-goals
 
 No accounts, no payments, no provider advertising, no server-side forcing of clients. The core is a library;

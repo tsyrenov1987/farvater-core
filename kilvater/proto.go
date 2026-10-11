@@ -1,5 +1,5 @@
 // Package kilvater holds the wire format of the private HTTPS transport shared
-// by the client wire and the kilvaterd server (KILVATER-SPEC.md): the frames
+// by the client wire and the kilvaterd server (docs/KILVATER.md): the frames
 // that ride inside one HTTP/2 stream, and the request tag that tells the
 // tunnel apart from an ordinary visit. TLS 1.3 underneath carries all of the
 // confidentiality and integrity; nothing here encrypts.

@@ -29,7 +29,7 @@ func TestTCPReturnsWhenStreamEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	upR, upW := io.Pipe()
 	done := make(chan struct{})
-	srv := &Server{}
+	srv := &Server{AllowPrivate: true}
 	go func() {
 		srv.tcp(ctx, ln.Addr().String(), upR, io.Discard)
 		close(done)

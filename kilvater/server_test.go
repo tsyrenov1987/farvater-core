@@ -105,6 +105,8 @@ func TestTunnelTCP(t *testing.T) {
 	srv := &kilvater.Server{
 		Verifier: kilvater.NewVerifier([]kilvater.Key{key}),
 		Decoy:    http.NotFoundHandler(),
+		// the echo target lives on loopback
+		AllowPrivate: true,
 	}
 
 	cert := selfSignedCert(t)

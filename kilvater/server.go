@@ -2,11 +2,14 @@ package kilvater
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -18,6 +21,41 @@ type Server struct {
 	Verifier *Verifier
 	Decoy    http.Handler
 	Logger   *log.Logger
+
+	// AllowPrivate lets clients reach loopback, private, link-local and
+	// other non-public addresses. Off by default: a key holder must not be
+	// able to talk to the server's own local services or its LAN.
+	AllowPrivate bool
+}
+
+var errForbiddenTarget = errors.New("kilvater: target address not allowed")
+
+// cgnat is the shared address space of RFC 6598, which netip does not
+// classify as private.
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
+// publicOnly reports whether ip may be dialed when AllowPrivate is off.
+func publicOnly(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.IsValid() && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsUnspecified() &&
+		!ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsInterfaceLocalMulticast() &&
+		!ip.IsMulticast() && !cgnat.Contains(ip)
+}
+
+// dialer checks the address actually dialed, after name resolution, so a
+// hostname that resolves to a private address is refused too.
+func (s *Server) dialer() *net.Dialer {
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	if !s.AllowPrivate {
+		d.Control = func(_, address string, _ syscall.RawConn) error {
+			ap, err := netip.ParseAddrPort(address)
+			if err != nil || !publicOnly(ap.Addr()) {
+				return errForbiddenTarget
+			}
+			return nil
+		}
+	}
+	return d
 }
 
 // openReadTimeout bounds how long the server waits for a client's OPEN frame
@@ -89,7 +127,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Writer) {
-	remote, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", addr)
+	remote, err := s.dialer().DialContext(ctx, "tcp", addr)
 	if err != nil {
 		s.log("dial %s: %v", addr, err)
 		WriteFrame(down, FrameClose, []byte{1})
