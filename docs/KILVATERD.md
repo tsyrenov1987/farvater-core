@@ -15,7 +15,7 @@ Download `kilvaterd` for your architecture from the
 [latest release](https://github.com/tsyrenov1987/farvater-core/releases), check it, and install it:
 
 ```sh
-VER=v0.1.0          # the release you picked
+VER=v0.1.2          # the release you picked
 ARCH=amd64          # or arm64
 curl -LO https://github.com/tsyrenov1987/farvater-core/releases/download/$VER/kilvaterd_${VER}_linux_${ARCH}.tar.gz
 curl -LO https://github.com/tsyrenov1987/farvater-core/releases/download/$VER/SHA256SUMS
