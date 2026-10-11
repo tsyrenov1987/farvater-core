@@ -2,10 +2,10 @@
 a private HTTPS transport. Setup guide: [docs/KILVATERD.md](https://github.com/tsyrenov1987/farvater-core/blob/main/docs/KILVATERD.md).
 `farvater` is the reference client CLI: a local SOCKS5 switchboard, plus `probe` for share links.
 
-Changes since v0.1.0:
+Changes since v0.1.0 (v0.1.1 was built with Go 1.26.8 by mistake and is withdrawn):
 
-- **Security.** Built with Go 1.26.9 and x/net 0.61. This clears 17 reachable advisories in net/http, HTTP/2 and
-  crypto/tls (see govulncheck). If you run v0.1.0 `kilvaterd`, upgrade.
+- **Security.** Built with Go 1.26.9 (the release now fails if the toolchain differs from go.mod or govulncheck finds anything in kilvaterd) and x/net 0.61. This clears 17 reachable advisories in net/http, HTTP/2 and
+  crypto/tls (see govulncheck). If you run v0.1.0 or v0.1.1 `kilvaterd`, upgrade.
 - Ports outside 0–65535 are refused before encoding (found by CodeQL).
 - Fuzz targets for frame, address and tag parsing.
 - Provenance is attached as `provenance.intoto.jsonl`.
