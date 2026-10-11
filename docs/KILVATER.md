@@ -24,6 +24,19 @@ TLS 1.3 provides all of the confidentiality and integrity. Kilvater adds no ciph
 **Client side:**
 - The client handshake uses uTLS with a browser fingerprint (`fp`, `chrome` by default).
 - It refuses any certificate that does not verify. An `insecure=1` link is rejected at parse time.
+- With `fp=chrome` the HTTP/2 layer is shaped to Chrome's too: the SETTINGS (values and order), the
+  connection window, the order of pseudo-headers and headers, and a priority on every request. The profile
+  was recorded from a real Chrome into `wire/testdata/h2fp/`, and a test holds the client to it. Other
+  fingerprints keep Go's HTTP/2.
+
+**Opening a connection:** a new connection starts the way a browser visit does.
+1. `GET /` with the headers of a page load.
+2. Up to two same-origin stylesheets, scripts or images the page links to. The client waits for them no
+   longer than twice the time the page took.
+3. `/favicon.ico`, while the tunnel streams begin.
+
+The `Date` of the page answer gives the client the server's clock, and tags are made with that clock from
+then on (§3).
 
 **One connection, many streams:**
 - One TLS connection carries many streams, up to the server's HTTP/2 stream limit, the way a browser reuses a
@@ -49,13 +62,14 @@ kilvater://<key>@<host>:<port>/<path>?sni=<server name>&fp=<fingerprint>&host=<H
 
 A tunnel stream is an HTTP/2 `POST` to `path`:
 
-- It carries browser-like headers: User-Agent, Client Hints, `Sec-Fetch-*`.
+- It carries the headers of a script's `fetch` on the site: User-Agent, Client Hints, `Sec-Fetch-*`,
+  `Origin` and `Referer`.
 - It carries one cookie: `_sid=<tag>`.
 
 The tag is 32 bytes, encoded as base64url without padding:
 
 ```
-ts    = unix seconds, 8 bytes big-endian
+ts    = unix seconds, 8 bytes big-endian (the server's clock, as the client last learned it; see §1)
 nonce = 8 random bytes
 mac   = HMAC-SHA256(key, "kilvater/1\x00" || ts || nonce || path)[0:16]
 tag   = ts || nonce || mac
@@ -119,8 +133,8 @@ UDP is not carried. In Farvater, UDP flows take other paths.
 
 ## 6. What an observer sees
 
-- **On the wire:** a TLS 1.3 connection to a host name with a valid certificate, ALPN `h2`, and long-lived
-  HTTP/2 traffic.
+- **On the wire:** a TLS 1.3 connection to a host name with a valid certificate, ALPN `h2`. It opens with
+  a page request and its assets, and then carries long-lived HTTP/2 traffic.
 - **To an active prober:** a static website at every URL. With a real certificate and real-looking pages, the
   answers are those of a small site served by Go's HTTP/2 server.
 
@@ -144,7 +158,9 @@ These are known limits, not plans:
   those of a Go server, not nginx or a CDN. That is common on the web, but it is a fingerprint.
 - **Static decoy.** The decoy is only as convincing as the files you put in it. With an empty directory every
   URL returns 404, and the server warns about it at start.
-- **Clock skew.** A client clock more than 2 minutes off cannot authenticate.
+- **Clock skew.** The client corrects its clock from the `Date` of the page it loads on each new
+  connection (§1). Any answer that carries `Date` will do, a 404 included. A client whose clock is more
+  than 2 minutes off still fails if that page load fails.
 - **Hosting matters more than the protocol.** Some networks throttle or freeze traffic by destination network
   and port, regardless of what the bytes look like. In our measurements, port 443 and a few common web ports
   (80, 8080, 8443) passed in places where uncommon high ports were frozen.

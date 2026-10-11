@@ -42,8 +42,9 @@ func chromeUACH() string {
 }
 
 // browserHeaders adds the headers Chrome sends, for the request variant
-// "ws" (a WebSocket upgrade) or "fetch" (an XHTTP/gRPC request). Only
-// headers not already set are added.
+// "ws" (a WebSocket upgrade), "fetch" (an XHTTP/gRPC request), "navigate"
+// (opening a page) or an asset the page loads: "style", "script", "image",
+// "favicon". Only headers not already set are added.
 func browserHeaders(h http.Header, variant string) {
 	setIfAbsent(h, "User-Agent", chromeUA())
 	setIfAbsent(h, "Sec-CH-UA", chromeUACH())
@@ -66,8 +67,37 @@ func browserHeaders(h http.Header, variant string) {
 		setIfAbsent(h, "Cache-Control", "no-cache")
 		setIfAbsent(h, "Pragma", "no-cache")
 		setIfAbsent(h, "Accept", "*/*")
+	case "navigate":
+		setIfAbsent(h, "Upgrade-Insecure-Requests", "1")
+		setIfAbsent(h, "Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+		setIfAbsent(h, "Sec-Fetch-Site", "none")
+		setIfAbsent(h, "Sec-Fetch-Mode", "navigate")
+		setIfAbsent(h, "Sec-Fetch-User", "?1")
+		setIfAbsent(h, "Sec-Fetch-Dest", "document")
+		setIfAbsent(h, "Accept-Encoding", chromeAcceptEncoding)
+		setIfAbsent(h, "Priority", "u=0, i")
+	case "style", "script", "image", "favicon":
+		const img = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+		a := map[string][3]string{
+			"style":   {"text/css,*/*;q=0.1", "u=0", "style"},
+			"script":  {"*/*", "u=1", "script"},
+			"image":   {img, "u=2, i", "image"},
+			"favicon": {img, "u=1, i", "image"},
+		}[variant]
+		setIfAbsent(h, "Accept", a[0])
+		setIfAbsent(h, "Sec-Fetch-Site", "same-origin")
+		setIfAbsent(h, "Sec-Fetch-Mode", "no-cors")
+		setIfAbsent(h, "Sec-Fetch-Dest", a[2])
+		setIfAbsent(h, "Accept-Encoding", chromeAcceptEncoding)
+		setIfAbsent(h, "Priority", a[1])
 	}
 }
+
+// chromeAcceptEncoding is what Chrome asks for. Setting it turns off the
+// http2 Transport's own gzip handling, so only requests whose body we do not
+// read as a stream of our own (a page, an asset) or whose server never
+// compresses (kilvater's tunnel) carry it.
+const chromeAcceptEncoding = "gzip, deflate, br, zstd"
 
 func setIfAbsent(h http.Header, k, v string) {
 	if h.Get(k) == "" {

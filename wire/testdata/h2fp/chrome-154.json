@@ -1,0 +1,856 @@
+{
+  "client": "Chrome 154.0.8037.98 headless (macOS arm64)",
+  "captured": "2026-10-11",
+  "records": [
+    {
+      "ms": 0,
+      "type": 22,
+      "len": 1944
+    },
+    {
+      "ms": 23,
+      "type": 20,
+      "len": 1
+    },
+    {
+      "ms": 23,
+      "type": 23,
+      "len": 53
+    },
+    {
+      "ms": 23.1,
+      "type": 23,
+      "len": 87
+    },
+    {
+      "ms": 23.1,
+      "type": 23,
+      "len": 489
+    },
+    {
+      "ms": 23.4,
+      "type": 23,
+      "len": 26
+    },
+    {
+      "ms": 33.5,
+      "type": 23,
+      "len": 123
+    },
+    {
+      "ms": 33.5,
+      "type": 23,
+      "len": 68
+    },
+    {
+      "ms": 33.6,
+      "type": 23,
+      "len": 117
+    },
+    {
+      "ms": 39.7,
+      "type": 23,
+      "len": 124
+    },
+    {
+      "ms": 39.7,
+      "type": 23,
+      "len": 326
+    },
+    {
+      "ms": 43,
+      "type": 23,
+      "len": 57
+    },
+    {
+      "ms": 44,
+      "type": 23,
+      "len": 526
+    },
+    {
+      "ms": 44,
+      "type": 23,
+      "len": 526
+    },
+    {
+      "ms": 44,
+      "type": 23,
+      "len": 526
+    },
+    {
+      "ms": 44,
+      "type": 23,
+      "len": 26
+    },
+    {
+      "ms": 50,
+      "type": 23,
+      "len": 55
+    },
+    {
+      "ms": 61.1,
+      "type": 23,
+      "len": 58
+    }
+  ],
+  "frames": [
+    {
+      "ms": 23.2,
+      "type": "SETTINGS",
+      "len": 24,
+      "settings": [
+        {
+          "id": 1,
+          "val": 65536
+        },
+        {
+          "id": 2,
+          "val": 0
+        },
+        {
+          "id": 4,
+          "val": 6291456
+        },
+        {
+          "id": 6,
+          "val": 262144
+        }
+      ]
+    },
+    {
+      "ms": 23.2,
+      "type": "WINDOW_UPDATE",
+      "len": 4,
+      "increment": 15663105
+    },
+    {
+      "ms": 23.3,
+      "type": "HEADERS",
+      "stream": 1,
+      "len": 463,
+      "end_stream": true,
+      "priority": {
+        "exclusive": true,
+        "depends_on": 0,
+        "weight": 256
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":authority",
+          "h2fp.test:48443"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "\"macOS\""
+        ],
+        [
+          "upgrade-insecure-requests",
+          "1"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
+        ],
+        [
+          "accept",
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+        ],
+        [
+          "sec-fetch-site",
+          "none"
+        ],
+        [
+          "sec-fetch-mode",
+          "navigate"
+        ],
+        [
+          "sec-fetch-user",
+          "?1"
+        ],
+        [
+          "sec-fetch-dest",
+          "document"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "priority",
+          "u=0, i"
+        ]
+      ]
+    },
+    {
+      "ms": 23.4,
+      "type": "SETTINGS",
+      "len": 0,
+      "ack": true
+    },
+    {
+      "ms": 33.5,
+      "type": "HEADERS",
+      "stream": 3,
+      "len": 97,
+      "end_stream": true,
+      "priority": {
+        "exclusive": true,
+        "depends_on": 0,
+        "weight": 256
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":authority",
+          "h2fp.test:48443"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/s.css"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "\"macOS\""
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "accept",
+          "text/css,*/*;q=0.1"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "sec-fetch-mode",
+          "no-cors"
+        ],
+        [
+          "sec-fetch-dest",
+          "style"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:48443/"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "priority",
+          "u=0"
+        ]
+      ]
+    },
+    {
+      "ms": 33.5,
+      "type": "HEADERS",
+      "stream": 5,
+      "len": 42,
+      "end_stream": true,
+      "priority": {
+        "exclusive": true,
+        "depends_on": 3,
+        "weight": 220
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":authority",
+          "h2fp.test:48443"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/a.js"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "\"macOS\""
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "sec-fetch-mode",
+          "no-cors"
+        ],
+        [
+          "sec-fetch-dest",
+          "script"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:48443/"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "priority",
+          "u=1"
+        ]
+      ]
+    },
+    {
+      "ms": 33.6,
+      "type": "HEADERS",
+      "stream": 7,
+      "len": 91,
+      "end_stream": true,
+      "priority": {
+        "exclusive": true,
+        "depends_on": 5,
+        "weight": 183
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":authority",
+          "h2fp.test:48443"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/i.png"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "\"macOS\""
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "accept",
+          "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "sec-fetch-mode",
+          "no-cors"
+        ],
+        [
+          "sec-fetch-dest",
+          "image"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:48443/"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "priority",
+          "u=2, i"
+        ]
+      ]
+    },
+    {
+      "ms": 39.8,
+      "type": "HEADERS",
+      "stream": 9,
+      "len": 98,
+      "priority": {
+        "exclusive": true,
+        "depends_on": 0,
+        "weight": 220
+      },
+      "headers": [
+        [
+          ":method",
+          "POST"
+        ],
+        [
+          ":authority",
+          "h2fp.test:48443"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/connect"
+        ],
+        [
+          "content-length",
+          "300"
+        ],
+        [
+          "pragma",
+          "no-cache"
+        ],
+        [
+          "cache-control",
+          "no-cache"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "\"macOS\""
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "origin",
+          "https://h2fp.test:48443"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "sec-fetch-dest",
+          "empty"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:48443/"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "priority",
+          "u=1, i"
+        ]
+      ]
+    },
+    {
+      "ms": 39.8,
+      "type": "DATA",
+      "stream": 9,
+      "len": 300,
+      "end_stream": true
+    },
+    {
+      "ms": 43,
+      "type": "HEADERS",
+      "stream": 11,
+      "len": 31,
+      "priority": {
+        "exclusive": true,
+        "depends_on": 0,
+        "weight": 220
+      },
+      "headers": [
+        [
+          ":method",
+          "POST"
+        ],
+        [
+          ":authority",
+          "h2fp.test:48443"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/stream"
+        ],
+        [
+          "pragma",
+          "no-cache"
+        ],
+        [
+          "cache-control",
+          "no-cache"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "\"macOS\""
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "origin",
+          "https://h2fp.test:48443"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "sec-fetch-dest",
+          "empty"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:48443/"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "priority",
+          "u=1, i"
+        ]
+      ]
+    },
+    {
+      "ms": 44.1,
+      "type": "DATA",
+      "stream": 11,
+      "len": 500
+    },
+    {
+      "ms": 44.4,
+      "type": "DATA",
+      "stream": 11,
+      "len": 500
+    },
+    {
+      "ms": 44.4,
+      "type": "DATA",
+      "stream": 11,
+      "len": 500
+    },
+    {
+      "ms": 44.5,
+      "type": "DATA",
+      "stream": 11,
+      "len": 0,
+      "end_stream": true
+    },
+    {
+      "ms": 50,
+      "type": "HEADERS",
+      "stream": 13,
+      "len": 29,
+      "end_stream": true,
+      "priority": {
+        "exclusive": true,
+        "depends_on": 0,
+        "weight": 220
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":authority",
+          "h2fp.test:48443"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/done"
+        ],
+        [
+          "pragma",
+          "no-cache"
+        ],
+        [
+          "cache-control",
+          "no-cache"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "\"macOS\""
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "sec-fetch-dest",
+          "empty"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:48443/"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "priority",
+          "u=1, i"
+        ]
+      ]
+    },
+    {
+      "ms": 61.2,
+      "type": "HEADERS",
+      "stream": 15,
+      "len": 32,
+      "end_stream": true,
+      "priority": {
+        "exclusive": true,
+        "depends_on": 0,
+        "weight": 220
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":authority",
+          "h2fp.test:48443"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/favicon.ico"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "\"macOS\""
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\""
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "accept",
+          "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "sec-fetch-mode",
+          "no-cors"
+        ],
+        [
+          "sec-fetch-dest",
+          "image"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:48443/"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "priority",
+          "u=1, i"
+        ]
+      ]
+    }
+  ],
+  "client_hello": "01000794030326d1b4d00479f4a8fade861e6c3fca20a1278d2cc420776cfe89bd3ad4d3ccd820ee72243027d0a584e49420da83be0e1cce87f14470175db914965f08c6a14a9b0020caca130113021303c02bc02fc02cc030cca9cca8c013c014009c009d002f00350100072b6a6a000044cd00050003026832002b000706dada03040303001b0003020002002d000201010005000501000000000010000e000c02683208687474702f312e31000d001a00181a1a0904090509060403080404010503080505010806060100230000ca3400ba00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090fff010001000000000e000c000009683266702e74657374fe0d00da0000010001c00020228d6749a5ebc37eb4acd1858adc549c9c8d0cb3b2e4f160c8916d3c5f33955500b0d6ad0b6564eacc8508554df6a5325a5635fb29de49f9ca5f6605b3ad3d34101f250e0b13779fcccf5af980b097027394dc3d0041913e6b3ed1d0627b052656ce094e8bc3436d58012701fd37df9bad703d8e4773611c096f5508d94b3b08ee122ca7a603e8eedcb651e386af52f46f04ca5d3b73732805c880e4bfd5d0244310b93e318812719b89f382221c5bce42e992986f1e45725a01f4ddbf271fb1a84fcc3c67d4efd2d02300098b5294d7ec9c00170000003304ef04ed6a6a00010011ec04c033acb29660027c4956274596e8d14463f093c8cbba163036b00286c2d7af1989a37b2a9c904b8e95790e7c4202b9749e0b782ac1dc5fbd2540cbf41e6df00565421757d566f5f4a71d07a8bc3ba11a7257b5889945205ffd8602df294b37589149b72bd23256ce222077310d22604fe66024cc65a98125aa425b5125ec5e09046a6300733269bf1345680db5b5b851923f1490fd227b3e7b52fcba49037c05daa9af4c996b6f02c46e035c72291a1c605648e54ab9c01a2419790183acfe588708fabcda8b0c6c742ba0e1c78bc9461053148884af3476c9f1b4a281c27407726802c736127c5fbeeb99ab2c80b3b262ff03943af948bc9347084183290579d0dca142f9652152011bf8672f39b4456427b2984904502fcc2753c8f94b629285bc14ca6477b497e241360c5d66b86c64e5378ff600eb9177d0d1ab99cbbcebf7bbe7c693df7998a17b7e0062cbe6130c592b5d7a14cebff3969ff5906025a8a1caa378e005ca211c6579166876aa8ab260fc205a2fe0c0b4abadbf7b94cec5c22750bbc0037be3d96bb74b1cb80743f3f9908157c0b481262a84730309aee69b6e24b5b6f7a69470b31dccda57fa763ce981b2278cbcdfe4792ff0234b6487a7bc92f351007f463870030f260c3b19e64967754cab4c4a8af709ff6167ae50576c379b740a0e8e13393d8718c3b67644616d058b67a304b8dc445d396542cc8c65a4e33b6fdc7a10e2cb856b5044232a3e4c940084bc015ba559ea550128488d565fc9ba0944b10e9c061e80b85b92b52849d9c42545c0c5abcf12060c09f65ed4a781ff3c161bd410d4e3ac3290aa6362274cfbc5068ab06a347e04d7952526853ebc4124aa3421743953fb0b941aca7594c5c4183ca8361a3d0249d3f423bcd89ec1d914610a9407f92cad70944eb478d7e393edb696232b9b67f182c9787be8ac0c1907a06b77a4dd74946d192744860570fc6d3dfb4b911ab7a0d13fd076847194003571be36e255c9946af4092459413a000a8a5a2c51456360d73ccd13f54fbb9976b9b26982f76fb7f9902f362e08e62c2ba989d2fa7799463acc34c1b8409bffc30bfc13bbbfb13c9df874b001ae041972ed16053f60a3aa2aa4632496d5477632f2bd9c2697e67612eb18385b79501f933f39877a08ca3976c5ad4c981dd7339363d3c6aab72681f773e0e956aee1661df1b481e1c2f22b7d95a452271158f45bbd75970b3408542c33509ac7571e738e0b9120f6b66ce4064280630dab755e1794acd96c40b5bc3706ea74b967c631d1272c56b7ea91bef5b10a08c0a50cb491c4b395377c86fde8722b10ccdcbab2bb101200ac6f1181799cf12a2fe34249693d1af04ea71232a6524a95d62f733007874659f227bb92b9a38215788ca09d5123696cc4a072832d31ccaeb428202e075acd8042b565be64268bde69cec6f59c91a05ddc480e02e7c4f11586e2b8aedfa36ce9e230f1b5413b094f09149f5c17cab70cc0f585120af325cf9115f46199d9811dd0dbb322226e563a77b8e6a9bc937702f455429087e2a3a0a1064520f68be18b5a521a6ed0145901641b37d7c7f72c9220ccbecda889c40c605f412a1f22a22487435d0b127f7452e4ffc3ba3d89506e1835d98ee31a89488fa5c47f1813f58e9c8706342aa5abaf263861ce321606ea2dfaec3add9ae1f21c87c4349a7bb33baffd615d0455524c001d002017be963906d40a1869983926532d44ebd7a1209b355ced6dd7135291bfcdfa0e00120000000a000c000a6a6a11ec001d00170018000b000201003a3a000100"
+}

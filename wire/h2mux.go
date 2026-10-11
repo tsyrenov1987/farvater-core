@@ -32,6 +32,11 @@ type h2Mux struct {
 	dial func(context.Context) (net.Conn, error)
 	tr   *http2.Transport
 
+	// warm, when set, runs on each new connection before its first stream:
+	// what a browser does on a connection before a script on the page makes
+	// a request (kilvater fetches the page first).
+	warm func(context.Context, *http2.ClientConn)
+
 	mu   sync.Mutex
 	cc   *http2.ClientConn
 	conn net.Conn
@@ -63,6 +68,9 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 	if err != nil {
 		c.Close()
 		return nil, nil, err
+	}
+	if m.warm != nil {
+		m.warm(ctx, cc)
 	}
 	if !cc.ReserveNewRequest() {
 		cc.Close()
@@ -129,6 +137,13 @@ func (m *h2Mux) refresh(t time.Time) {
 // (down); its Close ends only this stream (RST_STREAM via the stream context),
 // never the shared connection or the other streams on it.
 func (m *h2Mux) openStream(ctx context.Context, method, reqURL string, header http.Header) (net.Conn, error) {
+	return m.openStreamFunc(ctx, method, reqURL, func() http.Header { return header })
+}
+
+// openStreamFunc is openStream with the header made once the connection is
+// ready, after a new one has been warmed (kilvater's tag takes the server's
+// clock from that).
+func (m *h2Mux) openStreamFunc(ctx context.Context, method, reqURL string, header func() http.Header) (net.Conn, error) {
 	u, err := url.Parse(reqURL)
 	if err != nil {
 		return nil, err
@@ -148,7 +163,7 @@ func (m *h2Mux) openStream(ctx context.Context, method, reqURL string, header ht
 		pr.Close()
 		body, up = nil, nil
 	}
-	req := (&http.Request{Method: method, URL: u, Host: u.Host, Header: header}).WithContext(sctx)
+	req := (&http.Request{Method: method, URL: u, Host: u.Host, Header: header()}).WithContext(sctx)
 	if body != nil {
 		req.Body = body
 	}

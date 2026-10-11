@@ -48,6 +48,11 @@ The decoy is what everyone without a key sees: browsers, scanners and active pro
 static site in it**, with an `index.html`, styles, images and a few pages. Do not leave it empty: an empty
 decoy answers 404 at every URL, which looks like nothing real.
 
+Clients use the decoy too. Each new connection starts the way a browser visit does: the client loads
+`index.html`, then up to two same-origin stylesheets, scripts or images it links to, then `/favicon.ico`
+([KILVATER.md §1](KILVATER.md#1-layers)). A page that links a stylesheet and has a `favicon.ico` makes
+that visit look ordinary.
+
 ```sh
 sudo install -d -o root -g kilvaterd -m 0755 /etc/kilvaterd/decoy
 sudo cp -r /path/to/your/site/* /etc/kilvaterd/decoy/
