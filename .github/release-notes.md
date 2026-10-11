@@ -1,8 +1,14 @@
-First public release of the farvater-core binaries.
+`kilvaterd` is the server for [Kilvater](https://github.com/tsyrenov1987/farvater-core/blob/main/docs/KILVATER.md),
+a private HTTPS transport. Setup guide: [docs/KILVATERD.md](https://github.com/tsyrenov1987/farvater-core/blob/main/docs/KILVATERD.md).
+`farvater` is the reference client CLI: a local SOCKS5 switchboard, plus `probe` for share links.
 
-- **`kilvaterd`** is the server for [Kilvater](https://github.com/tsyrenov1987/farvater-core/blob/main/docs/KILVATER.md),
-  a private HTTPS transport. Setup guide: [docs/KILVATERD.md](https://github.com/tsyrenov1987/farvater-core/blob/main/docs/KILVATERD.md).
-- **`farvater`** is the reference client CLI. It runs a local SOCKS5 switchboard and has a `probe` command for share links.
+Changes since v0.1.0:
+
+- **Security.** Built with Go 1.26.9 and x/net 0.61. This clears 17 reachable advisories in net/http, HTTP/2 and
+  crypto/tls (see govulncheck). If you run v0.1.0 `kilvaterd`, upgrade.
+- Ports outside 0–65535 are refused before encoding (found by CodeQL).
+- Fuzz targets for frame, address and tag parsing.
+- Provenance is attached as `provenance.intoto.jsonl`.
 
 Status: **experimental**.
 - No independent security audit yet.
