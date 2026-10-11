@@ -430,13 +430,14 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 		s.serveDirect(ctx, c, req)
 		return
 	}
+	// Counted only once admitted: scanners, the iOS tunnel's liveness probe
+	// and refused targets are no app's connection. Counted before the reply,
+	// so a client that has its reply already sees itself in Status.
+	s.flows.Add(1)
 	if err := replySocks5(c, 0); err != nil {
 		c.Close()
 		return
 	}
-	// Counted only once admitted: scanners, the iOS tunnel's liveness probe
-	// and refused targets are no app's connection.
-	s.flows.Add(1)
 	f := &flow{
 		s: s, client: c,
 		target: wire.Target{Host: req.Host, Port: req.Port},
