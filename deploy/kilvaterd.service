@@ -7,7 +7,8 @@ Wants=network-online.target
 [Service]
 User=kilvaterd
 Group=kilvaterd
-ExecStart=/usr/local/bin/kilvaterd -listen :443 -acme example.org -keys /etc/kilvaterd/keys.txt -decoy /etc/kilvaterd/decoy
+# -metrics stays on the loopback: the endpoint names key ids, so the monitor scrapes it over SSH/the overlay (docs §11)
+ExecStart=/usr/local/bin/kilvaterd -listen :443 -acme example.org -keys /etc/kilvaterd/keys.txt -decoy /etc/kilvaterd/decoy -metrics 127.0.0.1:9900
 # reload keys, master and revocation list on `systemctl reload` without a restart (docs §10)
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always

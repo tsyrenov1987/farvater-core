@@ -172,6 +172,8 @@ type Verifier struct {
 	mu     sync.Mutex
 	seen   map[[16]byte]int64 // tag MAC/nonce → ts, for TagWindow
 	pruned int64
+
+	replays atomic.Int64 // tags rejected as replays, read by metrics
 }
 
 func NewVerifier(keys []Key) *Verifier {
@@ -207,13 +209,44 @@ func (v *Verifier) Reload(cfg VerifierConfig) {
 	v.set.Store(&keySet{keys: cfg.Keys, master: cfg.Master, revoked: rev})
 }
 
+// Identity names the key a tag authenticated as, for per-key accounting and
+// limits. For a v2 tag it is the key id; for a v1 tag it is the key's index in
+// the flat list. It is meaningful only when the tag was accepted.
+type Identity struct {
+	V2    bool
+	KeyID KeyID // set when V2
+	Index int   // the v1 key index when !V2
+}
+
+// Label is the metric label for this identity: the key id for v2, or "v1" for a
+// v1 key. The flat v1 list is one shared label (the legacy shared key); the real
+// key bytes never appear, only the id or the word "v1".
+func (id Identity) Label() string {
+	if id.V2 {
+		return id.KeyID.String()
+	}
+	return "v1"
+}
+
+// Replays is the number of tags rejected as replays, for metrics.
+func (v *Verifier) Replays() int64 { return v.replays.Load() }
+
 // Verify reports whether tag is valid for path now: a non-negative result
 // accepts it (the matching v1 key index, or verifiedV2 for a v2 tag), -1
 // rejects. A tag already seen within its window is rejected as a replay.
 func (v *Verifier) Verify(tag, path string, now time.Time) int {
+	n, _ := v.VerifyIdentity(tag, path, now)
+	return n
+}
+
+// VerifyIdentity is Verify plus the identity of the key that matched, for
+// accounting and limits. The int is exactly Verify's; the Identity is
+// meaningful only on accept. Call one of Verify/VerifyIdentity per request:
+// both consume the replay window.
+func (v *Verifier) VerifyIdentity(tag, path string, now time.Time) (int, Identity) {
 	b, err := base64.RawURLEncoding.DecodeString(tag)
 	if err != nil {
-		return -1
+		return -1, Identity{}
 	}
 	set := v.set.Load()
 	switch {
@@ -222,13 +255,13 @@ func (v *Verifier) Verify(tag, path string, now time.Time) int {
 	case len(b) == tagV2Size && b[0] == tagVersion2:
 		return v.verifyV2(set, b, path, now)
 	default:
-		return -1
+		return -1, Identity{}
 	}
 }
 
-func (v *Verifier) verifyV1(set *keySet, b []byte, path string, now time.Time) int {
+func (v *Verifier) verifyV1(set *keySet, b []byte, path string, now time.Time) (int, Identity) {
 	if !withinWindow(int64(binary.BigEndian.Uint64(b[:8])), now) {
-		return -1
+		return -1, Identity{}
 	}
 	idx := -1
 	for i, k := range set.keys {
@@ -238,39 +271,39 @@ func (v *Verifier) verifyV1(set *keySet, b []byte, path string, now time.Time) i
 		}
 	}
 	if idx < 0 {
-		return -1
+		return -1, Identity{}
 	}
 	if !v.firstSeen(b[:16], int64(binary.BigEndian.Uint64(b[:8])), now) {
-		return -1
+		return -1, Identity{}
 	}
-	return idx
+	return idx, Identity{Index: idx}
 }
 
-func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) int {
+func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (int, Identity) {
 	if set.master == nil {
-		return -1
+		return -1, Identity{}
 	}
 	var id KeyID
 	copy(id[:], b[1:1+KeyIDSize])
 	off := 1 + KeyIDSize
 	ts := int64(binary.BigEndian.Uint64(b[off : off+8]))
 	if !withinWindow(ts, now) {
-		return -1
+		return -1, Identity{}
 	}
 	if set.revoked[id] {
-		return -1
+		return -1, Identity{}
 	}
 	want := macV2(DeriveKey(*set.master, id), id, b[off:off+8], b[off+8:off+16], path)
 	tagMAC := b[off+16:]
 	if !hmac.Equal(want, tagMAC) {
-		return -1
+		return -1, Identity{}
 	}
 	// Key the replay set by the MAC: unique per client, ts and nonce, so two
 	// clients that pick the same nonce are not taken for a replay of each other.
 	if !v.firstSeen(tagMAC, ts, now) {
-		return -1
+		return -1, Identity{}
 	}
-	return verifiedV2
+	return verifiedV2, Identity{V2: true, KeyID: id}
 }
 
 func withinWindow(ts int64, now time.Time) bool {
@@ -288,6 +321,7 @@ func (v *Verifier) firstSeen(fp []byte, ts int64, now time.Time) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if _, dup := v.seen[id]; dup {
+		v.replays.Add(1)
 		return false
 	}
 	if now.Unix()-v.pruned >= 10 {

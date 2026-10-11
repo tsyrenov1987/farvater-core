@@ -8,7 +8,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
@@ -40,6 +42,9 @@ func main() {
 	genKey := flag.Bool("genkey", false, "print a new random client key and exit")
 	genMaster := flag.Bool("genmaster", false, "print a new random master key and exit")
 	issue := flag.String("issue", "", "with -master: print the key id and derived key for this subscriber id, and exit")
+	metricsAddr := flag.String("metrics", "", "serve Prometheus metrics on this address (e.g. 127.0.0.1:9900); empty disables it; keep it on the loopback or a management overlay, never public")
+	maxBytesPerKey := flag.Int64("max-bytes-per-key", 0, "refuse a key's new streams once it has carried this many payload bytes up+down; 0 is no limit")
+	maxStreamsPerKey := flag.Int64("max-streams-per-key", 0, "cap a key's concurrent streams; 0 is no limit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -81,15 +86,27 @@ func main() {
 		log.Printf("warning: decoy dir %q is empty or unreadable (%v); visitors without a key see only 404s, which looks nothing like a real site", *decoyDir, derr)
 	}
 
+	verifier := kilvater.NewVerifierConfig(cfg)
+	metrics := kilvater.NewMetrics(verifier)
 	srv := &kilvater.Server{
-		Verifier: kilvater.NewVerifierConfig(cfg),
+		Verifier: verifier,
 		Decoy:    http.FileServer(http.Dir(*decoyDir)),
 		Logger:   log.Default(),
 
 		AllowPrivate: *allowPrivate,
 		Pad:          kilvater.ParsePadMode(*padMode),
+
+		Metrics:          metrics,
+		MaxBytesPerKey:   *maxBytesPerKey,
+		MaxStreamsPerKey: *maxStreamsPerKey,
 	}
 	log.Printf("downstream padding: %s", srv.Pad)
+	if *maxBytesPerKey > 0 || *maxStreamsPerKey > 0 {
+		log.Printf("per-key limits: max_bytes=%d max_streams=%d", *maxBytesPerKey, *maxStreamsPerKey)
+	}
+	if *metricsAddr != "" {
+		startMetrics(*metricsAddr, metrics)
+	}
 
 	// SIGHUP re-reads the key files and swaps them in without a restart, so a
 	// revocation takes effect for the next authentication and never cuts an
@@ -102,6 +119,7 @@ func main() {
 		Handler:           srv,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		ConnState:         metrics.ConnState,
 	}
 	h2s := &http2.Server{IdleTimeout: 120 * time.Second}
 
@@ -129,7 +147,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("tls: %v", err)
 	}
-	ln, err := listenTLS(*listen, tlsCfg)
+	ln, err := listenTLS(*listen, tlsCfg, metrics.HandshakeFailed)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -254,6 +272,26 @@ func readRevoked(path string) ([]kilvater.KeyID, error) {
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+// startMetrics serves the Prometheus metrics endpoint on addr in the
+// background. The endpoint names key ids and counts traffic, so it must not be
+// reachable from the internet: bind it to the loopback, and let the monitor
+// reach it over the existing management channel (SSH or the overlay). A
+// non-loopback bind only warns — an operator may front it with their own ACL.
+func startMetrics(addr string, m *kilvater.Metrics) {
+	host, _, err := net.SplitHostPort(addr)
+	ip, perr := netip.ParseAddr(host)
+	if err != nil || perr != nil || !ip.IsLoopback() {
+		log.Printf("warning: -metrics %q is not a plain loopback address; the metrics endpoint names key ids and counts traffic — keep it unreachable from outside the host", addr)
+	}
+	ms := &http.Server{Addr: addr, Handler: m, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		log.Printf("kilvaterd metrics on %s/metrics", addr)
+		if err := ms.ListenAndServe(); err != nil {
+			log.Printf("metrics server: %v", err)
+		}
+	}()
 }
 
 // installReload swaps new key material into the verifier on each SIGHUP. A

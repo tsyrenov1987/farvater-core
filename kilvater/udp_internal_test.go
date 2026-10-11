@@ -18,7 +18,7 @@ func TestUDPRefusesPrivateTargetByDefault(t *testing.T) {
 		var down bytes.Buffer
 		upR, upW := io.Pipe()
 		upW.Close()
-		(&Server{}).udp(context.Background(), target, upR, &down)
+		(&Server{}).udp(context.Background(), target, upR, &down, nil)
 
 		typ, body, err := ReadFrame(&down, nil)
 		if err != nil || typ != FrameClose || len(body) != 1 || body[0] != 1 {
@@ -49,7 +49,7 @@ func TestUDPEchoPreservesBoundaries(t *testing.T) {
 	downR, downW := io.Pipe()
 	done := make(chan struct{})
 	go func() {
-		(&Server{AllowPrivate: true}).udp(ctx, echo.LocalAddr().String(), upR, downW)
+		(&Server{AllowPrivate: true}).udp(ctx, echo.LocalAddr().String(), upR, downW, nil)
 		close(done)
 	}()
 

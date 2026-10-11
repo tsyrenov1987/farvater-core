@@ -57,19 +57,21 @@ func warnIfExposed(addr string) {
 // only a Go server writes, so a scanner could tell kilvaterd apart from the
 // site it stands in for. Here a connection whose handshake fails is closed
 // without a word, which is what most TLS-only servers do.
-// listenTLS is the listener kilvaterd serves on.
-func listenTLS(addr string, cfg *tls.Config) (net.Listener, error) {
+// listenTLS is the listener kilvaterd serves on. onFail, if set, is called
+// each time a TLS handshake does not complete, for the handshake-failure metric.
+func listenTLS(addr string, cfg *tls.Config, onFail func()) (net.Listener, error) {
 	raw, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	return newHandshakeListener(raw, cfg, 10*time.Second), nil
+	return newHandshakeListener(raw, cfg, 10*time.Second, onFail), nil
 }
 
 type handshakeListener struct {
 	net.Listener
 	cfg     *tls.Config
 	timeout time.Duration
+	onFail  func()
 
 	conns   chan net.Conn
 	errc    chan error
@@ -77,11 +79,12 @@ type handshakeListener struct {
 	closing sync.Once
 }
 
-func newHandshakeListener(inner net.Listener, cfg *tls.Config, timeout time.Duration) *handshakeListener {
+func newHandshakeListener(inner net.Listener, cfg *tls.Config, timeout time.Duration, onFail func()) *handshakeListener {
 	l := &handshakeListener{
 		Listener: inner,
 		cfg:      cfg,
 		timeout:  timeout,
+		onFail:   onFail,
 		conns:    make(chan net.Conn),
 		errc:     make(chan error, 1),
 		done:     make(chan struct{}),
@@ -113,6 +116,9 @@ func (l *handshakeListener) handshake(raw net.Conn) {
 	tc := tls.Server(raw, l.cfg)
 	raw.SetDeadline(time.Now().Add(l.timeout))
 	if err := tc.Handshake(); err != nil {
+		if l.onFail != nil {
+			l.onFail()
+		}
 		raw.Close()
 		return
 	}

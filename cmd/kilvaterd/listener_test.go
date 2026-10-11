@@ -45,7 +45,7 @@ func testTLSConfig(t *testing.T) *tls.Config {
 // startServer serves the way main does: listenTLS + http.Server + h2.
 func startServer(t *testing.T) string {
 	t.Helper()
-	ln, err := listenTLS("127.0.0.1:0", testTLSConfig(t))
+	ln, err := listenTLS("127.0.0.1:0", testTLSConfig(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

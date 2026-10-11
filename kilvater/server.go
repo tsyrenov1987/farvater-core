@@ -31,6 +31,17 @@ type Server struct {
 	// downstream (PadMode). The zero value is PadModerate. It is one-sided:
 	// an old client reads any mode the same way.
 	Pad PadMode
+
+	// Metrics, if set, counts traffic and health per key. nil disables it.
+	Metrics *Metrics
+
+	// MaxBytesPerKey caps the total (up+down) payload bytes one key may carry
+	// before its new streams are refused; MaxStreamsPerKey caps a key's
+	// concurrent streams. Both are off at zero, and both need Metrics set. A
+	// refused request gets the decoy, like a bad tag; a stream already running
+	// is never cut.
+	MaxBytesPerKey   int64
+	MaxStreamsPerKey int64
 }
 
 var errForbiddenTarget = errors.New("kilvater: target address not allowed")
@@ -75,19 +86,48 @@ func (s *Server) log(format string, args ...any) {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c, err := r.Cookie(CookieName)
-	if err != nil || s.Verifier.Verify(c.Value, r.URL.Path, time.Now()) < 0 {
+	if err != nil {
+		s.Decoy.ServeHTTP(w, r) // an ordinary visitor, no tag at all
+		return
+	}
+	n, id := s.Verifier.VerifyIdentity(c.Value, r.URL.Path, time.Now())
+	if n < 0 {
+		s.Metrics.authFail() // a tag cookie was present but did not verify
 		s.Decoy.ServeHTTP(w, r)
 		return
 	}
-	s.tunnel(w, r)
+	if s.overLimit(id) {
+		s.Metrics.limitReject()
+		s.Decoy.ServeHTTP(w, r)
+		return
+	}
+	s.tunnel(w, r, id)
 }
 
-func (s *Server) tunnel(w http.ResponseWriter, r *http.Request) {
+// overLimit reports whether a key has reached a configured per-key limit, so
+// its next stream is refused. It never cuts a running stream.
+func (s *Server) overLimit(id Identity) bool {
+	if s.Metrics == nil || (s.MaxBytesPerKey <= 0 && s.MaxStreamsPerKey <= 0) {
+		return false
+	}
+	ks := s.Metrics.stat(id.Label())
+	if s.MaxBytesPerKey > 0 && ks.up.Load()+ks.down.Load() >= s.MaxBytesPerKey {
+		return true
+	}
+	if s.MaxStreamsPerKey > 0 && ks.streamsOpen.Load() >= s.MaxStreamsPerKey {
+		return true
+	}
+	return false
+}
+
+func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, id Identity) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+	ks := s.Metrics.openStream(id.Label())
+	defer s.Metrics.closeStream(ks)
 	w.WriteHeader(http.StatusOK)
 	fl.Flush()
 	down := &flushed{w: w, f: fl}
@@ -111,6 +151,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request) {
 	select {
 	case f = <-ch:
 	case <-time.After(openReadTimeout):
+		s.Metrics.openTimeout()
 		return
 	case <-r.Context().Done():
 		return
@@ -125,15 +166,15 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request) {
 
 	switch f.body[0] {
 	case NetTCP:
-		s.tcp(r.Context(), addr, r.Body, down)
+		s.tcp(r.Context(), addr, r.Body, down, ks)
 	case NetUDP:
-		s.udp(r.Context(), addr, r.Body, down)
+		s.udp(r.Context(), addr, r.Body, down, ks)
 	default:
 		WriteFrame(down, FrameClose, []byte{1})
 	}
 }
 
-func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Writer) {
+func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Writer, ks *keyStat) {
 	remote, err := s.dialer().DialContext(ctx, "tcp", addr)
 	if err != nil {
 		s.log("dial %s: %v", addr, err)
@@ -177,6 +218,7 @@ func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Wri
 					cancel()
 					return
 				}
+				ks.addUp(len(body))
 			case FramePad:
 			case FrameClose:
 				return
@@ -197,6 +239,7 @@ func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Wri
 					cancel()
 					return
 				}
+				ks.addDown(n)
 			}
 			if err != nil {
 				sh.Close() // stop idle PAD so CLOSE is the last frame
@@ -220,7 +263,7 @@ var udpAssocIdle = 2 * time.Minute
 // public-address check as TCP, since s.dialer's Control runs on the resolved
 // address here too. Each datagram is its own frame, so message boundaries are
 // kept across the tunnel; the shaper, which reshapes a byte stream, is not used.
-func (s *Server) udp(ctx context.Context, addr string, up io.Reader, down io.Writer) {
+func (s *Server) udp(ctx context.Context, addr string, up io.Reader, down io.Writer, ks *keyStat) {
 	remote, err := s.dialer().DialContext(ctx, "udp", addr)
 	if err != nil {
 		s.log("dial udp %s: %v", addr, err)
@@ -264,6 +307,7 @@ func (s *Server) udp(ctx context.Context, addr string, up io.Reader, down io.Wri
 					cancel()
 					return
 				}
+				ks.addUp(len(body))
 			case FramePad:
 			case FrameClose:
 				cancel() // UDP has no half-close: end both ways
@@ -289,6 +333,7 @@ func (s *Server) udp(ctx context.Context, addr string, up io.Reader, down io.Wri
 						cancel()
 						return
 					}
+					ks.addDown(n)
 				}
 			}
 			if err != nil {
