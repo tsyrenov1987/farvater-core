@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -102,6 +103,56 @@ func TestKilvaterV2Flow(t *testing.T) {
 	}
 	defer w.Close()
 	flowEchoOver(t, w)
+}
+
+// UDP rides kilvater end to end: DialPacket opens a stream, each datagram
+// crosses as its own frame to a connected socket on the server, and the echo's
+// answers come back whole. A DNS query is exactly this — a datagram to :53 —
+// so DNS rides the same path.
+func TestKilvaterUDPFlow(t *testing.T) {
+	key, hexKey := kilTestKey(t)
+	w, err := newKilWire(kilTestSpec(hexKey), kilServerDial(t, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ps, err := w.DialPacket(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ps.Close()
+
+	echo := udpEcho(t)
+	target := Target{Host: "127.0.0.1", Port: echo.Port}
+	for i := 0; i < 3; i++ {
+		msg := fmt.Sprintf("dg%d", i)
+		if err := ps.WritePacket([]byte(msg), target); err != nil {
+			t.Fatalf("datagram %d: write: %v", i, err)
+		}
+		got, errc := make(chan []byte, 1), make(chan error, 1)
+		go func() {
+			p, _, err := ps.ReadPacket()
+			if err != nil {
+				errc <- err
+				return
+			}
+			got <- p
+		}()
+		want := fmt.Sprintf("%d:%s", echo.Port, msg)
+		select {
+		case p := <-got:
+			if string(p) != want {
+				t.Fatalf("datagram %d: got %q, want %q", i, p, want)
+			}
+		case err := <-errc:
+			t.Fatalf("datagram %d: read: %v", i, err)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("datagram %d: no answer", i)
+		}
+	}
 }
 
 // A phone whose clock is off by more than the tag window still connects: the

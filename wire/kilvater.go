@@ -3,6 +3,7 @@ package wire
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -113,15 +114,18 @@ func (w *kilWire) tag(path string) string {
 	return kilvater.NewTag(w.key, path, w.serverNow())
 }
 
-func (w *kilWire) Dial(ctx context.Context) (Session, error) {
+// openTunnel opens one tunnel stream: the streamed fetch POST a script on the
+// loaded page makes, carrying the auth tag in the cookie. Dial (TCP) and
+// DialPacket (UDP) open it the same way; what tells them apart is the network
+// byte in the OPEN frame that follows.
+func (w *kilWire) openTunnel(ctx context.Context) (net.Conn, error) {
 	path := w.spec.Path
 	if path == "" {
 		path = "/connect"
 	}
 	origin := "https://" + w.authority()
 	u := &url.URL{Scheme: "https", Host: w.authority(), Path: path}
-	// The request a script on the page makes: a streamed fetch POST.
-	st, err := w.mux.openStreamFunc(ctx, http.MethodPost, u.String(), func() http.Header {
+	return w.mux.openStreamFunc(ctx, http.MethodPost, u.String(), func() http.Header {
 		h := http.Header{}
 		h.Set("Cookie", kilvater.CookieName+"="+w.tag(path))
 		h.Set("Origin", origin)
@@ -130,11 +134,28 @@ func (w *kilWire) Dial(ctx context.Context) (Session, error) {
 		browserHeaders(h, "fetch")
 		return h
 	})
+}
+
+func (w *kilWire) Dial(ctx context.Context) (Session, error) {
+	st, err := w.openTunnel(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &kilSession{conn: st, pad: w.pad}, nil
 }
+
+// DialPacket opens a UDP association over a tunnel stream. Kilvater binds one
+// stream to one target (see kilPacketSession), which is how the switchboard
+// uses a packet session: one association per app socket and destination.
+func (w *kilWire) DialPacket(ctx context.Context) (PacketSession, error) {
+	st, err := w.openTunnel(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &kilPacketSession{conn: st}, nil
+}
+
+var _ PacketWire = (*kilWire)(nil)
 
 // warmTimeout bounds the page fetch that opens a connection. Past it the
 // tunnel goes on without: the page is there for looks and for the clock.
@@ -365,4 +386,73 @@ func (fr *kilFrameReader) Read(p []byte) (int, error) {
 	n := copy(p, fr.rem)
 	fr.rem = fr.rem[n:]
 	return n, nil
+}
+
+// errKilUDPTarget is returned when a second target is sent on a stream already
+// bound to one. One stream carries one UDP target; a different destination gets
+// its own association. The switchboard opens one per socket and destination, so
+// this never fires there.
+var errKilUDPTarget = errors.New("kilvater: one stream carries one UDP target")
+
+// kilPacketSession carries one app UDP socket's datagrams over one tunnel
+// stream. The first datagram's target is named in OPEN and fixes the
+// association for its life; the server dials a connected socket to it, which
+// both pins the target and gives UDP the same public-address check as TCP. Each
+// datagram is its own frame, so message boundaries survive the tunnel. Unlike
+// trojan or XUDP, a stream is not multiplexed across targets.
+type kilPacketSession struct {
+	conn   net.Conn
+	opened bool
+	target Target
+}
+
+func (s *kilPacketSession) Close() error { return s.conn.Close() }
+
+// WritePacket sends one datagram. The contract gives it one writer at a time,
+// so opened/target need no lock.
+func (s *kilPacketSession) WritePacket(p []byte, target Target) error {
+	if !s.opened {
+		body := []byte{kilvater.NetUDP}
+		body, err := kilvater.AppendAddr(body, target.String())
+		if err != nil {
+			return err
+		}
+		if err := kilvater.WriteFrame(s.conn, kilvater.FrameOpen, body); err != nil {
+			return err
+		}
+		// Vary the first record, as the TCP side's OPEN → PAD → data does, so a
+		// UDP stream opens like a TCP one on the wire.
+		if err := kilvater.WritePad(s.conn); err != nil {
+			return err
+		}
+		s.opened, s.target = true, target
+	} else if target != s.target {
+		return errKilUDPTarget
+	}
+	if len(p) > kilvater.MaxFrame {
+		return nil // too large to frame; drop it, as any UDP datagram may be dropped
+	}
+	return kilvater.WriteFrame(s.conn, kilvater.FrameDgram, p)
+}
+
+// ReadPacket returns the next datagram. The source is the zero Target: the
+// socket is connected to the one target, so replies can only come from it, and
+// the switchboard fills the reply address in from the association's target.
+func (s *kilPacketSession) ReadPacket() ([]byte, Target, error) {
+	for {
+		typ, body, err := kilvater.ReadFrame(s.conn, nil)
+		if err != nil {
+			return nil, Target{}, err
+		}
+		switch typ {
+		case kilvater.FrameDgram:
+			return body, Target{}, nil
+		case kilvater.FramePad:
+			continue
+		case kilvater.FrameClose:
+			return nil, Target{}, io.EOF
+		default:
+			return nil, Target{}, fmt.Errorf("kilvater: unexpected frame type %d", typ)
+		}
+	}
 }

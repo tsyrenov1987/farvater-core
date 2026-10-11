@@ -21,18 +21,20 @@ import (
 	"time"
 )
 
-// Frame types. Type 4 is reserved for a future datagram frame: Kilvater
-// carries TCP, and UDP flows ride the other paths in the fan.
+// Frame types. Type 4 carries one UDP datagram, its message boundary kept by
+// the frame length: one frame is exactly one datagram, never split or joined.
 const (
 	FrameOpen  byte = 1 // body: network byte, target address
-	FrameData  byte = 2 // body: payload
+	FrameData  byte = 2 // body: payload (a TCP byte stream)
 	FramePad   byte = 3 // body: ignored
+	FrameDgram byte = 4 // body: one UDP datagram
 	FrameClose byte = 5 // body: one code byte
 )
 
 // Networks named in an OPEN frame.
 const (
 	NetTCP byte = 1
+	NetUDP byte = 2
 )
 
 // MaxFrame caps a frame body. A length above it is a protocol error, never an

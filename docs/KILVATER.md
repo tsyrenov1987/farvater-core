@@ -4,7 +4,7 @@ Status: **experimental.** Kilvater works and ships inside the Farvater apps. It 
 security review yet, and field data on how it does against censorship is still being collected. Read
 [§8](#8-limits) before you rely on it.
 
-Kilvater carries TCP connections inside an ordinary-looking HTTPS website. Its parts:
+Kilvater carries TCP connections, and UDP associations, inside an ordinary-looking HTTPS website. Its parts:
 
 - The client wire is in `wire/kilvater.go`, on top of `wire/h2mux.go`.
 - The shared wire format is the `kilvater` package.
@@ -115,10 +115,10 @@ After authentication the server answers `200`. Both directions of the stream the
 
 | Type | Name | Body |
 |---|---|---|
-| 1 | OPEN | network byte (`1` = TCP), then `[len:1]["host:port"]` |
-| 2 | DATA | payload |
+| 1 | OPEN | network byte (`1` = TCP, `2` = UDP), then `[len:1]["host:port"]` |
+| 2 | DATA | payload (a TCP byte stream) |
 | 3 | PAD | ignored; varies record sizes and fills pauses (see padding) |
-| 4 | — | reserved (datagrams); never sent |
+| 4 | DGRAM | one UDP datagram; the frame length is the datagram boundary |
 | 5 | CLOSE | one code byte: `0` normal end, `1` error / refused |
 
 A length above 16384 is a protocol error. It is never turned into an allocation.
@@ -126,7 +126,8 @@ A length above 16384 is a protocol error. It is never turned into an allocation.
 **Order of frames on a stream:**
 
 1. The server's first frame is a PAD of random length (16–271 bytes).
-2. The client sends OPEN, then a PAD, then DATA in both directions, and finally CLOSE or end of stream.
+2. The client sends OPEN, then a PAD, then DATA (a TCP target) or DGRAM frames (a
+   UDP target) in both directions, and finally CLOSE or end of stream.
 3. If OPEN does not arrive within 15 s of authentication, the stream is dropped.
 
 **Padding.** DATA is split into frames whose sizes follow a web-like spread rather than a run of
@@ -136,7 +137,13 @@ any padding mode interoperates with any other, in both directions. Both ends pad
 `moderate` (default), or `heavy` — is set per server (`kilvaterd -pad`) and per client (the link's optional
 `pad` parameter); it only changes how many frames of what sizes are sent, never the bytes delivered.
 
-UDP is not carried. In Farvater, UDP flows take other paths.
+**UDP.** An OPEN with network byte `2` starts a UDP association instead of a TCP
+one: the stream then carries DGRAM frames, one frame per datagram in each
+direction, so message boundaries are kept. One stream carries one target — the
+one named in OPEN — which is how a per-socket, per-destination association maps
+onto a stream; a different destination opens its own stream. DNS (a datagram to
+`:53`) and other UDP, such as Nyutag's calls, ride kilvater this way. UDP/443
+(QUIC) is not used.
 
 ## 5. Server behaviour
 
@@ -147,6 +154,16 @@ UDP is not carried. In Farvater, UDP flows take other paths.
   metadata at 169.254.169.254), unique-local, multicast and unspecified.
 - The check runs on the address actually dialed, after DNS resolution. A hostname that resolves to
   `127.0.0.1` is refused too.
+
+**UDP associations:**
+- A UDP OPEN dials a socket connected to the one target in OPEN. The same
+  public-address check applies — a UDP target is refused exactly as a TCP one is,
+  because the connected dial runs the very same check.
+- Each datagram is relayed whole, one DGRAM frame per datagram, both ways; a
+  datagram too large to fit one frame is dropped, as any UDP datagram may be.
+- An association silent both ways for 2 minutes is closed, so a client that opens
+  one and vanishes does not hold a socket. This gates only idle associations; it
+  never cuts one still carrying datagrams.
 
 **Handshakes:**
 - TLS handshakes run per connection under a 10 s deadline.

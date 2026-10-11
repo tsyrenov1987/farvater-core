@@ -126,6 +126,8 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request) {
 	switch f.body[0] {
 	case NetTCP:
 		s.tcp(r.Context(), addr, r.Body, down)
+	case NetUDP:
+		s.udp(r.Context(), addr, r.Body, down)
 	default:
 		WriteFrame(down, FrameClose, []byte{1})
 	}
@@ -198,6 +200,98 @@ func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Wri
 			}
 			if err != nil {
 				sh.Close() // stop idle PAD so CLOSE is the last frame
+				WriteFrame(down, FrameClose, []byte{0})
+				cancel()
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
+// udpAssocIdle ends a UDP association the server has heard nothing on, either
+// way, for this long, so an association whose client vanished frees its socket.
+var udpAssocIdle = 2 * time.Minute
+
+// udp carries one UDP association. OPEN names a single target (NetUDP), and a
+// connected UDP socket to it does double duty: it binds the association to that
+// one target (one stream = one association) and gives UDP the very same
+// public-address check as TCP, since s.dialer's Control runs on the resolved
+// address here too. Each datagram is its own frame, so message boundaries are
+// kept across the tunnel; the shaper, which reshapes a byte stream, is not used.
+func (s *Server) udp(ctx context.Context, addr string, up io.Reader, down io.Writer) {
+	remote, err := s.dialer().DialContext(ctx, "udp", addr)
+	if err != nil {
+		s.log("dial udp %s: %v", addr, err)
+		WriteFrame(down, FrameClose, []byte{1})
+		return
+	}
+	defer remote.Close()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// When the association ends from either side, close the socket so the
+	// reader below cannot block on it forever.
+	go func() {
+		<-ctx.Done()
+		remote.Close()
+	}()
+
+	// Reclaim an association that has gone quiet both ways; reset on traffic.
+	idle := time.AfterFunc(udpAssocIdle, cancel)
+	defer idle.Stop()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Up: one datagram frame from the client is one datagram to the target.
+	go func() {
+		defer wg.Done()
+		var buf []byte
+		for {
+			typ, body, err := ReadFrame(up, buf)
+			if err != nil {
+				cancel()
+				return
+			}
+			buf = body[:0]
+			switch typ {
+			case FrameDgram:
+				idle.Reset(udpAssocIdle)
+				if _, err := remote.Write(body); err != nil {
+					cancel()
+					return
+				}
+			case FramePad:
+			case FrameClose:
+				cancel() // UDP has no half-close: end both ways
+				return
+			default:
+				cancel()
+				return
+			}
+		}
+	}()
+
+	// Down: each datagram from the target is one frame back. A datagram too
+	// large to frame is dropped here, as any UDP datagram may be dropped.
+	go func() {
+		defer wg.Done()
+		p := make([]byte, 64<<10) // read a whole datagram so none is truncated
+		for {
+			n, err := remote.Read(p)
+			if n > 0 {
+				idle.Reset(udpAssocIdle)
+				if n <= MaxFrame {
+					if werr := WriteFrame(down, FrameDgram, p[:n]); werr != nil {
+						cancel()
+						return
+					}
+				}
+			}
+			if err != nil {
 				WriteFrame(down, FrameClose, []byte{0})
 				cancel()
 				return
