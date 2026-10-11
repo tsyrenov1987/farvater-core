@@ -37,6 +37,17 @@ func newKilvater(s PathSpec) (Wire, error) {
 	return w, nil
 }
 
+// Connection rotation defaults for kilvater: a connection stops taking new
+// streams once it is this old or has carried this many bytes, so no single
+// handshake's connection is the whole tunnel in time or volume (h2Mux). The
+// numbers are browser-like — a page's connections turn over in minutes — and
+// loose enough not to churn handshakes under load; the governor paces a
+// rotation anyway.
+const (
+	kilConnMaxAge   = 10 * time.Minute
+	kilConnMaxBytes = 256 << 20 // 256 MiB
+)
+
 func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilWire, error) {
 	k, err := kilvater.ParseKey(s.Key)
 	if err != nil {
@@ -51,6 +62,7 @@ func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilW
 		w.mux = newH2Mux(dial, pingAfterIdle, pingTimeout)
 	}
 	w.mux.warm = w.warm
+	w.mux.maxAge, w.mux.maxBytes = kilConnMaxAge, kilConnMaxBytes
 	return w, nil
 }
 

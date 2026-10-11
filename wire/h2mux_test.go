@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -244,10 +245,9 @@ func answers(s net.Conn, msg string, wait time.Duration) bool {
 // next one dials afresh and works, and the stream stuck on the dead one is
 // released once the PING goes unanswered.
 func TestH2MuxRefreshLeavesADeadConnection(t *testing.T) {
-	defer func(d time.Duration) { retirePingTimeout = d }(retirePingTimeout)
-	retirePingTimeout = 300 * time.Millisecond
 	d := &freezeDialer{}
 	m := newH2Mux(d.dial, 0, 0)
+	m.retirePing = 300 * time.Millisecond
 	defer m.Close()
 
 	a := openOrFail(t, m)
@@ -288,10 +288,9 @@ func TestH2MuxRefreshLeavesADeadConnection(t *testing.T) {
 // refresh never cuts a live connection under its streams: they finish there
 // while new streams ride a fresh connection.
 func TestH2MuxRefreshKeepsLiveStreams(t *testing.T) {
-	defer func(d time.Duration) { retirePingTimeout = d }(retirePingTimeout)
-	retirePingTimeout = 300 * time.Millisecond
 	d := &h2EchoDialer{}
 	m := newH2Mux(d.dial, 0, 0)
+	m.retirePing = 300 * time.Millisecond
 	defer m.Close()
 
 	a := openOrFail(t, m)
@@ -299,7 +298,7 @@ func TestH2MuxRefreshKeepsLiveStreams(t *testing.T) {
 	m.refresh(time.Now())
 	b := openOrFail(t, m)
 	echo(t, b, "new")
-	time.Sleep(3 * retirePingTimeout)
+	time.Sleep(3 * m.retirePing)
 	echo(t, a, "still-here")
 	a.Close()
 	b.Close()
@@ -378,4 +377,93 @@ func TestPerFlowTransportsAlwaysHandshake(t *testing.T) {
 			t.Fatalf("%s: a per-flow connection was not counted as a handshake", n)
 		}
 	}
+}
+
+// Past the volume limit the next stream rotates to a fresh connection; streams
+// are not piled on one connection forever.
+func TestH2MuxRotatesOnVolume(t *testing.T) {
+	d := &h2EchoDialer{}
+	m := newH2Mux(d.dial, 0, 0)
+	m.maxBytes = 1 << 10 // a few KB of echo (read+write both count) rotates it
+	defer m.Close()
+
+	a := openOrFail(t, m)
+	echo(t, a, strings.Repeat("x", 8<<10)) // well past the limit
+	a.Close()
+	if got := d.count(); got != 1 {
+		t.Fatalf("setup: expected 1 dial, got %d", got)
+	}
+	b := openOrFail(t, m)
+	echo(t, b, "after")
+	b.Close()
+	if got := d.count(); got != 2 {
+		t.Fatalf("expected a rotation past the volume limit, got %d dials", got)
+	}
+}
+
+// Past the age limit the next stream rotates to a fresh connection.
+func TestH2MuxRotatesOnAge(t *testing.T) {
+	d := &h2EchoDialer{}
+	m := newH2Mux(d.dial, 0, 0)
+	m.maxAge = 50 * time.Millisecond
+	defer m.Close()
+
+	a := openOrFail(t, m)
+	echo(t, a, "first")
+	a.Close()
+	if got := d.count(); got != 1 {
+		t.Fatalf("setup: expected 1 dial, got %d", got)
+	}
+	time.Sleep(90 * time.Millisecond) // past maxAge
+
+	b := openOrFail(t, m)
+	echo(t, b, "second")
+	b.Close()
+	if got := d.count(); got != 2 {
+		t.Fatalf("expected a rotation past the age limit, got %d dials", got)
+	}
+}
+
+// On rotation the old connection drains, not cut: a stream still on it keeps
+// working to its end while new streams ride the fresh connection.
+func TestH2MuxRotationDrainsOldConnection(t *testing.T) {
+	d := &h2EchoDialer{}
+	m := newH2Mux(d.dial, 0, 0)
+	m.maxAge = 30 * time.Millisecond
+	m.retirePing = 300 * time.Millisecond
+	defer m.Close()
+
+	a := openOrFail(t, m) // on connection 1
+	echo(t, a, "a-before")
+	time.Sleep(60 * time.Millisecond) // connection 1 is now past maxAge
+
+	b := openOrFail(t, m) // rotates onto connection 2
+	echo(t, b, "b-new")
+	if got := d.count(); got != 2 {
+		t.Fatalf("expected a rotation, got %d dials", got)
+	}
+	echo(t, a, "a-still-here") // A still works on the draining connection 1
+	a.Close()
+	b.Close()
+}
+
+// The governor paces by needsDial, so once a connection is past its limits
+// needsDial must say a dial is coming — or the rotation's handshake would slip
+// the governor and could join a burst.
+func TestH2MuxNeedsDialOnExpiry(t *testing.T) {
+	d := &h2EchoDialer{}
+	m := newH2Mux(d.dial, 0, 0)
+	m.maxAge = 40 * time.Millisecond
+	defer m.Close()
+
+	a := openOrFail(t, m)
+	echo(t, a, "up")
+	if m.needsDial() {
+		t.Fatal("a fresh connection should take the next stream without a handshake")
+	}
+	time.Sleep(80 * time.Millisecond) // past maxAge
+	if !m.needsDial() {
+		t.Fatal("past the age limit the next stream dials, but needsDial said no")
+	}
+	a.Close()
 }

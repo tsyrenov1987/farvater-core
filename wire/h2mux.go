@@ -9,13 +9,15 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/http2"
 )
 
 // h2Mux carries many streams over one HTTP/2 connection and dials a fresh
-// connection only when the current one is full or gone. It is the browser-like
+// connection only when the current one is full, gone, or past its rotation
+// limits (maxAge, maxBytes). It is the browser-like
 // connection layer the private HTTPS transport ("kilvater", see
 // docs/KILVATER.md) is built on: one TLS handshake holds up to the server's
 // stream limit of concurrent streams, so the handshake governor barely moves.
@@ -37,16 +39,32 @@ type h2Mux struct {
 	// a request (kilvater fetches the page first).
 	warm func(context.Context, *http2.ClientConn)
 
+	// retirePing bounds the PING that tells a live retired connection from one
+	// that died in silence (retire). Set once at construction.
+	retirePing time.Duration
+
+	// Rotation limits, 0 to disable (the default; kilvater sets them, the
+	// other transports on this layer leave them off). A connection stops
+	// taking new streams once it is older than maxAge or has carried more than
+	// maxBytes; the next stream dials a fresh one and the old one drains
+	// (retire), so no single connection is the whole tunnel, in time or in
+	// volume. needsDial reports the coming dial, so the handshake governor
+	// paces a rotation like any other handshake.
+	maxAge   time.Duration
+	maxBytes int64
+
 	mu   sync.Mutex
 	cc   *http2.ClientConn
 	conn net.Conn
-	at   time.Time // when cc was made
+	at   time.Time     // when cc was made
+	n    *atomic.Int64 // bytes read and written on cc, for maxBytes
 }
 
 func newH2Mux(dial func(context.Context) (net.Conn, error), pingAfterIdle, pingTimeout time.Duration) *h2Mux {
 	return &h2Mux{
-		dial: dial,
-		tr:   &http2.Transport{ReadIdleTimeout: pingAfterIdle, PingTimeout: pingTimeout},
+		dial:       dial,
+		tr:         &http2.Transport{ReadIdleTimeout: pingAfterIdle, PingTimeout: pingTimeout},
+		retirePing: defaultRetirePing,
 	}
 }
 
@@ -56,7 +74,7 @@ func newH2Mux(dial func(context.Context) (net.Conn, error), pingAfterIdle, pingT
 func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cc != nil && m.cc.ReserveNewRequest() {
+	if m.cc != nil && !m.expiredLocked() && m.cc.ReserveNewRequest() {
 		return m.cc, m.conn, nil
 	}
 	old := m.cc
@@ -64,6 +82,8 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 	if err != nil {
 		return nil, nil, err
 	}
+	n := new(atomic.Int64)
+	c = &countConn{Conn: c, n: n}
 	cc, err := m.tr.NewClientConn(c)
 	if err != nil {
 		c.Close()
@@ -77,20 +97,37 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 		c.Close()
 		return nil, nil, errors.New("h2mux: a fresh connection would not take a stream")
 	}
-	m.cc, m.conn, m.at = cc, c, time.Now()
+	m.cc, m.conn, m.at, m.n = cc, c, time.Now(), n
 	if old != nil {
-		retire(old)
+		m.retire(old)
 	}
 	return cc, c, nil
 }
 
+// expiredLocked reports whether the current connection has hit a rotation
+// limit (maxAge, maxBytes) and should take no new streams. Held under m.mu.
+func (m *h2Mux) expiredLocked() bool {
+	if m.cc == nil {
+		return false
+	}
+	if m.maxAge > 0 && time.Since(m.at) >= m.maxAge {
+		return true
+	}
+	if m.maxBytes > 0 && m.n != nil && m.n.Load() >= m.maxBytes {
+		return true
+	}
+	return false
+}
+
 // needsDial reports whether the next stream would dial a connection, and so
-// run a TLS handshake: there is none yet, or the current one takes no more
-// streams (closed, closing or full).
+// run a TLS handshake: there is none yet, the current one takes no more
+// streams (closed, closing or full), or it is past a rotation limit, so the
+// next stream rotates to a fresh one. The handshake governor paces by this,
+// so a rotation's handshake is paced like any other.
 func (m *h2Mux) needsDial() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.cc == nil || !m.cc.CanTakeNewRequest()
+	return m.cc == nil || !m.cc.CanTakeNewRequest() || m.expiredLocked()
 }
 
 // retire lets a connection that takes no new streams finish the ones it
@@ -98,9 +135,10 @@ func (m *h2Mux) needsDial() bool {
 // died in silence: a dead one is closed at once, so the flows stuck on it end
 // instead of hanging until the system gives up on the socket (minutes), and a
 // live one is never cut under the flows it carries.
-func retire(cc *http2.ClientConn) {
+func (m *h2Mux) retire(cc *http2.ClientConn) {
+	ping := m.retirePing
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), retirePingTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), ping)
 		err := cc.Ping(ctx)
 		cancel()
 		if err != nil {
@@ -111,9 +149,9 @@ func retire(cc *http2.ClientConn) {
 	}()
 }
 
-// retirePingTimeout: a retired connection that does not answer a PING this
+// defaultRetirePing: a retired connection that does not answer a PING this
 // long is taken for dead.
-var retirePingTimeout = 10 * time.Second
+const defaultRetirePing = 10 * time.Second
 
 // refresh stops new streams from riding the current connection if it was made
 // before t, as it may have died in silence since (a NAT that forgot it, a
@@ -129,7 +167,7 @@ func (m *h2Mux) refresh(t time.Time) {
 	}
 	m.cc, m.conn = nil, nil
 	m.mu.Unlock()
-	retire(old)
+	m.retire(old)
 }
 
 // openStream starts one request/response stream on the shared connection. The
@@ -229,6 +267,26 @@ func (m *h2Mux) Close() error {
 		return err
 	}
 	return nil
+}
+
+// countConn sums the bytes read and written on a connection, for the mux's
+// volume-based rotation (maxBytes). The mux reads the count under m.mu while
+// the stream goroutines write it here off the lock, so it is atomic.
+type countConn struct {
+	net.Conn
+	n *atomic.Int64
+}
+
+func (c *countConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+func (c *countConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.n.Add(int64(n))
+	return n, err
 }
 
 // h2MuxStream is one stream on a shared h2Mux connection, presented as a
