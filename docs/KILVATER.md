@@ -24,10 +24,13 @@ TLS 1.3 provides all of the confidentiality and integrity. Kilvater adds no ciph
 **Client side:**
 - The client handshake uses uTLS with a browser fingerprint (`fp`, `chrome` by default).
 - It refuses any certificate that does not verify. An `insecure=1` link is rejected at parse time.
-- With `fp=chrome` the HTTP/2 layer is shaped to Chrome's too: the SETTINGS (values and order), the
-  connection window, the order of pseudo-headers and headers, and a priority on every request. The profile
-  was recorded from a real Chrome into `wire/testdata/h2fp/`, and a test holds the client to it. Other
-  fingerprints keep Go's HTTP/2.
+- With `fp=chrome` (and the empty default) both layers are shaped to a current Chrome, so TLS and HTTP/2
+  name the same browser. The ClientHello is the newest Chrome, including its `trust_anchors` extension and
+  the ML-DSA entries in `signature_algorithms` that the profile uTLS ships (a year behind) still lacks. The
+  HTTP/2 layer matches too: the SETTINGS (values and order), the connection window, the order of
+  pseudo-headers and headers, and a priority on every request, recorded from a real Chrome into
+  `wire/testdata/h2fp/`. A link that names an explicit older profile (such as `fp=hellochrome_131`) is left
+  as uTLS ships it; other fingerprints keep Go's HTTP/2.
 
 **Opening a connection:** a new connection starts the way a browser visit does.
 1. `GET /` with the headers of a page load.

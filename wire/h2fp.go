@@ -63,11 +63,22 @@ var chromeH2 = &h2Profile{
 // or nil to leave Go's HTTP/2 as it is: only a browser we have recorded gets
 // one, so the TLS and HTTP/2 layers never name different browsers.
 func h2ProfileFor(fp string) *h2Profile {
-	switch strings.ToLower(fp) {
-	case "", "chrome":
+	if isChromeAuto(fp) {
 		return chromeH2
 	}
 	return nil
+}
+
+// isChromeAuto reports whether a link's fp asks for the current Chrome rather
+// than a specific pinned profile: the bare "chrome" or an empty default. Those
+// get the live Chrome shape, at both the TLS (chromeAutoSpec) and HTTP/2
+// (chromeH2) layers, so the two never name different browsers.
+func isChromeAuto(fp string) bool {
+	switch strings.ToLower(fp) {
+	case "", "chrome":
+		return true
+	}
+	return false
 }
 
 // transport is an http2 Transport whose own SETTINGS values and connection

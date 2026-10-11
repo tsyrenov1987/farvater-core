@@ -103,7 +103,10 @@ func dialTCP(ctx context.Context, host string, port int) (net.Conn, error) {
 // allows an insecure one.
 func handshakeTLS(ctx context.Context, c net.Conn, s PathSpec, http11 bool) (*utls.UConn, error) {
 	cfg := &utls.Config{ServerName: s.ServerSNI(), InsecureSkipVerify: s.Insecure, SessionTicketsDisabled: true}
-	u := utls.UClient(c, cfg, clientHello(s.Fingerprint))
+	u, err := uClient(c, cfg, s.Fingerprint)
+	if err != nil {
+		return nil, err
+	}
 	if http11 {
 		if err := u.BuildHandshakeState(); err != nil {
 			return nil, err

@@ -65,7 +65,10 @@ func handshakeREALITY(ctx context.Context, c net.Conn, s PathSpec) (*utls.UConn,
 	if cfg.ServerName == "" {
 		cfg.ServerName = s.Host
 	}
-	u := utls.UClient(c, cfg, clientHello(s.Fingerprint))
+	u, err := uClient(c, cfg, s.Fingerprint)
+	if err != nil {
+		return nil, err
+	}
 	if err := u.BuildHandshakeState(); err != nil {
 		return nil, err
 	}
