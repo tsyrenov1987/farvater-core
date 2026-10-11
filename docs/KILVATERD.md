@@ -97,12 +97,16 @@ Open the port in your firewall, for example `sudo ufw allow 443/tcp`.
 | `-acme` | — | domain for a built-in Let's Encrypt certificate; empty uses `-cert`/`-key` |
 | `-acme-cache` | `/var/lib/kilvaterd/acme` | autocert cache directory |
 | `-cert`, `-key` | `cert.pem`, `key.pem` | static certificate (TLS 1.3 only) |
-| `-keys` | `keys.txt` | client keys, one 64-hex key per line, `#` comments allowed |
+| `-keys` | `keys.txt` | v1 client keys, one 64-hex key per line, `#` comments allowed (optional if `-master` is set) |
+| `-master` | — | master key file (64 hex); enables v2 derived keys (§10). Empty disables v2 |
+| `-revoked` | — | revoked v2 key ids, one 16-hex line each, `#` comments; reloaded on `SIGHUP` |
 | `-decoy` | `/var/www/html` | static files served to everyone without a key |
 | `-allow-private` | off | let clients reach loopback/private/link-local addresses |
 | `-h2c` | off | serve cleartext HTTP/2 for a TLS-terminating proxy in front (§9); `-listen` may be `unix:/path` |
 | `-pad` | `moderate` | downstream padding: `off` \| `moderate` \| `heavy`. Shapes record sizes so a tunnel looks less like one bulk transfer (KILVATER.md §4, §8). `moderate` adds well under 1 % of bytes and no goroutine; `heavy` adds ~1.4 % and keeps a pause from looking idle; `off` is v1 framing. One-sided — old clients read any mode the same way. |
-| `-genkey` | — | print a new random key and exit |
+| `-genkey` | — | print a new random v1 client key and exit |
+| `-genmaster` | — | print a new random master key and exit |
+| `-issue <id>` | — | with `-master`: print the key id and derived key for a subscriber id, and exit (§10) |
 | `-version` | — | print the version and exit |
 
 ## 6. Client link
@@ -115,7 +119,9 @@ kilvater://<key>@your.domain:443?sni=your.domain&fp=chrome#my-server
 
 If you connect by IP, put the IP in the host part and keep `sni=your.domain`. The path defaults to `/connect`.
 An optional `pad=off|moderate|heavy` parameter sets how the client shapes the frames it sends up (§5,
-KILVATER.md §4); left out, it is `moderate`. Farvater and the reference CLI read this link directly:
+KILVATER.md §4); left out, it is `moderate`. For a v2 derived key (§10) add `&kid=<16-hex>`, with the derived
+key as `<key>`; without `kid` the client sends v1 tags. Farvater and the reference CLI read this link
+directly:
 
 ```sh
 farvater probe -catalogue links.txt -url https://cp.cloudflare.com/generate_204
@@ -200,3 +206,57 @@ the order of a response's header fields, flow control, timing — so this is not
 (`reverse_proxy h2c://127.0.0.1:8081`), and it renews certificates on its own, so it is the simplest way to
 get the no-restart-on-renewal benefit. It does not change the TLS fingerprint, though: Caddy is written in Go
 and uses the same `crypto/tls`. Choose nginx `stream` for the fingerprint, Caddy for the convenience.
+
+## 10. Keys v2: master, per-client keys, revocation
+
+v1 keys (§2) still work and need no change. v2 adds a **master key** from which each client's key is derived,
+so you issue and revoke clients without editing the key file on every node (KILVATER.md §7).
+
+**Set up a master** (once, shared across the nodes that should accept the same clients):
+
+```sh
+kilvaterd -genmaster > /etc/kilvaterd/master.txt   # keep this secret; it mints every client key
+chmod 600 /etc/kilvaterd/master.txt
+```
+
+Point the service at it (and, optionally, a revocation list):
+
+```
+ExecStart=/usr/local/bin/kilvaterd -master /etc/kilvaterd/master.txt -revoked /etc/kilvaterd/revoked.txt ...
+```
+
+With a master set, `-keys` becomes optional; a node may run v2-only.
+
+**Issue a client.** For a subscriber id of your choice (the server never sees it):
+
+```sh
+kilvaterd -master /etc/kilvaterd/master.txt -issue "subscriber-1234"
+# kid=41285ebd3df3d88f key=1ca7d59d…2072c168
+```
+
+Give the client a link with that key and key id:
+
+```
+kilvater://1ca7d59d…2072c168@your.domain:443?sni=your.domain&fp=chrome&kid=41285ebd3df3d88f#my-server
+```
+
+Nothing is written on the server: the key derives from the master and the id on demand. The same subscriber
+id always yields the same id and key, so you can re-issue a lost link without changing anything.
+
+**Revoke a client.** Append its key id to the revocation file and reload — no restart, no cut to other
+sessions:
+
+```sh
+echo 41285ebd3df3d88f >> /etc/kilvaterd/revoked.txt
+systemctl reload kilvaterd        # or: kill -HUP $(pidof kilvaterd)
+```
+
+`SIGHUP` re-reads `-keys`, `-master` and `-revoked` and swaps them in atomically. A revocation applies to the
+next authentication; tunnels already open are untouched. If a file is malformed at reload, the server logs it
+and keeps the keys it already had, so a bad edit never locks everyone out. Add `ExecReload=/bin/kill -HUP $MAINPID`
+to the unit so `systemctl reload kilvaterd` works.
+
+**The scheme** (for a worker that issues keys in another language) is in KILVATER.md §7:
+`keyID = HMAC-SHA256(master, "kilvater/kid\0"||subscriber)[0:8]`,
+`key = HKDF-SHA256(master, "", "kilvater/key\0"||keyID, 32)`. Agree on it with the worker before handing v2
+links to clients.

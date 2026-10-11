@@ -4,12 +4,15 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tsyrenov1987/farvater-core/kilvater"
@@ -25,7 +28,9 @@ func main() {
 	listen := flag.String("listen", ":443", "address to listen on")
 	certFile := flag.String("cert", "cert.pem", "TLS certificate file (ignored with -acme)")
 	keyFile := flag.String("key", "key.pem", "TLS private key file (ignored with -acme)")
-	keysFile := flag.String("keys", "keys.txt", "client keys, one 64-hex line per key")
+	keysFile := flag.String("keys", "keys.txt", "v1 client keys, one 64-hex line per key (optional if -master is set)")
+	masterFile := flag.String("master", "", "master key file (64 hex) enabling v2 derived keys; empty disables v2")
+	revokedFile := flag.String("revoked", "", "revoked v2 key ids, one 16-hex line each, '#' comments (reloaded on SIGHUP)")
 	decoyDir := flag.String("decoy", "/var/www/html", "static files served to non-tunnel visitors")
 	acmeDomain := flag.String("acme", "", "domain to get a Let's Encrypt certificate for (TLS-ALPN-01); empty uses -cert/-key")
 	acmeCache := flag.String("acme-cache", "/var/lib/kilvaterd/acme", "directory where autocert stores certificates")
@@ -33,6 +38,8 @@ func main() {
 	padMode := flag.String("pad", "moderate", "downstream traffic padding: off | moderate | heavy (shapes record sizes so a tunnel looks less like one bulk transfer)")
 	h2cMode := flag.Bool("h2c", false, "serve cleartext HTTP/2 for a TLS-terminating proxy (nginx/Caddy) in front; -listen may be unix:/path, and -cert/-key/-acme are ignored")
 	genKey := flag.Bool("genkey", false, "print a new random client key and exit")
+	genMaster := flag.Bool("genmaster", false, "print a new random master key and exit")
+	issue := flag.String("issue", "", "with -master: print the key id and derived key for this subscriber id, and exit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -40,7 +47,7 @@ func main() {
 		fmt.Println("kilvaterd", version)
 		return
 	}
-	if *genKey {
+	if *genKey || *genMaster {
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err != nil {
 			log.Fatal(err)
@@ -48,19 +55,34 @@ func main() {
 		fmt.Println(hex.EncodeToString(b))
 		return
 	}
+	if *issue != "" {
+		if *masterFile == "" {
+			log.Fatal("-issue needs -master")
+		}
+		master, err := readMaster(*masterFile)
+		if err != nil {
+			log.Fatalf("master: %v", err)
+		}
+		id := kilvater.KeyIDFor(master, []byte(*issue))
+		k := kilvater.DeriveKey(master, id)
+		// k[:] prints the real key bytes; %x on a Key would hit its redacting
+		// String, which is exactly what we must bypass here to hand out the key.
+		fmt.Printf("kid=%s key=%s\n", id, hex.EncodeToString(k[:]))
+		return
+	}
 
-	keys, err := readKeys(*keysFile)
+	cfg, err := loadVerifierConfig(*keysFile, *masterFile, *revokedFile)
 	if err != nil {
 		log.Fatalf("keys: %v", err)
 	}
-	log.Printf("loaded %d client key(s)", len(keys))
+	log.Printf("loaded %d v1 key(s), master=%v, %d revoked", len(cfg.Keys), cfg.Master != nil, len(cfg.Revoked))
 
 	if entries, derr := os.ReadDir(*decoyDir); derr != nil || len(entries) == 0 {
 		log.Printf("warning: decoy dir %q is empty or unreadable (%v); visitors without a key see only 404s, which looks nothing like a real site", *decoyDir, derr)
 	}
 
 	srv := &kilvater.Server{
-		Verifier: kilvater.NewVerifier(keys),
+		Verifier: kilvater.NewVerifierConfig(cfg),
 		Decoy:    http.FileServer(http.Dir(*decoyDir)),
 		Logger:   log.Default(),
 
@@ -68,6 +90,13 @@ func main() {
 		Pad:          kilvater.ParsePadMode(*padMode),
 	}
 	log.Printf("downstream padding: %s", srv.Pad)
+
+	// SIGHUP re-reads the key files and swaps them in without a restart, so a
+	// revocation takes effect for the next authentication and never cuts an
+	// open tunnel.
+	installReload(srv.Verifier, func() (kilvater.VerifierConfig, error) {
+		return loadVerifierConfig(*keysFile, *masterFile, *revokedFile)
+	})
 
 	httpSrv := &http.Server{
 		Handler:           srv,
@@ -138,8 +167,44 @@ func tlsConfig(domain, cache, certFile, keyFile string) (*tls.Config, error) {
 	}, nil
 }
 
-func readKeys(path string) ([]kilvater.Key, error) {
+// loadVerifierConfig reads the key material from its files, the way the server
+// does at start and again on SIGHUP. A missing keys file is not an error when a
+// master is set (a v2-only server keeps no key file); it is an error if neither
+// keys nor a master would let anyone authenticate.
+func loadVerifierConfig(keysFile, masterFile, revokedFile string) (kilvater.VerifierConfig, error) {
+	var cfg kilvater.VerifierConfig
+	keys, err := readKeysOptional(keysFile)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Keys = keys
+	if masterFile != "" {
+		m, err := readMaster(masterFile)
+		if err != nil {
+			return cfg, fmt.Errorf("master: %w", err)
+		}
+		cfg.Master = &m
+	}
+	if revokedFile != "" {
+		rev, err := readRevoked(revokedFile)
+		if err != nil {
+			return cfg, fmt.Errorf("revoked: %w", err)
+		}
+		cfg.Revoked = rev
+	}
+	if len(cfg.Keys) == 0 && cfg.Master == nil {
+		return cfg, fmt.Errorf("no keys in %s and no master: nothing can authenticate", keysFile)
+	}
+	return cfg, nil
+}
+
+// readKeysOptional reads 64-hex client keys, one per line, '#' comments
+// allowed. A file that does not exist yields no keys and no error.
+func readKeysOptional(path string) ([]kilvater.Key, error) {
 	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -155,8 +220,57 @@ func readKeys(path string) ([]kilvater.Key, error) {
 		}
 		keys = append(keys, k)
 	}
-	if len(keys) == 0 {
-		return nil, fmt.Errorf("no keys in %s", path)
-	}
 	return keys, nil
+}
+
+// readMaster reads a single 64-hex master key.
+func readMaster(path string) (kilvater.Key, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return kilvater.Key{}, err
+	}
+	return kilvater.ParseKey(strings.TrimSpace(string(data)))
+}
+
+// readRevoked reads revoked key ids, one 16-hex line each, '#' comments.
+func readRevoked(path string) ([]kilvater.KeyID, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ids []kilvater.KeyID
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		id, err := kilvater.ParseKeyID(line)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// installReload swaps new key material into the verifier on each SIGHUP. A
+// read that fails leaves the current material in place (a bad edit never
+// locks everyone out); it never touches open tunnels.
+func installReload(v *kilvater.Verifier, load func() (kilvater.VerifierConfig, error)) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	go func() {
+		for range ch {
+			cfg, err := load()
+			if err != nil {
+				log.Printf("reload: %v (keeping current keys)", err)
+				continue
+			}
+			v.Reload(cfg)
+			log.Printf("reloaded: %d v1 key(s), master=%v, %d revoked", len(cfg.Keys), cfg.Master != nil, len(cfg.Revoked))
+		}
+	}()
 }

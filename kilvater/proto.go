@@ -17,6 +17,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -147,31 +148,88 @@ func NewTag(k Key, path string, now time.Time) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// Verifier checks tags against a set of keys and refuses a tag seen before.
+// verifiedV2 is Verify's non-negative result for an accepted v2 tag, which
+// has no key index to return (the key is derived, not listed).
+const verifiedV2 = 1 << 20
+
+// keySet is a verifier's key material, immutable once built. A reload swaps
+// the whole pointer atomically, so a concurrent Verify reads one consistent
+// set; it gates only new streams, so a running tunnel is never touched.
+type keySet struct {
+	keys    []Key          // v1 flat keys, tried for a v1 tag
+	master  *Key           // optional master for v2 derived keys
+	revoked map[KeyID]bool // revoked v2 key ids
+}
+
+// Verifier checks tags against its key material and refuses a tag seen before.
+// It accepts both v1 tags (trying each flat key) and v2 tags (deriving the key
+// from the master by the tag's key id), and reloads without cutting sessions.
 type Verifier struct {
-	keys []Key
+	set atomic.Pointer[keySet]
 
 	mu     sync.Mutex
-	seen   map[[16]byte]int64 // ts+nonce → ts, for TagWindow
+	seen   map[[16]byte]int64 // tag MAC/nonce → ts, for TagWindow
 	pruned int64
 }
 
 func NewVerifier(keys []Key) *Verifier {
-	return &Verifier{keys: keys, seen: make(map[[16]byte]int64)}
+	v := &Verifier{seen: make(map[[16]byte]int64)}
+	v.set.Store(&keySet{keys: keys})
+	return v
 }
 
-// Verify returns the index of the key that made tag, or -1.
+// VerifierConfig is a verifier's key material, for NewVerifierConfig and
+// Reload (the shape a kilvaterd reload reads from its files).
+type VerifierConfig struct {
+	Keys    []Key   // v1 flat keys
+	Master  *Key    // optional master enabling v2 derived keys
+	Revoked []KeyID // revoked v2 key ids
+}
+
+// NewVerifierConfig builds a verifier from full key material (v1 keys, an
+// optional v2 master, and a revocation list).
+func NewVerifierConfig(cfg VerifierConfig) *Verifier {
+	v := &Verifier{seen: make(map[[16]byte]int64)}
+	v.Reload(cfg)
+	return v
+}
+
+// Reload swaps in new key material. It does not touch live streams: Verify
+// gates only new stream opens, so a reload (e.g. on SIGHUP to revoke one key)
+// takes effect for the next authentication and leaves open tunnels running.
+func (v *Verifier) Reload(cfg VerifierConfig) {
+	rev := make(map[KeyID]bool, len(cfg.Revoked))
+	for _, id := range cfg.Revoked {
+		rev[id] = true
+	}
+	v.set.Store(&keySet{keys: cfg.Keys, master: cfg.Master, revoked: rev})
+}
+
+// Verify reports whether tag is valid for path now: a non-negative result
+// accepts it (the matching v1 key index, or verifiedV2 for a v2 tag), -1
+// rejects. A tag already seen within its window is rejected as a replay.
 func (v *Verifier) Verify(tag, path string, now time.Time) int {
 	b, err := base64.RawURLEncoding.DecodeString(tag)
-	if err != nil || len(b) != TagSize {
+	if err != nil {
 		return -1
 	}
-	ts := int64(binary.BigEndian.Uint64(b[:8]))
-	if d := now.Unix() - ts; d > int64(TagWindow/time.Second) || d < -int64(TagWindow/time.Second) {
+	set := v.set.Load()
+	switch {
+	case len(b) == TagSize:
+		return v.verifyV1(set, b, path, now)
+	case len(b) == tagV2Size && b[0] == tagVersion2:
+		return v.verifyV2(set, b, path, now)
+	default:
+		return -1
+	}
+}
+
+func (v *Verifier) verifyV1(set *keySet, b []byte, path string, now time.Time) int {
+	if !withinWindow(int64(binary.BigEndian.Uint64(b[:8])), now) {
 		return -1
 	}
 	idx := -1
-	for i, k := range v.keys {
+	for i, k := range set.keys {
 		if hmac.Equal(mac(k, b[:8], b[8:16], path), b[16:]) {
 			idx = i
 			break
@@ -180,12 +238,55 @@ func (v *Verifier) Verify(tag, path string, now time.Time) int {
 	if idx < 0 {
 		return -1
 	}
+	if !v.firstSeen(b[:16], int64(binary.BigEndian.Uint64(b[:8])), now) {
+		return -1
+	}
+	return idx
+}
+
+func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) int {
+	if set.master == nil {
+		return -1
+	}
+	var id KeyID
+	copy(id[:], b[1:1+KeyIDSize])
+	off := 1 + KeyIDSize
+	ts := int64(binary.BigEndian.Uint64(b[off : off+8]))
+	if !withinWindow(ts, now) {
+		return -1
+	}
+	if set.revoked[id] {
+		return -1
+	}
+	want := macV2(DeriveKey(*set.master, id), id, b[off:off+8], b[off+8:off+16], path)
+	tagMAC := b[off+16:]
+	if !hmac.Equal(want, tagMAC) {
+		return -1
+	}
+	// Key the replay set by the MAC: unique per client, ts and nonce, so two
+	// clients that pick the same nonce are not taken for a replay of each other.
+	if !v.firstSeen(tagMAC, ts, now) {
+		return -1
+	}
+	return verifiedV2
+}
+
+func withinWindow(ts int64, now time.Time) bool {
+	d := now.Unix() - ts
+	w := int64(TagWindow / time.Second)
+	return d <= w && d >= -w
+}
+
+// firstSeen records a 16-byte tag fingerprint and reports whether it is new
+// within the window; a repeat is a replay. It prunes expired entries now and
+// then so the set does not grow without bound.
+func (v *Verifier) firstSeen(fp []byte, ts int64, now time.Time) bool {
 	var id [16]byte
-	copy(id[:], b[:16])
+	copy(id[:], fp)
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if _, dup := v.seen[id]; dup {
-		return -1
+		return false
 	}
 	if now.Unix()-v.pruned >= 10 {
 		v.pruned = now.Unix()
@@ -197,7 +298,7 @@ func (v *Verifier) Verify(tag, path string, now time.Time) int {
 		}
 	}
 	v.seen[id] = ts
-	return idx
+	return true
 }
 
 // CookieName is the cookie that carries the tag.

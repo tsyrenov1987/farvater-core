@@ -85,6 +85,22 @@ The server accepts a tag only if all of these hold:
 3. The pair `ts||nonce` has not been seen within the window (replay cache).
 4. The MAC covers `path`, so a tag made for another URL path fails.
 
+**v2 tag (optional, §7).** A client issued a derived key also gets a short key id and sends a longer tag:
+
+```
+version = 1 byte, value 2
+keyID   = 8 bytes, the client's key id
+ts      = unix seconds, 8 bytes big-endian
+nonce   = 8 random bytes
+mac     = HMAC-SHA256(key, "kilvater/2\x00" || keyID || ts || nonce || path)[0:16]
+tag     = version || keyID || ts || nonce || mac
+```
+
+The server reads the key id, derives that one key from the master (§7), and checks the single MAC — O(1),
+no scan — after the same window and path checks, plus: the key id is not on the revocation list, and the MAC
+(unique per client) has not been seen within the window. A server tells the two apart by length and the
+leading version byte, and accepts both, so v1 clients keep working.
+
 Any request that fails these checks is handed to the decoy file server **unchanged**: any method, any path,
 no cookie, a bad cookie, an old cookie or a replayed cookie. The server never answers with an
 authentication error.
@@ -153,10 +169,25 @@ UDP is not carried. In Farvater, UDP flows take other paths.
 
 - **Per-client keys.** Each key is independent. Give one key per client or per group, so one leak can be
   revoked without touching the others.
-- **What a leaked key gives:** the holder can use the tunnel until the key is removed.
+- **Two key schemes.** *v1:* a flat list of 32-byte keys the server holds in a file; a client's tag is matched
+  against the whole list. *v2:* each client's key is **derived from one master**, so the server stores only the
+  master and derives the client key on demand from the key id in the tag. Both are accepted at once; v2 is the
+  one new links use.
+- **How v2 derivation works** (so a key issuer in any language can match it):
+  - `keyID = HMAC-SHA256(master, "kilvater/kid\0" || subscriber)[0:8]` — a short, opaque id. The server never
+    sees the subscriber string; the issuer keeps the id-to-subscriber map.
+  - `key = HKDF-SHA256(secret = master, salt = "", info = "kilvater/key\0" || keyID, length = 32)`.
+  - The client is given `key` and `keyID`; the server, holding `master`, re-derives `key` from `keyID` alone.
+- **Pinpoint revocation.** A v2 key id on the revocation list is refused even though it still derives; one
+  client is cut without touching the master or anyone else. The server reloads its keys, master and revocation
+  list on `SIGHUP`, so a revocation takes effect at once and never cuts an open tunnel (it only gates new ones).
+- **What a leaked key gives:** the holder can use the tunnel until the key (v1) or its key id (v2) is removed.
+  A leaked *client* key never reveals the master or any other client's key (HKDF is one-way).
 - **What a leaked key does not give:** it cannot decrypt anyone's traffic, because TLS keys are per
   connection. It also cannot reach the server's own private network unless `-allow-private` is on.
 - **The certificate is the server's identity.** Clients pin nothing beyond normal WebPKI validation.
+- **The master is the server's crown jewel.** Whoever holds it can mint any client key. Keep it only on the
+  server and the issuer; it is never in a link, a client, or this repository.
 
 ## 8. Limits
 

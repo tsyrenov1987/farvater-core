@@ -20,12 +20,13 @@ import (
 )
 
 type kilWire struct {
-	spec PathSpec
-	key  kilvater.Key
-	mux  *h2Mux
-	pad  kilvater.PadMode // how the client shapes the frames it sends up
-	now  func() time.Time
-	skew atomic.Int64 // the server's clock minus ours, from the last page fetched
+	spec  PathSpec
+	key   kilvater.Key
+	keyID *kilvater.KeyID // set: send v2 tags; nil: send v1 tags
+	mux   *h2Mux
+	pad   kilvater.PadMode // how the client shapes the frames it sends up
+	now   func() time.Time
+	skew  atomic.Int64 // the server's clock minus ours, from the last page fetched
 }
 
 func newKilvater(s PathSpec) (Wire, error) {
@@ -55,6 +56,13 @@ func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilW
 		return nil, err
 	}
 	w := &kilWire{spec: s, key: k, pad: kilvater.ParsePadMode(s.Pad), now: time.Now}
+	if s.KeyID != "" {
+		id, err := kilvater.ParseKeyID(s.KeyID)
+		if err != nil {
+			return nil, err
+		}
+		w.keyID = &id
+	}
 	const pingAfterIdle, pingTimeout = 15 * time.Second, 5 * time.Second
 	if p := h2ProfileFor(s.Fingerprint); p != nil {
 		w.mux = newH2Mux(shapedDial(dial, p), pingAfterIdle, pingTimeout)
@@ -96,6 +104,15 @@ func (w *kilWire) serverNow() time.Time {
 	return w.now().Add(time.Duration(w.skew.Load()))
 }
 
+// tag makes the request tag: v2 (with the key id, verified in O(1)) when the
+// link carried a key id, else v1.
+func (w *kilWire) tag(path string) string {
+	if w.keyID != nil {
+		return kilvater.NewTagV2(*w.keyID, w.key, path, w.serverNow())
+	}
+	return kilvater.NewTag(w.key, path, w.serverNow())
+}
+
 func (w *kilWire) Dial(ctx context.Context) (Session, error) {
 	path := w.spec.Path
 	if path == "" {
@@ -106,7 +123,7 @@ func (w *kilWire) Dial(ctx context.Context) (Session, error) {
 	// The request a script on the page makes: a streamed fetch POST.
 	st, err := w.mux.openStreamFunc(ctx, http.MethodPost, u.String(), func() http.Header {
 		h := http.Header{}
-		h.Set("Cookie", kilvater.CookieName+"="+kilvater.NewTag(w.key, path, w.serverNow()))
+		h.Set("Cookie", kilvater.CookieName+"="+w.tag(path))
 		h.Set("Origin", origin)
 		h.Set("Referer", origin+"/")
 		h.Set("Accept-Encoding", chromeAcceptEncoding)

@@ -75,6 +75,35 @@ func TestKilvaterFlow(t *testing.T) {
 	flowEchoOver(t, w)
 }
 
+// A link carrying a key id makes the client send v2 tags; a server that holds
+// the master derives the key by id and the tunnel runs end to end.
+func TestKilvaterV2Flow(t *testing.T) {
+	var master kilvater.Key
+	rand.Read(master[:])
+	id := kilvater.KeyIDFor(master, []byte("e2e"))
+	k := kilvater.DeriveKey(master, id)
+
+	spec := kilTestSpec(hex.EncodeToString(k[:]))
+	spec.KeyID = id.String()
+
+	srv := &kilvater.Server{
+		Verifier: kilvater.NewVerifierConfig(kilvater.VerifierConfig{Master: &master}),
+		Decoy:    http.HandlerFunc(kilDecoy), AllowPrivate: true}
+	dial := func(ctx context.Context) (net.Conn, error) {
+		c, s := net.Pipe()
+		t.Cleanup(func() { s.Close() })
+		go (&http2.Server{}).ServeConn(s, &http2.ServeConnOpts{Handler: srv})
+		return c, nil
+	}
+
+	w, err := newKilWire(spec, dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	flowEchoOver(t, w)
+}
+
 // A phone whose clock is off by more than the tag window still connects: the
 // tag takes the server's time from the page fetched first.
 func TestKilvaterSkewedClockConnects(t *testing.T) {

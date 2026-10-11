@@ -70,6 +70,11 @@ type PathSpec struct {
 	// Pad is the kilvater padding mode (off | moderate | heavy), from the
 	// link's optional "pad" parameter. Empty means the default (moderate).
 	Pad string
+
+	// KeyID is the kilvater v2 key id (16 hex), from the link's optional "kid"
+	// parameter. Set, the client sends v2 tags (the server verifies in O(1) by
+	// id); empty, it sends v1 tags. The link's key is the derived key.
+	KeyID string
 }
 
 // Rail is the informational label of the path's transport.
@@ -193,6 +198,7 @@ func ParseURI(raw string) (PathSpec, error) {
 		spec.SNI = q.Get("sni")
 		spec.Fingerprint = first(q.Get("fp"), "chrome")
 		spec.Pad = q.Get("pad")
+		spec.KeyID = q.Get("kid")
 		spec.Path = u.Path
 		if spec.Path == "" || spec.Path == "/" {
 			spec.Path = "/connect"
