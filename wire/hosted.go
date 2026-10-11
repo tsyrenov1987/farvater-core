@@ -166,6 +166,9 @@ func socksConnect(c net.Conn, t Target) error {
 		}
 		req = append(append(req, 0x03, byte(len(t.Host))), t.Host...)
 	}
+	if t.Port < 0 || t.Port > 65535 {
+		return errBadPort
+	}
 	req = binary.BigEndian.AppendUint16(req, uint16(t.Port))
 	if _, err := c.Write(req); err != nil {
 		return err

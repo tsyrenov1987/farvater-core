@@ -53,6 +53,8 @@ func appendAddr(b []byte, host string, types [3]byte) ([]byte, error) {
 	}
 }
 
+var errBadPort = errors.New("wire: port out of range")
+
 var (
 	portFirstTypes = [3]byte{1, 2, 3}
 	socksTypes     = [3]byte{1, 3, 4}
@@ -60,12 +62,18 @@ var (
 
 // appendPortAddr writes a destination as VLESS, VMess and Mux.Cool do.
 func appendPortAddr(b []byte, t Target) ([]byte, error) {
+	if t.Port < 0 || t.Port > 65535 {
+		return b, errBadPort
+	}
 	b = binary.BigEndian.AppendUint16(b, uint16(t.Port))
 	return appendAddr(b, t.Host, portFirstTypes)
 }
 
 // appendSocksAddr writes a destination as Trojan does.
 func appendSocksAddr(b []byte, t Target) ([]byte, error) {
+	if t.Port < 0 || t.Port > 65535 {
+		return b, errBadPort
+	}
 	b, err := appendAddr(b, t.Host, socksTypes)
 	if err != nil {
 		return b, err

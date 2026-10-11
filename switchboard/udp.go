@@ -104,7 +104,7 @@ func writeDatagram(w io.Writer, from netip.AddrPort, data []byte) error {
 func replyFrom(src wire.Target, to wire.Target, name bool) netip.AddrPort {
 	dst, err := netip.ParseAddr(to.Host)
 	dst = dst.Unmap()
-	if ip, perr := netip.ParseAddr(src.Host); perr == nil && src.Port > 0 {
+	if ip, perr := netip.ParseAddr(src.Host); perr == nil && src.Port > 0 && src.Port <= 65535 {
 		if ip = ip.Unmap(); name || (err == nil && ip.Is4() == dst.Is4()) {
 			return netip.AddrPortFrom(ip, uint16(src.Port))
 		}
