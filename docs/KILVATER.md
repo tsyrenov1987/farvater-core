@@ -105,6 +105,8 @@ Any request that fails these checks is handed to the decoy file server **unchang
 no cookie, a bad cookie, an old cookie or a replayed cookie. The server never answers with an
 authentication error.
 
+Worked examples of both tags, with the key and frame bytes, are in [§9](#9-test-vectors).
+
 ## 4. Frames
 
 After authentication the server answers `200`. Both directions of the stream then carry frames:
@@ -231,3 +233,71 @@ These are known limits, not plans:
 - **Hosting matters more than the protocol.** Some networks throttle or freeze traffic by destination network
   and port, regardless of what the bytes look like. In our measurements, port 443 and a few common web ports
   (80, 8080, 8443) passed in places where uncommon high ports were frozen.
+
+## 9. Test vectors
+
+These fix the exact bytes of the tag, the v2 key derivation and every frame, so a second implementation can be
+checked against them. The machine-readable copy is [`kilvater/testdata/vectors.json`](../kilvater/testdata/vectors.json);
+the Go reference checks it in `go test ./...`, and an independent Python reference
+([`reference/python`](../reference/python)) checks the same file in CI, so the two implementations are proven to
+agree byte for byte.
+
+> The keys below are **frozen test constants** (incrementing bytes), never real keys. A real key is random and
+> never appears in this repository.
+
+All values are hex unless noted. Bytes are big-endian.
+
+**v1 tag** (§3):
+
+| Input | Value |
+|---|---|
+| key (32 bytes) | `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` |
+| path | `/connect` |
+| ts (unix seconds) | `1700000000` (= `000000006553f100`) |
+| nonce (8 bytes) | `1122334455667788` |
+
+```
+mac = HMAC-SHA256(key, "kilvater/1\x00" || ts || nonce || path)[0:16]
+    = f0ee9d48d90bf1c08b864d4df389d08c
+raw = ts || nonce || mac
+    = 000000006553f1001122334455667788f0ee9d48d90bf1c08b864d4df389d08c
+tag = base64url(raw) without padding
+    = AAAAAGVT8QARIjNEVWZ3iPDunUjZC_HAi4ZNTfOJ0Iw
+```
+
+**v2 key and tag** (§3, §7):
+
+| Input | Value |
+|---|---|
+| master (32 bytes) | `404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f` |
+| subscriber | `subscriber-1` |
+| path | `/connect` |
+| ts | `1700000000` |
+| nonce (8 bytes) | `99aabbccddeeff00` |
+
+```
+keyID = HMAC-SHA256(master, "kilvater/kid\x00" || subscriber)[0:8]
+      = 551ef5fe2f217702
+key   = HKDF-SHA256(secret=master, salt="", info="kilvater/key\x00" || keyID, 32)
+      = 06fb6a4bec386704fd41c55276f00c4281fdba159b4210a1ee874e1899a9624b
+mac   = HMAC-SHA256(key, "kilvater/2\x00" || keyID || ts || nonce || path)[0:16]
+      = c31a47118c1af1e436f49551257f01ed
+raw   = 0x02 || keyID || ts || nonce || mac
+      = 02551ef5fe2f217702000000006553f10099aabbccddeeff00c31a47118c1af1e436f49551257f01ed
+tag   = base64url(raw) without padding
+      = AlUe9f4vIXcCAAAAAGVT8QCZqrvM3e7_AMMaRxGMGvHkNvSVUSV_Ae0
+```
+
+**Frames** (§4), whole bytes `[type][length:3][body]`:
+
+| Frame | Bytes |
+|---|---|
+| OPEN, TCP, `example.com:443` | `01000011010f6578616d706c652e636f6d3a343433` |
+| OPEN, UDP, `1.1.1.1:53` | `0100000c020a312e312e312e313a3533` |
+| DATA, `"hello"` | `0200000568656c6c6f` |
+| PAD, 8-byte body (body ignored; only length is a signal) | `030000080000000000000000` |
+| DGRAM, datagram `0a0b0c0d` | `040000040a0b0c0d` |
+| CLOSE, code 0 (normal end) | `0500000100` |
+| CLOSE, code 1 (error / refused) | `0500000101` |
+
+Address encoding `[len:1]["host:port"]` for `example.com:443`: `0f6578616d706c652e636f6d3a343433`.

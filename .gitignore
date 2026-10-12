@@ -7,3 +7,7 @@ dist/
 coverage.out
 local/
 /kilvaterd
+
+# Python bytecode (reference/python)
+__pycache__/
+*.pyc

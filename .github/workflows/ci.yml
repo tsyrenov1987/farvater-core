@@ -15,3 +15,14 @@ jobs:
       - run: go test -race ./... -count=1
       - name: license gate (no GPL/AGPL modules)
         run: ./tools/licensegate.sh
+
+  # A second, independent implementation (Python, standard library only) of the
+  # Kilvater wire format must agree with the Go reference on the golden vectors
+  # in kilvater/testdata/vectors.json. The Go side checks the same file in
+  # `go test ./...` above, so the two implementations are cross-checked.
+  crosscompat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: cross-implementation vectors (Python reference)
+        run: python3 -m unittest discover -s reference/python -v

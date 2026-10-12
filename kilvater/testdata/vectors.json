@@ -1,0 +1,73 @@
+{
+  "note": "Kilvater wire-format test vectors (docs/KILVATER.md §9). The keys are frozen test constants, never real keys. All byte strings are hex. Regenerate with KV_UPDATE_VECTORS=1 go test ./kilvater -run TestVectors.",
+  "v1_tag": {
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "path": "/connect",
+    "ts": 1700000000,
+    "nonce": "1122334455667788",
+    "mac": "f0ee9d48d90bf1c08b864d4df389d08c",
+    "raw": "000000006553f1001122334455667788f0ee9d48d90bf1c08b864d4df389d08c",
+    "tag": "AAAAAGVT8QARIjNEVWZ3iPDunUjZC_HAi4ZNTfOJ0Iw"
+  },
+  "v2": {
+    "master": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "subscriber": "subscriber-1",
+    "key_id": "551ef5fe2f217702",
+    "derived_key": "06fb6a4bec386704fd41c55276f00c4281fdba159b4210a1ee874e1899a9624b",
+    "path": "/connect",
+    "ts": 1700000000,
+    "nonce": "99aabbccddeeff00",
+    "mac": "c31a47118c1af1e436f49551257f01ed",
+    "raw": "02551ef5fe2f217702000000006553f10099aabbccddeeff00c31a47118c1af1e436f49551257f01ed",
+    "tag": "AlUe9f4vIXcCAAAAAGVT8QCZqrvM3e7_AMMaRxGMGvHkNvSVUSV_Ae0"
+  },
+  "addr": {
+    "hostport": "example.com:443",
+    "desc": "address encoding ([len:1][host:port]), as used inside an OPEN body",
+    "hex": "0f6578616d706c652e636f6d3a343433"
+  },
+  "frames": [
+    {
+      "name": "open_tcp",
+      "type": 1,
+      "desc": "OPEN, TCP, example.com:443",
+      "hex": "01000011010f6578616d706c652e636f6d3a343433"
+    },
+    {
+      "name": "open_udp",
+      "type": 1,
+      "desc": "OPEN, UDP, 1.1.1.1:53",
+      "hex": "0100000c020a312e312e312e313a3533"
+    },
+    {
+      "name": "data",
+      "type": 2,
+      "desc": "DATA \"hello\"",
+      "hex": "0200000568656c6c6f"
+    },
+    {
+      "name": "pad",
+      "type": 3,
+      "desc": "PAD, body ignored (here 8 zero bytes); only its length is a signal",
+      "hex": "030000080000000000000000"
+    },
+    {
+      "name": "dgram",
+      "type": 4,
+      "desc": "DGRAM, one UDP datagram (here 0a0b0c0d)",
+      "hex": "040000040a0b0c0d"
+    },
+    {
+      "name": "close_ok",
+      "type": 5,
+      "desc": "CLOSE, code 0 (normal end)",
+      "hex": "0500000100"
+    },
+    {
+      "name": "close_err",
+      "type": 5,
+      "desc": "CLOSE, code 1 (error / refused)",
+      "hex": "0500000101"
+    }
+  ]
+}
