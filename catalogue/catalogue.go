@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -80,12 +81,17 @@ func Fetch(u string) ([]byte, error) {
 	return body, err
 }
 
+// UserAgent names the OS the core runs on ("farvater-core/0.1 (ios)"): one core
+// serves the iPhone and the Android app, and a provider could not otherwise tell
+// which app a subscriber uses. Same shape as other clients (Happ/<v>/ios).
+var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ")"
+
 // FetchWithProvider is Fetch that also reads what the provider says in the
 // response headers (see Provider); the provider is nil when it said nothing.
 func FetchWithProvider(u string) ([]byte, *Provider, error) {
 	cl := &http.Client{Timeout: 20 * time.Second}
 	req, _ := http.NewRequest("GET", u, nil)
-	req.Header.Set("User-Agent", "farvater-core/0.1")
+	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Accept", "application/farvater-catalogue+json, text/plain;q=0.9, */*;q=0.5")
 	resp, err := cl.Do(req)
 	if err != nil {
