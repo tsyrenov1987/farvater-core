@@ -1,7 +1,7 @@
 # Transparency — what is inside a Farvater VPN build
 
-Build: **Farvater VPN for iPhone 1.0 (17)**. Core: tag [`ios-1.0-17`](https://github.com/tsyrenov1987/farvater-core/tree/ios-1.0-17).
-The core's Go code at that tag is the code of commit `96bf6e0`, from which the build's `FarvaterCore.xcframework` was made;
+Build: **Farvater VPN for iPhone 1.0 (19)**. Core: tag [`ios-1.0-19`](https://github.com/tsyrenov1987/farvater-core/tree/ios-1.0-19).
+The core's Go code at that tag is the code of commit `a8b8174`, from which the build's `FarvaterCore.xcframework` was made;
 the tag adds only this document.
 
 ## The app around the core
@@ -20,11 +20,11 @@ Measured on the arm64 slice of this build's `FarvaterCore.xcframework`: text sym
 
 | Part | Machine code | Share |
 |---|---:|---:|
-| Go runtime, standard library, golang.org/x | 2.90 MB | 67.8 % |
-| Third-party libraries (below) | 1.07 MB | 24.9 % |
-| Our core (`brain`, `switchboard`, `wire`, `kilvater`, `catalogue`, `mobile`) | 0.24 MB | 5.5 % |
+| Go runtime, standard library, golang.org/x | 2.92 MB | 67.3 % |
+| Third-party libraries (below) | 1.07 MB | 24.7 % |
+| Our core (`brain`, `switchboard`, `wire`, `kilvater`, `catalogue`, `mobile`) | 0.27 MB | 6.2 % |
 | Compiler-generated (type equality, wrappers, stubs) | 0.08 MB | 1.8 % |
-| Total | 4.28 MB | |
+| Total | 4.34 MB | |
 
 Our part is small in bytes and is the part that decides: which path carries each connection, how delivery is
 measured, when a path is bypassed and when it is tried again. The libraries speak the wire formats; the runtime
@@ -40,14 +40,14 @@ path that `replace` points at our clean-room shim, `third_party/sing-shim`).
 ### How to reproduce
 
 ```sh
-git checkout ios-1.0-17
+git checkout ios-1.0-19
 gomobile bind -target=ios/arm64 -iosversion 17.0 -trimpath -ldflags="-s -w" ./mobile   # upstream golang.org/x/mobile
 lipo FarvaterCore.xcframework/ios-arm64/FarvaterCore.framework/FarvaterCore -thin arm64 -output core.a
 ar -x core.a go.o
 go tool nm -size go.o | python3 tools/composition.py
 ```
 
-Built with go1.26.4 and gomobile from `golang.org/x/mobile` v0.0.0-20260908204917-8b95e45f8d3e.
+Built with go1.26.9 and gomobile from `golang.org/x/mobile` v0.0.0-20260908204917-8b95e45f8d3e.
 `tools/licensegate.sh` checks that nothing GPL/AGPL is linked.
 
 ## Third-party modules in this build
@@ -58,7 +58,7 @@ Every module with machine code in the core, with the version and `go.sum` hash a
 |---|---|---|---:|---|
 | github.com/apernet/quic-go | v0.63.1-0.20261004180939-a10df75c260c | MIT | 470 KB | `h1:cxK8qTA0YCsj68A7zLYDCfPgMTOyt3ePkHh+oXEmYU0=` |
 | github.com/refraction-networking/utls | v1.8.3-0.20260301010127-aa6edf4b11af | BSD-3-Clause | 411 KB | `h1:er2acxbi3N1nvEq6HXHUAR1nTWEJmQfqiGR8EVT9rfs=` |
-| github.com/klauspost/compress | v1.17.9 | BSD-3-Clause, Apache-2.0 (per package) | 87 KB | `h1:6KIumPrER1LHsvBVuDa0r5xaG0Es51mhhB9BQB2qeMA=` |
+| github.com/klauspost/compress | v1.20.1 | BSD-3-Clause, Apache-2.0 (per package) | 93 KB | `h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=` |
 | github.com/apernet/hysteria/core/v2 | v2.13.0 | MIT | 47 KB (with extras) | `h1:6hWhxnbGAH04VpInXrq/AVoH+kscha4YECx7Tj2yc9Y=` |
 | github.com/apernet/hysteria/extras/v2 | v2.13.0 | MIT | (above) | `h1:cenZ6WcsvwyNvRAUjqNxjDcyAJH7GeGP8DLuSRFSfyo=` |
 | github.com/andybalholm/brotli | v1.1.0 | MIT | 35 KB | `h1:eLKJA0d02Lf0mVpIDgYnqXcUn0GqVmEFny3VuID1U3M=` |
