@@ -12,6 +12,9 @@ the server. You will be credited in the advisory unless you ask not to be.
 
 ## Scope
 
+For a reviewer's entry point — scope, the security-critical code, the questions we want answered, and how to
+build and reproduce — see [docs/AUDIT.md](docs/AUDIT.md).
+
 In scope:
 
 - the transports in `wire`;

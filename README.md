@@ -75,6 +75,10 @@ with a valid certificate. Clients authenticate with an HMAC tag in a cookie. Eve
 probers, sees an ordinary static website. The server is `cmd/kilvaterd`; the setup guide is
 [docs/KILVATERD.md](docs/KILVATERD.md). Status: **experimental**, not independently audited yet.
 
+The wire format is pinned by test vectors ([docs/KILVATER.md §9](docs/KILVATER.md#9-test-vectors)) and a
+second, independent implementation ([reference/python](reference/python)), cross-checked in CI. For a security
+review, start at [docs/AUDIT.md](docs/AUDIT.md).
+
 Release binaries (`kilvaterd`, `farvater`) come with `SHA256SUMS` and GitHub build-provenance attestations.
 To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
