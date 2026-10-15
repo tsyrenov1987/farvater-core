@@ -1,0 +1,41 @@
+# Runs devtest/chaos on an iPhone: ./run.sh <device id>. Not part of any app.
+name: ChaosLab
+options:
+  bundleIdPrefix: app.farvater.chaoslab
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: 643UT34CF8
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+targets:
+  ChaosHost:
+    type: application
+    platform: iOS
+    sources: [Host]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.farvater.chaoslab
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  ChaosTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: ChaosHost
+      - framework: FarvaterChaos.xcframework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.farvater.chaoslab.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  ChaosLab:
+    build:
+      targets:
+        ChaosHost: all
+        ChaosTests: [test]
+    test:
+      config: Debug
+      targets: [ChaosTests]
