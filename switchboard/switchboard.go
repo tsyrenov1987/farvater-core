@@ -143,7 +143,7 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 			s.Skipped = append(s.Skipped, e.ID+": "+err.Error())
 			continue
 		}
-		info := brain.PathInfo{ID: e.ID, SNI: e.Spec.ServerSNI(), IP: resolveIP(e.Spec.Host), Rail: e.Spec.Rail(), White: e.Labels.White, NotHTTP: !e.Spec.HTTPLike()}
+		info := brain.PathInfo{ID: e.ID, SNI: e.Spec.ServerSNI(), IP: resolveIP(e.Spec.Host), Rail: e.Spec.Rail(), White: e.Labels.White, Net: e.Labels.Net, NotHTTP: !e.Spec.HTTPLike()}
 		s.wires[e.ID] = w
 		s.infos[e.ID] = info
 		s.carried[e.ID] = &carried{}

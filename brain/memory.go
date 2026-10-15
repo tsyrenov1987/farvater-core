@@ -105,7 +105,8 @@ func (b *Brain) UseMemory(m *Memory, priors map[string]map[string]Prior, now int
 // seed installs the priors of a network entered for the first time this
 // session: the path's own memory of it first, else the catalogue's prior; in a
 // restricted network a path the catalogue marks as entering through an
-// allow-listed address starts ahead.
+// allow-listed address starts ahead, and a path meant for another network
+// starts behind.
 func (b *Brain) seed(now int64) {
 	var mem map[string]PathMemory
 	if b.mem != nil {
@@ -129,8 +130,30 @@ func (b *Brain) seed(now int64) {
 			s.SetDelivPrior(pr.A, pr.B, 1)
 		} else if p.White && b.Restricted() {
 			s.SetDelivPrior(3, 1, 1)
+		} else if b.offNet(p) {
+			s.SetDelivPrior(0, 3, 1)
 		}
 	}
+}
+
+// OffNetFloorFactor stretches the exploration floor of a path the catalogue
+// means for another network: it still gets flows, only fewer while it proves
+// nothing here.
+const OffNetFloorFactor = 6
+
+// offNet reports whether the catalogue means p for another kind of network
+// than the current one (a mobile-only entry on Wi-Fi). Such a path starts
+// behind and is probed less often; it stays in the fan, and its own receipts
+// move it like any other.
+func (b *Brain) offNet(p PathInfo) bool {
+	kind, _, _ := strings.Cut(b.ctx, ":")
+	if kind == "wired" {
+		kind = "wifi"
+	}
+	if kind != "wifi" && kind != "cell" {
+		return false
+	}
+	return p.Net != "" && p.Net != "any" && p.Net != kind
 }
 
 // SwitchContext moves the brain to another network. A flow begun before the

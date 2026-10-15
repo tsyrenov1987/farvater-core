@@ -65,3 +65,15 @@ func TestMergePoolsPathsAndKeepsIDsApart(t *testing.T) {
 		t.Fatal("a single catalogue keeps its feedback URL")
 	}
 }
+
+// A "#net=" line labels only the link after it, even when that link is skipped.
+func TestNetHintLabelsTheNextLinkOnly(t *testing.T) {
+	body := base64.StdEncoding.EncodeToString([]byte("#net=cell\n" + l1 + "\n#net=cell\nss://unsupported@x:1#c\n" + l2 + "\n"))
+	c, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Paths) != 2 || c.Paths[0].Labels.Net != "cell" || c.Paths[1].Labels.Net != "" {
+		t.Fatalf("paths %d, nets %q %q: want cell then none", len(c.Paths), c.Paths[0].Labels.Net, c.Paths[len(c.Paths)-1].Labels.Net)
+	}
+}

@@ -8,10 +8,12 @@ import (
 )
 
 // PathInfo identifies a path of the catalogue. White: the catalogue says the
-// path enters through an allow-listed address.
+// path enters through an allow-listed address. Net: the network the catalogue
+// says the path is meant for ("cell", "wifi"; "" or "any": every network).
 type PathInfo struct {
 	ID, SNI, IP, Rail string
 	White             bool
+	Net               string
 	// NotHTTP: the path's traffic looks like no HTTP (Hysteria 2 under
 	// Salamander noise). Such a path stays in the fan and takes flows on proven
 	// delivery, but never stands in for a failing one: a flow that fails is
@@ -295,7 +297,11 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		if p == b.leader {
 			continue
 		}
-		if now-b.lastPick[p] >= b.cfg.FloorMs {
+		floor := b.cfg.FloorMs
+		if b.offNet(b.info(p)) {
+			floor *= OffNetFloorFactor
+		}
+		if now-b.lastPick[p] >= floor {
 			primary, explore, reason = p, true, "explore_floor"
 			break
 		}
