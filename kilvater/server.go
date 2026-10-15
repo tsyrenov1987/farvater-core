@@ -42,6 +42,10 @@ type Server struct {
 	// is never cut.
 	MaxBytesPerKey   int64
 	MaxStreamsPerKey int64
+
+	// Dial, if set, reaches the clients' TCP targets instead of the checked
+	// dialer (a test lab routing every name to its own site).
+	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 var errForbiddenTarget = errors.New("kilvater: target address not allowed")
@@ -175,7 +179,11 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, id Identity) {
 }
 
 func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Writer, ks *keyStat) {
-	remote, err := s.dialer().DialContext(ctx, "tcp", addr)
+	dial := s.dialer().DialContext
+	if s.Dial != nil {
+		dial = s.Dial
+	}
+	remote, err := dial(ctx, "tcp", addr)
 	if err != nil {
 		s.log("dial %s: %v", addr, err)
 		WriteFrame(down, FrameClose, []byte{1})

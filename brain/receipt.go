@@ -53,6 +53,16 @@ const (
 // buffer), not the path being slow, and is left out of the goodput clock.
 const BusyGapMs = 1000
 
+// A flow the app closed while it still waited this long for an answer to at
+// least UnansweredBytes it had sent is a stall it gave up on (EndStallAbandon):
+// the path took the request and let nothing back, as the TSPU does when it
+// drops a frozen flow's packets. Fewer bytes are an idle connection's control
+// frames or its close_notify, not a request.
+const (
+	UnansweredBytes = KB
+	UnansweredMs    = 8000
+)
+
 // SleepGraceMs: a flow the device slept through for this long or longer is not
 // evidence about its path (see Receipt.SleptMs).
 const SleepGraceMs = 2000

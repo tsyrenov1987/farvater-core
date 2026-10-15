@@ -1,8 +1,12 @@
+//go:build chaos
+
 package chaos
 
 import (
 	"encoding/json"
 	"fmt"
+	mrand "math/rand/v2"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +18,8 @@ type scenario struct {
 	name, about string
 	paths       int
 	net         map[int]string // #net labels by path index
+	white       map[int]bool   // paths entering through an allow-listed address (JSON catalogue)
+	kinds       []string       // path kinds by index (vless, trojan, kilvater, hy2); vless/trojan in turn by default
 	ctx         string         // network at Start
 	run         func(r *runner)
 }
@@ -129,6 +135,179 @@ var scenarios = []scenario{
 		r.check(share(a.Served+b.Served+c.Served, a.Requests+b.Requests+c.Requests) >= 0.97,
 			"доставлено %d/%d", a.Served+b.Served+c.Served, a.Requests+b.Requests+c.Requests)
 	}},
+	{name: "leader_up_rst", about: "прогрев, потом у ведущего RST посреди отправки (после 64 КБ вверх)", run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		victim := r.faultLeader(UpRst)
+		r.upload = true
+		ph := r.load("отправка по 256 КБ после поломки ведущего ("+victim+")", 30, 3, []int{256 << 10}, 20*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderName() != victim, "ведущий сменился: %s → %s", victim, r.leaderName())
+	}},
+	{name: "leader_up_freeze", about: "прогрев, потом ведущий глотает отправку после 16 КБ и держит соединение", run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		victim := r.faultLeader(UpFreeze)
+		r.upload = true
+		ph := r.load("отправка по 256 КБ после заморозки ведущего ("+victim+")", 30, 3, []int{256 << 10}, 25*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderName() != victim, "ведущий сменился: %s → %s", victim, r.leaderName())
+	}},
+	{name: "jitter_all", about: "на всех путях паузы до 600 мс в 30% пачек (потери и перепосылки)", run: func(r *runner) {
+		r.all(Jitter)
+		ph := r.load("смесь", 80, 4, mixed, 20*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.98, "доставлено %d/%d", ph.Served, ph.Requests)
+		n := r.count("lead_")
+		r.check(n <= 4, "ведущий не скачет: смен %d (≤ 4)", n)
+	}},
+	{name: "throttle_rst_most", about: "5 из 6 путей зажаты до 16 КБ/с и рвут после 48 КБ, один быстрый", run: func(r *runner) {
+		r.fault(ThrottleRst, 0, 1, 2, 3, 4)
+		r.load("страницы", 40, 4, page, 20*sec)
+		ph := r.load("загрузки по 256 КБ", 20, 2, []int{256 << 10}, 30*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderIn(5), "ведущий — живой быстрый путь: %s", r.leaderName())
+	}},
+	{name: "throttle_all", about: "все 6 путей зажаты до 16 КБ/с: медленная сеть, быстрого пути нет", run: func(r *runner) {
+		r.all(Throttle)
+		a := r.load("страницы", 40, 4, page, 20*sec)
+		b := r.load("загрузки по 256 КБ", 8, 2, []int{256 << 10}, 45*sec)
+		r.check(a.Served+b.Served == a.Requests+b.Requests, "доставлено %d/%d", a.Served+b.Served, a.Requests+b.Requests)
+		n := r.count("lead_")
+		r.check(n <= 3, "ведущий не скачет между одинаково медленными: смен %d (≤ 3)", n)
+	}},
+	{name: "keepalive_freeze", about: "приложение держит соединения открытыми; ведущий замерзает под ними", run: func(r *runner) {
+		r.keepAlive()
+		r.load("прогрев", 30, 3, page, 15*sec)
+		victim := r.faultLeader(FreezeLive)
+		ph := r.load("после заморозки ведущего ("+victim+")", 40, 3, mixed, 25*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderName() != victim, "ведущий сменился: %s → %s", victim, r.leaderName())
+	}},
+	{name: "whitelist_cell", about: "сотовая: включились белые списки — все пути глохнут, кроме входа через разрешённый адрес (white); потом списки сняли",
+		white: map[int]bool{5: true}, ctx: "cell", run: func(r *runner) {
+			r.load("до списков", 20, 3, page, 15*sec)
+			r.fault(Blackhole, 0, 1, 2, 3, 4)
+			ph := r.load("белые списки", 60, 3, page, 15*sec)
+			r.check(r.leaderIn(5), "ведущий — вход через разрешённый адрес: %s", r.leaderName())
+			r.check(share(ph.Served, ph.Requests) >= 0.9, "доставлено %d/%d", ph.Served, ph.Requests)
+			r.all(OK)
+			after := r.load("списки сняли", 40, 3, page, 15*sec)
+			r.check(share(after.Served, after.Requests) >= 0.97, "после снятия доставлено %d/%d", after.Served, after.Requests)
+		}},
+	{name: "kil_tspu_hello_rst", about: "кильватер: 4 из 6 путей рвут RST после ClientHello, 2 живы", kinds: []string{"kilvater", "kilvater", "kilvater", "kilvater", "kilvater", "kilvater"}, run: func(r *runner) {
+		r.fault(RstHello, 0, 1, 2, 3)
+		ph := r.load("страницы", 60, 4, page, 15*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.98, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderIn(4, 5), "ведущий из живых: %s", r.leaderName())
+	}},
+	{name: "kil_leader_freeze_live", about: "кильватер: прогрев, потом живое соединение ведущего замерзает (и новые — после 16 КБ)", kinds: []string{"kilvater", "kilvater", "kilvater", "kilvater", "kilvater", "kilvater"}, run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		victim := r.faultLeader(FreezeLive)
+		ph := r.load("после заморозки ведущего ("+victim+")", 40, 3, mixed, 25*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderName() != victim, "ведущий сменился: %s → %s", victim, r.leaderName())
+	}},
+	{name: "kil_leader_rst_live", about: "кильватер: прогрев, потом живое соединение ведущего рвётся RST (и новые — после hello)", kinds: []string{"kilvater", "kilvater", "kilvater", "kilvater", "kilvater", "kilvater"}, run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		victim := r.faultLeader(RstLive)
+		ph := r.load("после обрыва ведущего ("+victim+")", 40, 3, mixed, 20*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderName() != victim, "ведущий сменился: %s → %s", victim, r.leaderName())
+	}},
+	{name: "kil_throttle_most", about: "кильватер: 5 из 6 путей зажаты до 16 КБ/с, один быстрый", kinds: []string{"kilvater", "kilvater", "kilvater", "kilvater", "kilvater", "kilvater"}, run: func(r *runner) {
+		r.fault(Throttle, 0, 1, 2, 3, 4)
+		r.load("страницы", 40, 4, page, 20*sec)
+		ph := r.load("загрузки по 256 КБ", 16, 2, []int{256 << 10}, 40*sec)
+		r.check(ph.Served == ph.Requests, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderIn(5), "ведущий — быстрый путь: %s", r.leaderName())
+	}},
+	{name: "hy_baseline", about: "Hysteria 2: все 6 путей здоровы", kinds: []string{"hy2", "hy2", "hy2", "hy2", "hy2", "hy2"}, run: func(r *runner) {
+		ph := r.load("смесь 4 КБ–1 МБ", 60, 4, mixed, 20*sec)
+		r.check(ph.Served == ph.Requests, "доставлено %d/%d", ph.Served, ph.Requests)
+		n := r.count("lead_trip") + r.count("trip")
+		r.check(n == 0, "здоровые пути не сняты предохранителем: срабатываний %d", n)
+	}},
+	{name: "hy_quic_blocked", about: "QUIC режется целиком: 3 пути Hysteria 2 глухие (пакеты дропаются), 3 TCP живы",
+		kinds: []string{"hy2", "hy2", "hy2", "vless", "trojan", "vless"}, run: func(r *runner) {
+			r.fault(Blackhole, 0, 1, 2)
+			ph := r.load("страницы", 60, 4, page, 15*sec)
+			r.check(share(ph.Served, ph.Requests) >= 0.98, "доставлено %d/%d", ph.Served, ph.Requests)
+			r.check(r.leaderIn(3, 4, 5), "ведущий из TCP: %s", r.leaderName())
+		}},
+	{name: "hy_leader_drop_live", about: "Hysteria 2: прогрев, потом у ведущего пропадают все пакеты посреди сессии", kinds: []string{"hy2", "hy2", "hy2", "hy2", "hy2", "hy2"}, run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		victim := r.faultLeader(RstLive)
+		ph := r.load("после обрыва ведущего ("+victim+")", 40, 3, mixed, 20*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderName() != victim, "ведущий сменился: %s → %s", victim, r.leaderName())
+	}},
+	{name: "hy_freeze16k", about: "Hysteria 2: прогрев, потом ведущий пропускает 16 КБ сессии и замолкает", kinds: []string{"hy2", "hy2", "hy2", "hy2", "hy2", "hy2"}, run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		victim := r.faultLeader(FreezeLive)
+		ph := r.load("после заморозки ведущего ("+victim+")", 40, 3, mixed, 25*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderName() != victim, "ведущий сменился: %s → %s", victim, r.leaderName())
+	}},
+	{name: "hy_throttle_most", about: "Hysteria 2: 5 из 6 путей зажаты до 16 КБ/с, один быстрый", kinds: []string{"hy2", "hy2", "hy2", "hy2", "hy2", "hy2"}, run: func(r *runner) {
+		r.fault(Throttle, 0, 1, 2, 3, 4)
+		r.load("страницы", 40, 4, page, 20*sec)
+		ph := r.load("загрузки по 256 КБ", 16, 2, []int{256 << 10}, 40*sec)
+		r.check(ph.Served == ph.Requests, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.leaderIn(5), "ведущий — быстрый путь: %s", r.leaderName())
+	}},
+	{name: "whitelist_all_silent", about: "сотовая: белые списки глушат все пути 20 с, потом пропускают только вход через разрешённый адрес (white)",
+		white: map[int]bool{5: true}, ctx: "cell", run: func(r *runner) {
+			r.load("до списков", 20, 3, page, 15*sec)
+			r.all(Blackhole)
+			r.loadFor("всё глухо", 20*sec, 2, page, 8*sec, nil)
+			on := r.count("restricted_on")
+			r.check(on >= 1, "ядро поняло, что сеть жива, а пути заглушены (restricted_on %d)", on)
+			r.l.paths[5].set(OK)
+			ph := r.loadFor("пропускают white-вход p5", 30*sec, 2, page, 10*sec, nil)
+			r.check(ph.RecoverMs >= 0 && ph.RecoverMs <= 15000, "связь вернулась через %d мс (≤ 15 с)", ph.RecoverMs)
+			r.check(r.leaderIn(5), "ведущий — white-вход: %s", r.leaderName())
+		}},
+	{name: "soak_15min", about: "15 мин нагрузки; каждые 2 мин на 2–4 случайных путях случайная помеха, хотя бы один путь жив", run: func(r *runner) {
+		r.load("прогрев", 20, 3, page, 15*sec)
+		g0 := runtime.NumGoroutine()
+		faults := []Fault{RstHello, Blackhole, RstMid, Freeze16K, Throttle, Latency, Flaky, Jitter, UpRst, ThrottleRst, FreezeLive, RstLive}
+		ph := r.loadFor("15 минут", 15*time.Minute, 3, mixed, 30*sec, func() {
+			for t := 0; t < 7; t++ {
+				r.all(OK)
+				idx := shuffled(6)[:2+mrand.IntN(3)]
+				for _, i := range idx {
+					r.l.paths[i].set(faults[mrand.IntN(len(faults))])
+				}
+				time.Sleep(2 * time.Minute)
+			}
+		})
+		r.all(OK)
+		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.heapMB() < 40, "куча ≤ 40 МБ: %.1f", r.heapMB())
+		time.Sleep(5 * sec)
+		g1 := runtime.NumGoroutine()
+		r.check(g1-g0 < 200, "горутины не текут: было %d, стало %d", g0, g1)
+	}},
+	{name: "idle_resume", about: "прогрев, минута тишины, за это время ведущий умер (RST на hello); потом трафик", run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		victim := r.faultLeader(RstHello)
+		time.Sleep(60 * sec)
+		ph := r.load("после тишины", 40, 3, page, 15*sec)
+		r.check(share(ph.Served, ph.Requests) >= 0.97, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(ph.RecoverMs >= 0 && ph.RecoverMs <= 5000, "связь с первой попытки через %d мс (≤ 5 с)", ph.RecoverMs)
+		r.check(r.leaderName() != victim, "ведущий сменился: %s → %s", victim, r.leaderName())
+	}},
+}
+
+// count counts the core's journal entries whose act starts with prefix.
+func (r *runner) count(prefix string) int {
+	var j []struct{ Act string }
+	_ = json.Unmarshal([]byte(mobile.JournalJSON()), &j)
+	n := 0
+	for _, e := range j {
+		if strings.HasPrefix(e.Act, prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 func (r *runner) fault(f Fault, idx ...int) {
@@ -147,7 +326,7 @@ func (r *runner) all(f Fault) {
 func (r *runner) leaderName() string {
 	id := r.leader()
 	for _, p := range r.l.paths {
-		if id == p.id || strings.HasSuffix(id, "#"+p.id) || strings.Contains(id, fmt.Sprintf(":%d", p.proxy.Addr().(*netAddr).Port)) {
+		if id == p.id || strings.HasSuffix(id, "#"+p.id) || strings.Contains(id, fmt.Sprintf(":%d", p.port())) {
 			return p.id
 		}
 	}
@@ -207,7 +386,7 @@ func Run(name string) string {
 		return out()
 	}
 	res.About = sc.about
-	l, err := newLab(6)
+	l, err := newLab(6, sc.kinds)
 	if err != nil {
 		res.Pass, res.Error = false, err.Error()
 		return out()
@@ -218,7 +397,11 @@ func Run(name string) string {
 		ctx = "chaos"
 	}
 	mobile.SetMemoryFile("")
-	if err := mobile.Start(l.catalogue(sc.net), socksPort, ctx); err != nil {
+	cat := l.catalogue(sc.net)
+	if sc.white != nil {
+		cat = l.catalogueJSON(sc.white)
+	}
+	if err := mobile.Start(cat, socksPort, ctx); err != nil {
 		res.Pass, res.Error = false, "start: "+err.Error()
 		return out()
 	}

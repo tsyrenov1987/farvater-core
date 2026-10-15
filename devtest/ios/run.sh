@@ -17,7 +17,7 @@ exec "$GO" "\$@"
 SH
 chmod +x "$SHIM/go"
 export PATH="$SHIM:$(dirname "$GOMOBILE"):$(dirname "$GO"):$PATH"
-(cd "$CORE" && nice -n 10 "$GOMOBILE" bind -target=ios/arm64 -iosversion 17.0 -trimpath \
+(cd "$CORE" && nice -n 10 "$GOMOBILE" bind -tags chaos -target=ios/arm64 -iosversion 17.0 -trimpath \
   -o "$HERE/FarvaterChaos.xcframework" ./devtest/chaos)
 cd "$HERE" && xcodegen generate -q
 xcodebuild test -project ChaosLab.xcodeproj -scheme ChaosLab -destination "platform=iOS,id=$DEV" \

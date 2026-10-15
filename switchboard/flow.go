@@ -121,18 +121,23 @@ func (a *attempt) runReceipt(f *flow, preludeLen int, out wire.Outcome, err erro
 			r.AnswerMs = max(1, s.firstDownAt-a.dialAt)
 		}
 	}
+	// The app closed while still waiting for an answer to what it sent: the
+	// path took it and let nothing back, a stall it gave up on.
+	unanswered := s.asked >= brain.UnansweredBytes && now-s.askedAt >= brain.UnansweredMs
 	switch out {
 	case wire.OutcomeRemoteFin:
 		r.End = brain.EndRemoteFin
 	case wire.OutcomeClientFin:
 		r.End = brain.EndLocalClose
-		if s.inStall {
+		if s.inStall || unanswered {
 			r.End = brain.EndStallAbandon
 		}
 	case wire.OutcomeCanceled:
 		r.End = brain.EndLocalClose
 		if fbTimeout {
 			r.End = brain.EndTimeout
+		} else if unanswered {
+			r.End = brain.EndStallAbandon
 		}
 	default:
 		r.End = brain.EndWireReset

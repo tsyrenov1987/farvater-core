@@ -16,6 +16,7 @@ import (
 	"github.com/apernet/hysteria/core/v2/client"
 	coreErrs "github.com/apernet/hysteria/core/v2/errors"
 	"github.com/apernet/hysteria/extras/v2/obfs"
+	"github.com/apernet/quic-go"
 )
 
 type hyWire struct {
@@ -183,7 +184,13 @@ func (s *hySession) Run(ctx context.Context, target Target, prelude []byte, up <
 		}
 	}
 	upErr := make(chan error, 1)
-	go func() { upErr <- pumpUp(ctx, up, c, m, nil) }()
+	go func() {
+		err := pumpUp(ctx, up, c, m, nil)
+		if hyEnded(err) {
+			err = io.EOF // the server is done with the stream: nothing more goes up
+		}
+		upErr <- err
+	}()
 	downErr := make(chan error, 1)
 	go func() {
 		p := make([]byte, 32*1024)
@@ -197,7 +204,7 @@ func (s *hySession) Run(ctx context.Context, target Target, prelude []byte, up <
 				}
 			}
 			if err != nil {
-				if err == io.EOF {
+				if err == io.EOF || hyEnded(err) {
 					downErr <- nil
 				} else {
 					downErr <- err
@@ -209,6 +216,16 @@ func (s *hySession) Run(ctx context.Context, target Target, prelude []byte, up <
 	idle := time.AfterFunc(IdleTimeout, cancel)
 	defer idle.Stop()
 	return settle(ctx, upErr, downErr, cancel, func() { idle.Reset(2 * time.Second) })
+}
+
+// hyEnded reports the server's end of a stream. A Hysteria 2 server whose
+// target closed cancels the stream with code 0, no error, instead of
+// finishing it; the app's last bytes, a TLS close_notify, may meet that
+// cancel. It is the remote finishing, not a reset of the path: no censor can
+// forge it inside QUIC's encryption.
+func hyEnded(err error) bool {
+	var se *quic.StreamError
+	return errors.As(err, &se) && se.Remote && se.ErrorCode == 0
 }
 
 // DialPacket opens a UDP session inside the path's QUIC connection, making

@@ -1,6 +1,9 @@
+//go:build chaos
+
 package chaos
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -60,6 +63,7 @@ type runner struct {
 	t0      time.Time
 	client  *http.Client
 	stop    chan struct{}
+	upload  bool // requests send their size up as a POST body; the answer is small
 	heap    atomic.Uint64
 	samples sync.WaitGroup
 }
@@ -79,13 +83,26 @@ func newRunner(l *lab, res *Result) (*runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	cd := d.(proxy.ContextDialer)
-	tr := &http.Transport{DialContext: func(ctx context.Context, n, a string) (net.Conn, error) { return cd.DialContext(ctx, n, a) },
-		DisableKeepAlives: true, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	r := &runner{l: l, res: res, t0: time.Now(), client: &http.Client{Transport: tr}, stop: make(chan struct{})}
+	r := &runner{l: l, res: res, t0: time.Now(), client: client(d.(proxy.ContextDialer), false), stop: make(chan struct{})}
 	r.samples.Add(1)
 	go r.sample()
 	return r, nil
+}
+
+// client makes a request through the core's SOCKS port: a new connection
+// each, or with keepAlive connections an app keeps open and reuses.
+func client(cd proxy.ContextDialer, keepAlive bool) *http.Client {
+	tr := &http.Transport{DialContext: func(ctx context.Context, n, a string) (net.Conn, error) { return cd.DialContext(ctx, n, a) },
+		DisableKeepAlives: !keepAlive, MaxIdleConnsPerHost: 4, IdleConnTimeout: 5 * time.Minute,
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	return &http.Client{Transport: tr}
+}
+
+// keepAlive switches the runner to connections kept open and reused.
+func (r *runner) keepAlive() {
+	d, _ := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", socksPort),
+		&proxy.Auth{User: mobile.SocksUser(), Password: mobile.SocksPass()}, proxy.Direct)
+	r.client = client(d.(proxy.ContextDialer), true)
 }
 
 // sample records leader changes and the heap peak.
@@ -124,14 +141,21 @@ func (r *runner) get(site int, n int, timeout time.Duration) (ok, first bool, at
 	start := time.Now()
 	for attempts = 1; attempts <= 3; attempts++ {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://site%d.chaos.test:443/bytes?n=%d", site, n), nil)
+		want := int64(n)
+		var req *http.Request
+		if r.upload {
+			want = 64
+			req, _ = http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://site%d.chaos.test:443/bytes?n=%d", site, want), bytes.NewReader(make([]byte, n)))
+		} else {
+			req, _ = http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://site%d.chaos.test:443/bytes?n=%d", site, n), nil)
+		}
 		resp, err := r.client.Do(req)
 		if err == nil {
 			var k int64
 			k, err = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			got += k
-			if err == nil && k != int64(n) {
+			if err == nil && k != want {
 				err = io.ErrUnexpectedEOF
 			}
 		}

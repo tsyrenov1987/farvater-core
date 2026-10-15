@@ -37,6 +37,8 @@ type meter struct {
 	stallNoted  bool // the first stall went to the brain while the flow ran
 	tls         tlsTrack
 	held        func() bool // the path's own stream stopped inside a record (wire.Framed), if it can tell
+	asked       int64       // bytes the app sent since the last answer
+	askedAt     int64       // when the first of them went
 }
 
 func (m *meter) Up(p []byte) {
@@ -46,6 +48,10 @@ func (m *meter) Up(p []byte) {
 	m.mu.Lock()
 	m.up += int64(len(p))
 	m.lastUpAt = nowMs()
+	if m.asked == 0 {
+		m.askedAt = m.lastUpAt
+	}
+	m.asked += int64(len(p))
 	if m.firstUpAt == 0 {
 		m.firstUpAt = m.lastUpAt
 	}
@@ -83,6 +89,7 @@ func (m *meter) Down(p []byte) {
 	m.down += int64(len(p))
 	m.lastDownAt = now
 	m.inStall = false
+	m.asked, m.askedAt = 0, 0
 }
 
 // maxBusyGapMs caps what one pause adds to the busy clock: a phone that slept
@@ -137,12 +144,13 @@ type snapshot struct {
 	noted, stallNoted                        bool
 	stalls                                   int
 	inStall                                  bool
+	asked, askedAt                           int64
 }
 
 func (m *meter) snap() snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return snapshot{m.up, m.down, m.firstUpAt, m.firstDownAt, m.maxGap, m.busyMs, m.busyDown, m.noted, m.stallNoted, m.stalls, m.inStall}
+	return snapshot{m.up, m.down, m.firstUpAt, m.firstDownAt, m.maxGap, m.busyMs, m.busyDown, m.noted, m.stallNoted, m.stalls, m.inStall, m.asked, m.askedAt}
 }
 
 // tlsTrack follows TLS record framing in a downstream byte stream. The

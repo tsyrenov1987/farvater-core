@@ -2,6 +2,7 @@ package wire
 
 import (
 	"context"
+	"crypto/x509"
 	"math/rand/v2"
 	"net"
 	"strconv"
@@ -105,8 +106,12 @@ func dialTCP(ctx context.Context, host string, port int) (net.Conn, error) {
 // http11 narrows it to http/1.1 (WebSocket, or a link that asks for exactly
 // that). The certificate is checked against the server name unless the link
 // allows an insecure one.
+// labRoots, when set (only by the chaos lab's build, roots_chaos.go), are
+// the roots path certificates are verified against instead of the system's.
+var labRoots *x509.CertPool
+
 func handshakeTLS(ctx context.Context, c net.Conn, s PathSpec, http11 bool) (*utls.UConn, error) {
-	cfg := &utls.Config{ServerName: s.ServerSNI(), InsecureSkipVerify: s.Insecure, SessionTicketsDisabled: true}
+	cfg := &utls.Config{ServerName: s.ServerSNI(), InsecureSkipVerify: s.Insecure, SessionTicketsDisabled: true, RootCAs: labRoots}
 	u, err := uClient(c, cfg, s.Fingerprint)
 	if err != nil {
 		return nil, err
