@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,10 +27,10 @@ var socksPort = 11190
 type Phase struct {
 	Name      string  `json:"name"`
 	Requests  int     `json:"requests"`
-	Served    int     `json:"served"`     // succeeded, retries included (what the user sees)
-	FirstTry  int     `json:"first_try"`  // succeeded on the first attempt
-	Attempts  int     `json:"attempts"`   // attempts made in all
-	P50Ms     int64   `json:"p50_ms"`     // request time, retries included
+	Served    int     `json:"served"`    // succeeded, retries included (what the user sees)
+	FirstTry  int     `json:"first_try"` // succeeded on the first attempt
+	Attempts  int     `json:"attempts"`  // attempts made in all
+	P50Ms     int64   `json:"p50_ms"`    // request time, retries included
 	P95Ms     int64   `json:"p95_ms"`
 	MaxMs     int64   `json:"max_ms"`
 	MBps      float64 `json:"mbps"`       // payload over wall time of the phase
@@ -42,6 +43,7 @@ type Result struct {
 	About    string   `json:"about"`
 	Phases   []Phase  `json:"phases"`
 	Leaders  []string `json:"leaders"` // leader changes, "t+ms path"
+	Journal  []string `json:"journal"` // the core's leader and breaker decisions, "t+ms act path: why"
 	Conns    []string `json:"conns"`   // connections each path's proxy took, with its last fault
 	Flows    int64    `json:"flows"`
 	Retries  int64    `json:"retries"`
@@ -255,11 +257,29 @@ func (r *runner) finish() {
 	r.samples.Wait()
 	var st struct {
 		Flows, Retries int64
+		Paths          []struct {
+			ID         string `json:"id"`
+			GoodputBps int64  `json:"goodput_bps"`
+		}
 	}
 	_ = json.Unmarshal([]byte(mobile.StatusJSON()), &st)
+	speed := map[string]int64{}
+	for _, p := range st.Paths {
+		speed[p.ID] = p.GoodputBps
+	}
 	r.res.Flows, r.res.Retries = st.Flows, st.Retries
+	var j []struct {
+		AtMs           int64
+		Act, Why, Path string
+	}
+	_ = json.Unmarshal([]byte(mobile.JournalJSON()), &j)
+	for _, e := range j {
+		if strings.HasPrefix(e.Act, "lead") || strings.Contains(e.Act, "trip") {
+			r.res.Journal = append(r.res.Journal, fmt.Sprintf("t+%d %s %s: %s", e.AtMs-r.t0.UnixMilli(), e.Act, e.Path, e.Why))
+		}
+	}
 	for _, p := range r.l.paths {
-		r.res.Conns = append(r.res.Conns, fmt.Sprintf("%s %s: %d (%s)", p.id, p.kind, p.conns.Load(), p.get()))
+		r.res.Conns = append(r.res.Conns, fmt.Sprintf("%s %s: %d (%s) %d KB/s", p.id, p.kind, p.conns.Load(), p.get(), speed[p.id]>>10))
 	}
 	r.res.HeapMB = r.heapMB()
 }

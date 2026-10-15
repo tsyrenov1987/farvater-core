@@ -493,6 +493,12 @@ func (s *Switchboard) acquire(path string) int64 {
 	return s.b.Gov.Acquire(info.SNI, info.IP, nowMs())
 }
 
+func (s *Switchboard) noteGoodput(path string, busyDown, busyMs, startMs int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.NoteGoodput(path, busyDown, busyMs, startMs, nowMs())
+}
+
 func (s *Switchboard) observe(r brain.Receipt) {
 	s.mu.Lock()
 	r.Ctx = s.b.Ctx()
@@ -546,6 +552,7 @@ type PathStatus struct {
 	Asleep         bool    `json:"asleep,omitempty"`          // a hosted path whose transport is down
 	UpBytes        int64   `json:"up_bytes"`                  // carried this session, running flows and UDP included
 	DownBytes      int64   `json:"down_bytes"`
+	GoodputBps     int64   `json:"goodput_bps,omitempty"` // download rate while bytes flowed, 0 until measured
 }
 
 func tripName(sig brain.BlockSig) string {
@@ -621,7 +628,7 @@ func (s *Switchboard) Status() Status {
 			Recent15m: ps.RecentReceipts(now, 15*60*1000), P90FirstByteMs: ps.P90FirstByteMs(),
 			Cut16: ps.Cut16, Parked: s.b.Diag.Parked(id, now), Tripped: tripName(s.b.Breaker.TrippedSig(id, now)),
 			TrippedLeftMs: s.b.Breaker.TrippedLeftMs(id, now), Served: ps.Served, Blocked: ps.Blocked,
-			Asleep: s.b.Asleep(id), UpBytes: c.up.Load(), DownBytes: c.down.Load(),
+			Asleep: s.b.Asleep(id), UpBytes: c.up.Load(), DownBytes: c.down.Load(), GoodputBps: int64(ps.GoodputBps),
 		})
 	}
 	n := len(s.receipts)

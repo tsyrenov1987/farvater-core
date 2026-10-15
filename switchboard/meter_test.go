@@ -144,3 +144,23 @@ func TestSleptMsAwake(t *testing.T) {
 		t.Fatalf("sleptMs awake = %d ms, want ≈0", s)
 	}
 }
+
+// A shaped path hands over a TLS record a second: the pause inside a record is
+// busy time. A pause at a record boundary is the site with nothing to say.
+func TestBusyClockCountsShapedNotIdle(t *testing.T) {
+	m := &meter{}
+	rec := make([]byte, 5+16384)
+	rec[0], rec[1], rec[2], rec[3], rec[4] = 23, 3, 3, 0x40, 0
+	m.Down(rec[:8000])
+	time.Sleep(1200 * time.Millisecond) // inside the record
+	m.Down(rec[8000:])
+	time.Sleep(1200 * time.Millisecond) // between records
+	m.Down(rec)
+	s := m.snap()
+	if s.busyMs < 1100 || s.busyMs > 1500 {
+		t.Fatalf("busy %d ms, want the 1.2 s inside the record only", s.busyMs)
+	}
+	if s.busyDown != int64(len(rec)-8000) {
+		t.Fatalf("busy bytes %d, want %d", s.busyDown, len(rec)-8000)
+	}
+}

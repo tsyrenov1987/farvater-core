@@ -14,6 +14,8 @@ type PathState struct {
 	priorDelivB        float64
 	priorFbA, priorFbB float64
 	GoodputBps         float64
+	goodN              int   // samples behind GoodputBps this session
+	goodAt             int64 // when the last one came
 	Cut16              bool
 	failBytes          []int64
 	bigOK              int
@@ -121,13 +123,8 @@ func (s *PathState) Observe(r Receipt, now, halfLifeMs int64) {
 	} else if dv == -1 {
 		s.bigOK = 0
 	}
-	if r.Delivered() && r.Down > BigBytes && r.DurMs > 0 {
-		bps := float64(r.Down) * 1000 / float64(r.DurMs)
-		if s.GoodputBps == 0 {
-			s.GoodputBps = bps
-		} else {
-			s.GoodputBps = 0.7*s.GoodputBps + 0.3*bps
-		}
+	if r.FirstByte() && r.BusyDown >= BigBytes && !r.GoodputNoted {
+		s.noteGoodput(r.BusyDown, r.BusyMs, now)
 	}
 	if r.Stalls > 0 {
 		s.stallRun++
@@ -136,6 +133,29 @@ func (s *PathState) Observe(r Receipt, now, halfLifeMs int64) {
 	}
 	s.LastEvidenceMs = now
 	s.recent = append(s.recent, now)
+}
+
+// noteGoodput folds one goodput sample: the rate while bytes were flowing. A
+// throttled path is slow the whole time, an idle keep-alive connection only
+// between its answers.
+func (s *PathState) noteGoodput(busyDown, busyMs, now int64) {
+	bps := float64(busyDown) * 1000 / float64(max(busyMs, minBusyMs))
+	if s.goodN == 0 {
+		s.GoodputBps = bps
+	} else {
+		s.GoodputBps = 0.7*s.GoodputBps + 0.3*bps
+	}
+	s.goodN++
+	s.goodAt = now
+}
+
+// minBusyMs floors the busy clock: a fast flow can land inside a millisecond or two.
+const minBusyMs = 20
+
+// Goodput returns the path's goodput (bytes per second) and whether it was
+// measured this session, at least once, within windowMs of now.
+func (s PathState) Goodput(now, windowMs int64) (bps float64, samples int, fresh bool) {
+	return s.GoodputBps, s.goodN, s.goodN > 0 && now-s.goodAt <= windowMs
 }
 
 func median(v []int64) int64 {

@@ -3,6 +3,8 @@ package switchboard
 import (
 	"sync"
 	"time"
+
+	"github.com/tsyrenov1987/farvater-core/brain"
 )
 
 func nowMs() int64 { return time.Now().UnixMilli() }
@@ -27,6 +29,9 @@ type meter struct {
 	lastDownAt  int64
 	firstDownAt int64
 	maxGap      int64
+	busyMs      int64 // downstream time, idle pauses left out (see Down)
+	busyDown    int64 // bytes inside it
+	noted       bool  // the goodput went to the brain while the flow ran
 	stalls      int
 	inStall     bool
 	tls         tlsTrack
@@ -64,11 +69,23 @@ func (m *meter) Down(p []byte) {
 			m.maxGap = gap
 		}
 	}
+	// A pause inside a TLS record of the site is the path holding back bytes
+	// the server already sent: busy time, however long (a shaped path hands
+	// over one 16 KB record a second). A pause at a record boundary is busy
+	// only when short; a longer one is the site with nothing to say.
+	if gap := now - m.lastDownAt; m.lastDownAt > 0 && (gap <= brain.BusyGapMs || m.tls.midRecord()) {
+		m.busyMs += min(gap, maxBusyGapMs)
+		m.busyDown += int64(len(p))
+	}
 	m.tls.feed(p)
 	m.down += int64(len(p))
 	m.lastDownAt = now
 	m.inStall = false
 }
+
+// maxBusyGapMs caps what one pause adds to the busy clock: a phone that slept
+// in the middle of a download does not make its path look slow.
+const maxBusyGapMs = 5000
 
 // tick is the stall watchdog. A server writes each TLS record whole, so a
 // flow that goes quiet for stallMs in the middle of a record is missing bytes
@@ -88,8 +105,22 @@ func (m *meter) tick(now, stallMs int64) {
 	}
 }
 
+// noteOnce reports, the first time only, whether the flow has carried enough
+// to tell its path's goodput.
+func (m *meter) noteOnce() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.noted || m.busyDown < brain.BigBytes {
+		return false
+	}
+	m.noted = true
+	return true
+}
+
 type snapshot struct {
 	up, down, firstUpAt, firstDownAt, maxGap int64
+	busyMs, busyDown                         int64
+	noted                                    bool
 	stalls                                   int
 	inStall                                  bool
 }
@@ -97,7 +128,7 @@ type snapshot struct {
 func (m *meter) snap() snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return snapshot{m.up, m.down, m.firstUpAt, m.firstDownAt, m.maxGap, m.stalls, m.inStall}
+	return snapshot{m.up, m.down, m.firstUpAt, m.firstDownAt, m.maxGap, m.busyMs, m.busyDown, m.noted, m.stalls, m.inStall}
 }
 
 // tlsTrack follows TLS record framing in a downstream byte stream. The

@@ -112,6 +112,7 @@ func (a *attempt) runReceipt(f *flow, preludeLen int, out wire.Outcome, err erro
 	r.Up = s.up + int64(preludeLen)
 	r.Down = s.down
 	r.MaxGapMs = s.maxGap
+	r.BusyMs, r.BusyDown, r.GoodputNoted = s.busyMs, s.busyDown, s.noted
 	r.Stalls = s.stalls
 	if s.firstDownAt > 0 {
 		r.FirstByteMs = s.firstDownAt - a.startMs
@@ -352,6 +353,10 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 				tick.Reset(time.Second)
 			}
 			a.m.tick(now, f.s.cfg.StallMs)
+			if a.m.noteOnce() {
+				sn = a.m.snap()
+				f.s.noteGoodput(a.path, sn.busyDown, sn.busyMs, a.startMs)
+			}
 		}
 	}
 }

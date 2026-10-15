@@ -230,7 +230,8 @@ func (r *Runner) execute(pathID string, f Flow, startAt, fbTimeout int64) (rec b
 	if gp <= 0 {
 		gp = 2_000_000
 	}
-	rec.DurMs = rec.FirstByteMs + f.WantBytes*1000/gp
+	rec.BusyMs, rec.BusyDown = f.WantBytes*1000/gp, f.WantBytes
+	rec.DurMs = rec.FirstByteMs + rec.BusyMs
 	rec.MaxGapMs = p.RTTMs
 	rec.AtMs = startAt + rec.DurMs
 	return rec, true, waited

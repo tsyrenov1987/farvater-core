@@ -35,13 +35,33 @@ type Config struct {
 	StaggerPadMs           int64         // added to p90 first-byte for the connect-stage retry
 	FirstByteDeadlineCapMs int64         // hard cap on the per-flow abandon-and-migrate deadline
 	Breaker                BreakerConfig // anti-TSPU circuit breaker
+
+	// A leader that delivers, but slowly (shaped), is caught by goodput: its
+	// fresh goodput under SlowBps sends up to SpeedProbeShare of flows to the
+	// paths with no fresh goodput of their own, and one measured FasterFactor
+	// times faster takes the lead, unless its delivery is proven worse.
+	// Probing stops once SpeedProbeMax other paths have a fresh goodput and
+	// none is faster: then the network is slow, not the leader's path.
+	SlowBps         float64 // bytes per second
+	FasterFactor    float64
+	SpeedProbeShare float64
+	SpeedProbeMax   int
+	GoodputFreshMs  int64
+
+	// DemoteHoldMs: a leader dethroned for what it did (stalls, slowness, a
+	// breaker trip) is not handed the lead back by the posterior rule for this
+	// long. Its long record of delivery predates the damage and would
+	// outweigh the few receipts of the path that took over.
+	DemoteHoldMs int64
 }
 
 // DefaultConfig returns the design defaults.
 func DefaultConfig() Config {
 	return Config{HalfLifeMs: 10 * 60_000, LeaderDelta: 0.15, LeaderMinReceipts: 5, LeaderWindowMs: 15 * 60_000,
 		LeaderStallStrikes: 2, ExploreShare: 0.1, ExploreWindowMs: 60_000, FloorMs: 10 * 60_000, FirstByteCapMs: 3000, StaggerPadMs: 300,
-		FirstByteDeadlineCapMs: 5000, Breaker: DefaultBreakerConfig()}
+		FirstByteDeadlineCapMs: 5000, Breaker: DefaultBreakerConfig(),
+		SlowBps: 128 * 1024, FasterFactor: 3, SpeedProbeShare: 0.3, SpeedProbeMax: 4, GoodputFreshMs: 10 * 60_000,
+		DemoteHoldMs: 2 * 60_000}
 }
 
 // Decision is the answer to "which wire for this flow".
@@ -86,14 +106,15 @@ type Brain struct {
 	back       map[string]bool             // ...and those of them that connected since
 	upAt       int64                       // an allow-listed site last answered directly
 	upSeen     bool
-	asleep     map[string]bool // paths whose transport is down (Sleep)
+	asleep     map[string]bool  // paths whose transport is down (Sleep)
+	demoted    map[string]int64 // when a path was dethroned for what it did
 }
 
 // New creates a brain for one network context.
 func New(cfg Config, ctx string, paths []PathInfo, seed uint64) *Brain {
 	b := &Brain{cfg: cfg, ctx: ctx, paths: paths, st: map[string]*PathState{}, lastPick: map[string]int64{},
 		Gov: NewGovernor(), Diag: NewDiagnoser(paths), Breaker: NewBreaker(cfg.Breaker), J: NewJournal(1000), rng: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
-		saved: map[string]ctxState{}, switchedAt: math.MinInt64, asleep: map[string]bool{}}
+		saved: map[string]ctxState{}, switchedAt: math.MinInt64, asleep: map[string]bool{}, demoted: map[string]int64{}}
 	for _, p := range paths {
 		b.st[p.ID] = &PathState{}
 	}
@@ -237,6 +258,97 @@ func (b *Brain) bestBy(avail []string, exclude string, needReceipts bool, now in
 	return best, bestM
 }
 
+// slowLeader reports the leader's fresh goodput when it is under SlowBps.
+func (b *Brain) slowLeader(now int64) (float64, bool) {
+	if b.leader == "" || b.cfg.SlowBps <= 0 {
+		return 0, false
+	}
+	bps, n, fresh := b.st[b.leader].Goodput(now, b.cfg.GoodputFreshMs)
+	return bps, fresh && n >= 2 && bps < b.cfg.SlowBps
+}
+
+// speedProbe picks, while the leader is slow, a path whose goodput is not
+// known yet: by a Thompson draw, biased toward a path unlike the leader, as
+// shaping goes by address, name or protocol. "" when there is none, or when
+// SpeedProbeMax paths are measured already.
+func (b *Brain) speedProbe(avail []string, now int64) string {
+	if _, slow := b.slowLeader(now); !slow {
+		return ""
+	}
+	lead := b.info(b.leader)
+	bestP, bestV, measured := "", -1.0, 0
+	for _, p := range avail {
+		if p == b.leader {
+			continue
+		}
+		if _, _, fresh := b.st[p].Goodput(now, b.cfg.GoodputFreshMs); fresh {
+			measured++
+			continue
+		}
+		if v := 0.85*b.st[p].Sample(b.rng) + 0.15*float64(diversity(b.info(p), lead))/3; v > bestV {
+			bestP, bestV = p, v
+		}
+	}
+	if b.cfg.SpeedProbeMax > 0 && measured >= b.cfg.SpeedProbeMax {
+		return ""
+	}
+	return bestP
+}
+
+// NoteGoodput takes a running flow's goodput, sent once it has carried
+// BigBytes: a shaped download takes minutes to end, and its receipt with it.
+// A flow begun on a network the device has left says nothing about this one.
+func (b *Brain) NoteGoodput(path string, busyDown, busyMs, startMs, now int64) {
+	if s, ok := b.st[path]; ok && busyDown >= BigBytes && startMs >= b.switchedAt {
+		s.noteGoodput(busyDown, busyMs, now)
+	}
+}
+
+// faster finds, for a slow leader, the fastest path measured FasterFactor
+// times faster that has no failed delivery to its name lately or delivers
+// within LeaderDelta of the leader: one fast download is enough to win when
+// nothing speaks against the path.
+func (b *Brain) faster(avail []string, now int64) (string, string) {
+	lead, slow := b.slowLeader(now)
+	if !slow {
+		return "", ""
+	}
+	ls := b.st[b.leader]
+	best, bestBps := "", lead*b.cfg.FasterFactor
+	for _, p := range avail {
+		if p == b.leader {
+			continue
+		}
+		s := b.st[p]
+		bps, _, fresh := s.Goodput(now, b.cfg.GoodputFreshMs)
+		if fresh && bps >= bestBps && (s.evDelivB < 0.5 || s.DelivMean() >= ls.DelivMean()-b.cfg.LeaderDelta) {
+			best, bestBps = p, bps
+		}
+	}
+	if best == "" {
+		return "", ""
+	}
+	return best, fmt.Sprintf("goodput %.0f KB/s vs %.0f KB/s on %s", bestBps/1024, lead/1024, b.leader)
+}
+
+// held reports whether p was dethroned within DemoteHoldMs.
+func (b *Brain) held(p string, now int64) bool {
+	at, ok := b.demoted[p]
+	return ok && now-at < b.cfg.DemoteHoldMs
+}
+
+// muchSlower reports whether path p is measured FasterFactor times slower
+// than the leader: its longer record of delivery does not make it the leader
+// a slow one was just replaced by.
+func (b *Brain) muchSlower(p string, now int64) bool {
+	if b.leader == "" || b.cfg.FasterFactor <= 0 {
+		return false
+	}
+	lead, _, lf := b.st[b.leader].Goodput(now, b.cfg.GoodputFreshMs)
+	bps, _, pf := b.st[p].Goodput(now, b.cfg.GoodputFreshMs)
+	return lf && pf && bps*b.cfg.FasterFactor <= lead
+}
+
 func (b *Brain) setLeader(p string, now int64, act, why string) {
 	if p == "" || p == b.leader {
 		return
@@ -281,14 +393,18 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		b.setLeader(l, now, "lead_init", "start: best by prior/memory")
 	} else {
 		ls := b.st[b.leader]
-		if cand, m := b.bestBy(avail, b.leader, true, now); cand != "" && m >= ls.Mean()+b.cfg.LeaderDelta {
+		if cand, m := b.bestBy(avail, b.leader, true, now); cand != "" && m >= ls.Mean()+b.cfg.LeaderDelta && !b.muchSlower(cand, now) && !b.held(cand, now) {
 			b.setLeader(cand, now, "lead_switch", fmt.Sprintf("posterior %.2f vs %.2f of %s", m, ls.Mean(), b.leader))
 		} else if ls.ConsecutiveStalls() >= b.cfg.LeaderStallStrikes {
 			if cand, _ := b.bestBy(avail, b.leader, false, now); cand != "" {
 				old := b.leader
 				b.setLeader(cand, now, "lead_stall", fmt.Sprintf("%d consecutive stalls on %s", ls.ConsecutiveStalls(), old))
 				ls.ResetStalls()
+				b.demoted[old] = now
 			}
+		} else if cand, why := b.faster(avail, now); cand != "" {
+			b.demoted[b.leader] = now
+			b.setLeader(cand, now, "lead_slow", why)
 		}
 	}
 
@@ -304,6 +420,11 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		if now-b.lastPick[p] >= floor {
 			primary, explore, reason = p, true, "explore_floor"
 			break
+		}
+	}
+	if !explore {
+		if p := b.speedProbe(avail, now); p != "" && b.exploreShare(now) < b.cfg.SpeedProbeShare {
+			primary, explore, reason = p, true, "speed_probe"
 		}
 	}
 	storm := b.Breaker.Storm(now)
@@ -423,6 +544,7 @@ func (b *Brain) Observe(r Receipt) {
 	if tripped, sig := b.Breaker.Note(r, now); tripped {
 		if r.Path == b.leader {
 			old := b.leader
+			b.demoted[old] = now
 			b.leader = "" // force re-election on the next Pick, bypassing hysteresis
 			b.J.Add(now, "lead_trip", "breaker: "+sig.String()+" on leader", old)
 		} else {

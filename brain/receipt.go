@@ -43,10 +43,15 @@ const (
 	KB            = int64(1024)
 	DeliverBytes  = 32 * KB  // "delivered" for a flow the app closed itself
 	EvidenceBytes = 16 * KB  // below this a finished flow proves only the first byte
-	BigBytes      = 256 * KB // above this a flow also measures goodput
+	BigBytes      = 256 * KB // above this (of busy bytes) a flow also measures goodput
 	Cut16Lo       = 12 * KB  // cut signature window
 	Cut16Hi       = 28 * KB
 )
+
+// BusyGapMs: a downstream pause longer than this is the app or the site having
+// nothing to say (a keep-alive connection between pages, a player with a full
+// buffer), not the path being slow, and is left out of the goodput clock.
+const BusyGapMs = 1000
 
 // SleepGraceMs: a flow the device slept through for this long or longer is not
 // evidence about its path (see Receipt.SleptMs).
@@ -63,13 +68,18 @@ type Receipt struct {
 	Up, Down    int64
 	DurMs       int64
 	MaxGapMs    int64
-	Stalls      int
-	End         End
-	DownAtFail  int64 // -1: n/a
-	Dst         string
-	DstClass    DstClass
-	Explore     bool
-	SleptMs     int64 // how long the device slept while the flow was open
+	BusyMs      int64 // time the downstream was flowing: idle pauses (BusyGapMs) left out
+	BusyDown    int64 // bytes that came inside that time
+	// GoodputNoted: the flow's goodput already reached the brain while it ran
+	// (NoteGoodput), so the receipt does not count it again.
+	GoodputNoted bool
+	Stalls       int
+	End          End
+	DownAtFail   int64 // -1: n/a
+	Dst          string
+	DstClass     DstClass
+	Explore      bool
+	SleptMs      int64 // how long the device slept while the flow was open
 }
 
 // FirstByte reports whether the destination answered through this path.
