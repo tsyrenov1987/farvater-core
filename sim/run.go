@@ -196,7 +196,7 @@ func (r *Runner) execute(pathID string, f Flow, startAt, fbTimeout int64) (rec b
 		rec.AtMs = startAt + rec.DurMs
 		return rec, false, waited
 	}
-	if p.BlackholeFrom > 0 && startAt >= p.BlackholeFrom {
+	if p.BlackholeFrom > 0 && startAt >= p.BlackholeFrom || p.BlackholeProb > 0 && r.rng.Float64() < p.BlackholeProb {
 		// The path connects but the server is silently black-holed by the DPI.
 		rec.End = brain.EndTimeout
 		rec.DurMs = rec.WireReadyMs + fbTimeout

@@ -15,6 +15,7 @@ type PathModel struct {
 	ID, SNI, IP  string
 	Rail         string // protocol family label, for escape-diversity
 	NotHTTP      bool   // looks like no HTTP (Hysteria 2 under Salamander)
+	Net          string // the catalogue's network hint ("cell", "wifi", "")
 	Reuses       bool   // one TLS handshake carries many streams (kilvater): a flow rides a live connection instead of handshaking
 	RTTMs        int64
 	CutAtBytes   int64 // 0 = carries everything; else the stream stalls after this many bytes (throttle/shaping)
@@ -26,6 +27,7 @@ type PathModel struct {
 	ResetAtBytes  int64 // after ResetOnsetMs, a flow past this many bytes is RST mid-stream
 	ResetOnsetMs  int64
 	BlackholeFrom int64 // from this time the path connects but delivers no first byte
+	BlackholeProb float64 // share of flows that connect and get no first byte (a path that half works)
 	WireDeadFrom  int64 // from this time the path never connects (its address blocked)...
 	WireDeadTo    int64 // ...until this time (0 = for good)
 }
@@ -108,6 +110,7 @@ type Workload struct {
 	BurstProb   float64 // probability that an arrival is a page load of BurstSize flows
 	BurstSize   int
 	DeadDstProb float64 // share of flows to a dead destination
+	Hosts       int     // distinct live destinations (0 = 50)
 }
 
 // Flow is one connection request from a local app.
@@ -171,7 +174,11 @@ func makeFlow(id int, start int64, w Workload, rng *rand.Rand) Flow {
 		f.WantBytes = 300*1024 + int64(rng.IntN(2700*1024))
 		f.Class = brain.DstTLS443
 	}
-	h := rng.IntN(50)
+	hosts := 50
+	if w.Hosts > 0 {
+		hosts = w.Hosts
+	}
+	h := rng.IntN(hosts)
 	if w.DeadDstProb > 0 && rng.Float64() < w.DeadDstProb {
 		f.Dead = true
 		f.Dst = "dead-" + itoa(h%3)
