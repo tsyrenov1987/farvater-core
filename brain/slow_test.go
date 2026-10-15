@@ -68,16 +68,18 @@ func TestFastOrIdleLeaderIsNotProbedForSpeed(t *testing.T) {
 	}
 }
 
-// On a slow network every path is slow: probing stops once SpeedProbeMax of
-// them are measured, and the leader stays.
+// On a slow network every path is slow: once SpeedProbeMax of them are
+// measured, speed probes take no more flows than ordinary exploration does,
+// and the leader stays.
 func TestSlowNetworkStopsSpeedProbes(t *testing.T) {
 	var paths []PathInfo
 	for _, id := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
 		paths = append(paths, PathInfo{ID: id, SNI: id + ".ex", IP: "10.0.0." + id})
 	}
-	br := New(DefaultConfig(), "t", paths, 7)
+	cfg := DefaultConfig()
+	br := New(cfg, "t", paths, 7)
 	now := int64(1000)
-	probes, late := 0, 0
+	probes, late, lateExplore := 0, 0, 0
 	for i := 0; i < 120; i++ {
 		now += 5000
 		d := br.Pick(now, "x", DstTLS443)
@@ -87,12 +89,85 @@ func TestSlowNetworkStopsSpeedProbes(t *testing.T) {
 				late++
 			}
 		}
+		if i >= 60 && d.Primary != br.Leader() {
+			lateExplore++
+		}
 		br.Observe(bulk(d.Primary, now+64_000, 64_000))
 	}
-	if probes > DefaultConfig().SpeedProbeMax || late > 0 {
-		t.Fatalf("%d speed probes on a slow network (%d in the second half), want ≤ %d, all early", probes, late, DefaultConfig().SpeedProbeMax)
+	if probes > len(paths)-1 {
+		t.Fatalf("%d speed probes among %d other paths", probes, len(paths)-1)
+	}
+	if share := float64(lateExplore) / 60; share > cfg.ExploreShare+0.05 {
+		t.Fatalf("second half: %.2f of flows off the leader (%d speed probes), want ≤ ExploreShare %.2f", share, late, cfg.ExploreShare)
 	}
 	if br.J.Count("lead_slow") != 0 {
 		t.Fatalf("leader handed over %d times among equally slow paths", br.J.Count("lead_slow"))
+	}
+}
+
+// A censor that shapes all paths but one: the fast one is found however late
+// the probes come to it, after SpeedProbeMax slow ones as well, and well
+// before the slow ones' goodput goes stale (GoodputFreshMs, 120 downloads here).
+func TestFastPathFoundAfterTheProbeLimit(t *testing.T) {
+	ids := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	var paths []PathInfo
+	for _, id := range ids {
+		paths = append(paths, PathInfo{ID: id, SNI: id + ".ex", IP: "10.0.0." + id})
+	}
+	for seed := uint64(1); seed <= 30; seed++ {
+		br := New(DefaultConfig(), "t", paths, seed)
+		now := int64(1000)
+		br.Pick(now, "x", DstTLS443)
+		fast := ids[len(ids)-1]
+		if br.Leader() == fast {
+			fast = ids[0]
+		}
+		i := 0
+		for ; i < 60 && br.Leader() != fast; i++ {
+			now += 5000
+			d := br.Pick(now, "x", DstTLS443)
+			busy := int64(64_000)
+			if d.Primary == fast {
+				busy = 100
+			}
+			br.Observe(bulk(d.Primary, now+busy, busy))
+		}
+		if br.Leader() != fast {
+			t.Fatalf("seed %d: leader %q after %d downloads, the only fast path %s never took over", seed, br.Leader(), i, fast)
+		}
+	}
+}
+
+// On a slow leader each download takes a minute and new flows are rare: a
+// path measured faster takes the lead the moment its goodput comes, not at
+// the next flow.
+func TestFasterPathTakesTheLeadWithoutWaitingForAFlow(t *testing.T) {
+	paths := []PathInfo{{ID: "a", SNI: "a.ex", IP: "10.0.0.1"}, {ID: "b", SNI: "b.ex", IP: "10.0.0.2"}}
+	br := New(DefaultConfig(), "t", paths, 7)
+	now := int64(1000)
+	br.Pick(now, "x", DstTLS443)
+	slow := br.Leader()
+	fast := "a"
+	if slow == "a" {
+		fast = "b"
+	}
+	for i := 0; i < 2; i++ {
+		now += 5000
+		br.NoteGoodput(slow, 1<<20, 64_000, now-64_000, now)
+	}
+	now += 1000
+	br.NoteGoodput(fast, 1<<20, 100, now-100, now)
+	if br.Leader() != fast {
+		t.Fatalf("leader %q right after %s was measured 640× faster, want %s", br.Leader(), fast, fast)
+	}
+	// ...and from a receipt alone, for a download too short to be noted live
+	br = New(DefaultConfig(), "t", paths, 7)
+	br.Pick(1000, "x", DstTLS443)
+	for i := 0; i < 2; i++ {
+		br.NoteGoodput(slow, 1<<20, 64_000, 1000, 70_000+int64(i))
+	}
+	br.Observe(bulk(fast, 71_000, 100))
+	if br.Leader() != fast {
+		t.Fatalf("leader %q right after a fast receipt from %s, want %s", br.Leader(), fast, fast)
 	}
 }

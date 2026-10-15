@@ -40,13 +40,24 @@ type Config struct {
 	// fresh goodput under SlowBps sends up to SpeedProbeShare of flows to the
 	// paths with no fresh goodput of their own, and one measured FasterFactor
 	// times faster takes the lead, unless its delivery is proven worse.
-	// Probing stops once SpeedProbeMax other paths have a fresh goodput and
-	// none is faster: then the network is slow, not the leader's path.
+	// Once SpeedProbeMax other paths have a fresh goodput and none is faster,
+	// the network is likely slow, not the leader's path: the rest are probed
+	// only within the ordinary ExploreShare, which costs nothing extra. Not
+	// stopping matters where a censor shapes all but a few paths.
 	SlowBps         float64 // bytes per second
 	FasterFactor    float64
 	SpeedProbeShare float64
 	SpeedProbeMax   int
 	GoodputFreshMs  int64
+
+	// A leader that delivers, but answers late (a path with long round
+	// trips), is caught by its answer time (Receipt.AnswerMs): a path that
+	// answers LagFactor times and LagGapMs sooner takes the lead, unless its
+	// delivery is proven worse. A median over LagMs also sends flows to the
+	// paths with no answer time yet, as speed probes do.
+	LagMs     int64
+	LagFactor float64
+	LagGapMs  int64
 
 	// DemoteHoldMs: a leader dethroned for what it did (stalls, slowness, a
 	// breaker trip) is not handed the lead back by the posterior rule for this
@@ -61,6 +72,7 @@ func DefaultConfig() Config {
 		LeaderStallStrikes: 2, ExploreShare: 0.1, ExploreWindowMs: 60_000, FloorMs: 10 * 60_000, FirstByteCapMs: 3000, StaggerPadMs: 300,
 		FirstByteDeadlineCapMs: 5000, Breaker: DefaultBreakerConfig(),
 		SlowBps: 128 * 1024, FasterFactor: 3, SpeedProbeShare: 0.3, SpeedProbeMax: 4, GoodputFreshMs: 10 * 60_000,
+		LagMs: 300, LagFactor: 2, LagGapMs: 250,
 		DemoteHoldMs: 2 * 60_000}
 }
 
@@ -187,6 +199,23 @@ func (b *Brain) available(now int64) []string {
 	return out
 }
 
+// soonestFree returns, when the breaker has tripped every available path, the
+// one whose cooldown ends first: the path that failed longest ago, not the one
+// with the best history that failed a moment ago. "" while any path is free.
+func (b *Brain) soonestFree(avail []string, now int64) string {
+	best, left := "", int64(-1)
+	for _, p := range avail {
+		l := b.Breaker.TrippedLeftMs(p, now)
+		if l == 0 {
+			return ""
+		}
+		if left < 0 || l < left {
+			best, left = p, l
+		}
+	}
+	return best
+}
+
 func contains(xs []string, x string) bool {
 	for _, v := range xs {
 		if v == x {
@@ -267,13 +296,30 @@ func (b *Brain) slowLeader(now int64) (float64, bool) {
 	return bps, fresh && n >= 2 && bps < b.cfg.SlowBps
 }
 
-// speedProbe picks, while the leader is slow, a path whose goodput is not
-// known yet: by a Thompson draw, biased toward a path unlike the leader, as
-// shaping goes by address, name or protocol. "" when there is none, or when
-// SpeedProbeMax paths are measured already.
-func (b *Brain) speedProbe(avail []string, now int64) string {
-	if _, slow := b.slowLeader(now); !slow {
-		return ""
+// lagSamples is how many answers tell a path's answer time.
+const lagSamples = 3
+
+// laggyLeader returns the leader's median answer time and whether it is over
+// LagMs, on enough fresh samples to tell.
+func (b *Brain) laggyLeader(now int64) (int64, bool) {
+	if b.leader == "" || b.cfg.LagMs <= 0 {
+		return 0, false
+	}
+	ms, n := b.st[b.leader].Answer(now, b.cfg.GoodputFreshMs)
+	return ms, n >= 5 && ms > b.cfg.LagMs
+}
+
+// speedProbe picks, while the leader is slow or answers late, a path whose
+// goodput or answer time is not known yet: by a Thompson draw, biased toward
+// a path unlike the leader, as shaping goes by address, name or protocol. ""
+// when there is none. share is the explore share it may take:
+// SpeedProbeShare, or ExploreShare once SpeedProbeMax paths are measured
+// already.
+func (b *Brain) speedProbe(avail []string, now int64) (p string, share float64, why string) {
+	_, slow := b.slowLeader(now)
+	_, lag := b.laggyLeader(now)
+	if !slow && !lag {
+		return "", 0, ""
 	}
 	lead := b.info(b.leader)
 	bestP, bestV, measured := "", -1.0, 0
@@ -281,7 +327,9 @@ func (b *Brain) speedProbe(avail []string, now int64) string {
 		if p == b.leader {
 			continue
 		}
-		if _, _, fresh := b.st[p].Goodput(now, b.cfg.GoodputFreshMs); fresh {
+		_, _, fresh := b.st[p].Goodput(now, b.cfg.GoodputFreshMs)
+		_, n := b.st[p].Answer(now, b.cfg.GoodputFreshMs)
+		if (!slow || fresh) && (!lag || n >= lagSamples) {
 			measured++
 			continue
 		}
@@ -289,10 +337,14 @@ func (b *Brain) speedProbe(avail []string, now int64) string {
 			bestP, bestV = p, v
 		}
 	}
-	if b.cfg.SpeedProbeMax > 0 && measured >= b.cfg.SpeedProbeMax {
-		return ""
+	why = "speed_probe"
+	if !slow {
+		why = "lag_probe"
 	}
-	return bestP
+	if b.cfg.SpeedProbeMax > 0 && measured >= b.cfg.SpeedProbeMax {
+		return bestP, b.cfg.ExploreShare, why
+	}
+	return bestP, b.cfg.SpeedProbeShare, why
 }
 
 // NoteGoodput takes a running flow's goodput, sent once it has carried
@@ -301,13 +353,32 @@ func (b *Brain) speedProbe(avail []string, now int64) string {
 func (b *Brain) NoteGoodput(path string, busyDown, busyMs, startMs, now int64) {
 	if s, ok := b.st[path]; ok && busyDown >= BigBytes && startMs >= b.switchedAt {
 		s.noteGoodput(busyDown, busyMs, now)
+		b.measured(path, now)
+	}
+}
+
+// measured hands the lead of a slow or late leader at once to path, just
+// measured faster or quicker, rather than at the next Pick: on a slow leader
+// new flows are rare, as each takes minutes.
+func (b *Brain) measured(path string, now int64) {
+	if path == b.leader || b.leader == "" {
+		return
+	}
+	avail := b.available(now)
+	if cand, why := b.faster(avail, now); cand == path && cand != "" {
+		b.demoted[b.leader] = now
+		b.setLeader(cand, now, "lead_slow", why)
+	} else if cand, why := b.quicker(avail, now); cand == path && cand != "" {
+		b.demoted[b.leader] = now
+		b.setLeader(cand, now, "lead_lag", why)
 	}
 }
 
 // faster finds, for a slow leader, the fastest path measured FasterFactor
 // times faster that has no failed delivery to its name lately or delivers
 // within LeaderDelta of the leader: one fast download is enough to win when
-// nothing speaks against the path.
+// nothing speaks against the path. A leader dethroned lately is not handed
+// the lead back.
 func (b *Brain) faster(avail []string, now int64) (string, string) {
 	lead, slow := b.slowLeader(now)
 	if !slow {
@@ -316,7 +387,7 @@ func (b *Brain) faster(avail []string, now int64) (string, string) {
 	ls := b.st[b.leader]
 	best, bestBps := "", lead*b.cfg.FasterFactor
 	for _, p := range avail {
-		if p == b.leader {
+		if p == b.leader || b.held(p, now) {
 			continue
 		}
 		s := b.st[p]
@@ -329,6 +400,50 @@ func (b *Brain) faster(avail []string, now int64) (string, string) {
 		return "", ""
 	}
 	return best, fmt.Sprintf("goodput %.0f KB/s vs %.0f KB/s on %s", bestBps/1024, lead/1024, b.leader)
+}
+
+// quicker finds, for a leader that answers late, the path answering soonest
+// (on lagSamples answers at least), LagFactor times and LagGapMs sooner than
+// the leader, not measured much slower than it, with no failed delivery to
+// its name lately or delivering within LeaderDelta of the leader.
+func (b *Brain) quicker(avail []string, now int64) (string, string) {
+	if b.leader == "" || b.cfg.LagFactor <= 0 {
+		return "", ""
+	}
+	ls := b.st[b.leader]
+	lead, ln := ls.Answer(now, b.cfg.GoodputFreshMs)
+	if ln < 5 {
+		return "", ""
+	}
+	best, bestMs := "", int64(0)
+	for _, p := range avail {
+		if p == b.leader || b.held(p, now) || b.muchSlower(p, now) {
+			continue
+		}
+		s := b.st[p]
+		ms, n := s.Answer(now, b.cfg.GoodputFreshMs)
+		if n < lagSamples || float64(ms)*b.cfg.LagFactor > float64(lead) || lead-ms < b.cfg.LagGapMs {
+			continue
+		}
+		if (best == "" || ms < bestMs) && (s.evDelivB < 0.5 || s.DelivMean() >= ls.DelivMean()-b.cfg.LeaderDelta) {
+			best, bestMs = p, ms
+		}
+	}
+	if best == "" {
+		return "", ""
+	}
+	return best, fmt.Sprintf("answers in %d ms vs %d ms on %s", bestMs, lead, b.leader)
+}
+
+// muchLaggier reports whether path p answers LagFactor times and LagGapMs
+// later than the leader: the posterior rule does not hand it the lead back.
+func (b *Brain) muchLaggier(p string, now int64) bool {
+	if b.leader == "" || b.cfg.LagFactor <= 0 {
+		return false
+	}
+	lead, ln := b.st[b.leader].Answer(now, b.cfg.GoodputFreshMs)
+	ms, n := b.st[p].Answer(now, b.cfg.GoodputFreshMs)
+	return ln >= 2 && n >= 2 && float64(lead)*b.cfg.LagFactor <= float64(ms) && ms-lead >= b.cfg.LagGapMs
 }
 
 // held reports whether p was dethroned within DemoteHoldMs.
@@ -390,10 +505,14 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 
 	if b.leader == "" || !contains(avail, b.leader) {
 		l, _ := b.bestBy(avail, "", false, now)
-		b.setLeader(l, now, "lead_init", "start: best by prior/memory")
+		why := "start: best by prior/memory"
+		if s := b.soonestFree(avail, now); s != "" {
+			l, why = s, "every path tripped: the earliest trip"
+		}
+		b.setLeader(l, now, "lead_init", why)
 	} else {
 		ls := b.st[b.leader]
-		if cand, m := b.bestBy(avail, b.leader, true, now); cand != "" && m >= ls.Mean()+b.cfg.LeaderDelta && !b.muchSlower(cand, now) && !b.held(cand, now) {
+		if cand, m := b.bestBy(avail, b.leader, true, now); cand != "" && m >= ls.Mean()+b.cfg.LeaderDelta && !b.muchSlower(cand, now) && !b.muchLaggier(cand, now) && !b.held(cand, now) {
 			b.setLeader(cand, now, "lead_switch", fmt.Sprintf("posterior %.2f vs %.2f of %s", m, ls.Mean(), b.leader))
 		} else if ls.ConsecutiveStalls() >= b.cfg.LeaderStallStrikes {
 			if cand, _ := b.bestBy(avail, b.leader, false, now); cand != "" {
@@ -405,6 +524,9 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		} else if cand, why := b.faster(avail, now); cand != "" {
 			b.demoted[b.leader] = now
 			b.setLeader(cand, now, "lead_slow", why)
+		} else if cand, why := b.quicker(avail, now); cand != "" {
+			b.demoted[b.leader] = now
+			b.setLeader(cand, now, "lead_lag", why)
 		}
 	}
 
@@ -423,8 +545,8 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		}
 	}
 	if !explore {
-		if p := b.speedProbe(avail, now); p != "" && b.exploreShare(now) < b.cfg.SpeedProbeShare {
-			primary, explore, reason = p, true, "speed_probe"
+		if p, share, why := b.speedProbe(avail, now); p != "" && b.exploreShare(now) < share {
+			primary, explore, reason = p, true, why
 		}
 	}
 	storm := b.Breaker.Storm(now)
@@ -541,6 +663,7 @@ func (b *Brain) Observe(r Receipt) {
 		b.Diag.NoteDst(r.Dst, r.Path, true, now)
 	}
 	s.Observe(r, now, b.cfg.HalfLifeMs)
+	b.measured(r.Path, now)
 	if r.StallNoted && r.Sig() == SigThrottle {
 		return // the breaker took this stall while the flow ran
 	}

@@ -73,6 +73,7 @@ type attempt struct {
 	start   time.Time // carries the monotonic reading sleptMs needs
 	startMs int64
 	readyMs int64 // 0 = never
+	dialAt  int64 // when the dial began, its pacing waited out; 0 = never
 	m       *meter
 }
 
@@ -116,6 +117,9 @@ func (a *attempt) runReceipt(f *flow, preludeLen int, out wire.Outcome, err erro
 	r.Stalls, r.StallNoted = s.stalls, s.stallNoted
 	if s.firstDownAt > 0 {
 		r.FirstByteMs = s.firstDownAt - a.startMs
+		if preludeLen > 0 && a.dialAt > 0 {
+			r.AnswerMs = max(1, s.firstDownAt-a.dialAt)
+		}
 	}
 	switch out {
 	case wire.OutcomeRemoteFin:
@@ -214,6 +218,7 @@ func (f *flow) dialOne(ctx context.Context, a *attempt) (wire.Session, error) {
 	if err := f.s.pace(ctx, a.path); err != nil {
 		return nil, err
 	}
+	a.dialAt = nowMs()
 	dctx, cancel := context.WithTimeout(ctx, f.s.cfg.DialTimeout)
 	defer cancel()
 	sess, err := w.Dial(dctx)

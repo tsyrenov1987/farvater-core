@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,7 +42,7 @@ type Result struct {
 	About    string   `json:"about"`
 	Phases   []Phase  `json:"phases"`
 	Leaders  []string `json:"leaders"` // leader changes, "t+ms path"
-	Journal  []string `json:"journal"` // the core's leader and breaker decisions, "t+ms act path: why"
+	Journal  []string `json:"journal"` // the core's decision journal, "t+ms act path: why"
 	Conns    []string `json:"conns"`   // connections each path's proxy took, with its last fault
 	Bad      []string `json:"bad"`     // receipts that failed, stalled or ran over 5 s, "t+ms path end down=… stalls=… dur=…"
 	Flows    int64    `json:"flows"`
@@ -275,9 +274,7 @@ func (r *runner) finish() {
 	}
 	_ = json.Unmarshal([]byte(mobile.JournalJSON()), &j)
 	for _, e := range j {
-		if strings.HasPrefix(e.Act, "lead") || strings.Contains(e.Act, "trip") {
-			r.res.Journal = append(r.res.Journal, fmt.Sprintf("t+%d %s %s: %s", e.AtMs-r.t0.UnixMilli(), e.Act, e.Path, e.Why))
-		}
+		r.res.Journal = append(r.res.Journal, fmt.Sprintf("t+%d %s %s: %s", e.AtMs-r.t0.UnixMilli(), e.Act, e.Path, e.Why))
 	}
 	var rs []struct {
 		At     int64  `json:"at_ms"`
@@ -286,15 +283,25 @@ func (r *runner) finish() {
 		Down   int64  `json:"down"`
 		DurMs  int64  `json:"dur_ms"`
 		Stalls int    `json:"stalls"`
+		AnsMs  int64  `json:"answer_ms"`
 	}
 	_ = json.Unmarshal([]byte(mobile.ReceiptsJSON()), &rs)
+	fb := map[string][]int64{}
 	for _, e := range rs {
+		if e.AnsMs > 0 {
+			fb[e.Path] = append(fb[e.Path], e.AnsMs)
+		}
 		if (e.End != "remote_fin" && e.End != "local_close") || e.Stalls > 0 || e.DurMs > 5000 {
 			r.res.Bad = append(r.res.Bad, fmt.Sprintf("t+%d %s %s down=%d stalls=%d dur=%d", e.At-r.t0.UnixMilli(), e.Path, e.End, e.Down, e.Stalls, e.DurMs))
 		}
 	}
 	for _, p := range r.l.paths {
-		r.res.Conns = append(r.res.Conns, fmt.Sprintf("%s %s: %d (%s) %d KB/s", p.id, p.kind, p.conns.Load(), p.get(), speed[p.id]>>10))
+		var med int64 = -1
+		if t := fb[p.id]; len(t) > 0 {
+			slices.Sort(t)
+			med = t[len(t)/2]
+		}
+		r.res.Conns = append(r.res.Conns, fmt.Sprintf("%s %s: %d (%s) %d KB/s, answer p50 %d ms of %d", p.id, p.kind, p.conns.Load(), p.get(), speed[p.id]>>10, med, len(fb[p.id])))
 	}
 	r.res.HeapMB = r.heapMB()
 }

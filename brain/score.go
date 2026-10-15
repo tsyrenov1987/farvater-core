@@ -22,6 +22,7 @@ type PathState struct {
 	LastEvidenceMs     int64
 	lastDecayMs        int64
 	fbTimes            []int64
+	answers            []stamped // Receipt.AnswerMs, the last answerKeep
 	recent             []int64
 	stallRun           int
 	Receipts           int
@@ -96,6 +97,12 @@ func (s *PathState) Observe(r Receipt, now, halfLifeMs int64) {
 	case -1:
 		s.evFbB++
 	}
+	if r.AnswerMs > 0 && r.SleptMs < SleepGraceMs {
+		s.answers = append(s.answers, stamped{now, r.AnswerMs})
+		if len(s.answers) > answerKeep {
+			s.answers = s.answers[1:]
+		}
+	}
 	if r.FirstByte() {
 		s.fbTimes = append(s.fbTimes, r.FirstByteMs)
 		if len(s.fbTimes) > 20 {
@@ -158,6 +165,25 @@ const minBusyMs = 20
 // measured this session, at least once, within windowMs of now.
 func (s PathState) Goodput(now, windowMs int64) (bps float64, samples int, fresh bool) {
 	return s.GoodputBps, s.goodN, s.goodN > 0 && now-s.goodAt <= windowMs
+}
+
+type stamped struct{ at, v int64 }
+
+const answerKeep = 20
+
+// Answer returns the median answer time (Receipt.AnswerMs) of the samples
+// taken within windowMs of now, and how many there are.
+func (s PathState) Answer(now, windowMs int64) (ms int64, n int) {
+	var v []int64
+	for _, a := range s.answers {
+		if now-a.at <= windowMs {
+			v = append(v, a.v)
+		}
+	}
+	if len(v) == 0 {
+		return 0, 0
+	}
+	return median(v), len(v)
 }
 
 func median(v []int64) int64 {

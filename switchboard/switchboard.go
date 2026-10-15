@@ -575,6 +575,7 @@ type ReceiptView struct {
 	End     string `json:"end"`
 	WireMs  int64  `json:"wire_ms"`
 	FbMs    int64  `json:"first_byte_ms"`
+	AnsMs   int64  `json:"answer_ms,omitempty"` // dial to first byte, pacing left out; absent when unknown
 	Up      int64  `json:"up"`
 	Down    int64  `json:"down"`
 	DurMs   int64  `json:"dur_ms"`
@@ -586,7 +587,7 @@ type ReceiptView struct {
 }
 
 func view(r brain.Receipt) ReceiptView {
-	return ReceiptView{r.AtMs, r.Path, r.End.String(), r.WireReadyMs, r.FirstByteMs, r.Up, r.Down, r.DurMs, r.MaxGapMs, r.Stalls, r.Dst, r.Explore, tripName(r.Sig())}
+	return ReceiptView{r.AtMs, r.Path, r.End.String(), r.WireReadyMs, r.FirstByteMs, r.AnswerMs, r.Up, r.Down, r.DurMs, r.MaxGapMs, r.Stalls, r.Dst, r.Explore, tripName(r.Sig())}
 }
 
 // Status is the admin snapshot.

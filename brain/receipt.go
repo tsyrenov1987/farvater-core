@@ -65,11 +65,15 @@ type Receipt struct {
 	AtMs        int64 // absolute time the receipt became final
 	WireReadyMs int64 // -1: the wire never connected
 	FirstByteMs int64 // -1: no downstream byte
-	Up, Down    int64
-	DurMs       int64
-	MaxGapMs    int64
-	BusyMs      int64 // time the downstream was flowing: idle pauses (BusyGapMs) left out
-	BusyDown    int64 // bytes that came inside that time
+	// AnswerMs: from the dial (handshake pacing left out) to the first byte,
+	// for a flow whose request went out with the dial: the path's own round
+	// trips and the site's answer. 0: unknown.
+	AnswerMs int64
+	Up, Down int64
+	DurMs    int64
+	MaxGapMs int64
+	BusyMs   int64 // time the downstream was flowing: idle pauses (BusyGapMs) left out
+	BusyDown int64 // bytes that came inside that time
 	// GoodputNoted: the flow's goodput already reached the brain while it ran
 	// (NoteGoodput), so the receipt does not count it again.
 	GoodputNoted bool
