@@ -499,6 +499,12 @@ func (s *Switchboard) noteGoodput(path string, busyDown, busyMs, startMs int64) 
 	s.b.NoteGoodput(path, busyDown, busyMs, startMs, nowMs())
 }
 
+func (s *Switchboard) noteStall(path string, startMs int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.NoteStall(path, startMs, nowMs())
+}
+
 func (s *Switchboard) observe(r brain.Receipt) {
 	s.mu.Lock()
 	r.Ctx = s.b.Ctx()

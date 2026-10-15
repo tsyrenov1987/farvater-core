@@ -113,7 +113,7 @@ func (a *attempt) runReceipt(f *flow, preludeLen int, out wire.Outcome, err erro
 	r.Down = s.down
 	r.MaxGapMs = s.maxGap
 	r.BusyMs, r.BusyDown, r.GoodputNoted = s.busyMs, s.busyDown, s.noted
-	r.Stalls = s.stalls
+	r.Stalls, r.StallNoted = s.stalls, s.stallNoted
 	if s.firstDownAt > 0 {
 		r.FirstByteMs = s.firstDownAt - a.startMs
 	}
@@ -309,6 +309,9 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 		out wire.Outcome
 		err error
 	}
+	if fr, ok := sess.(wire.Framed); ok {
+		a.m.held = fr.InRecord
+	}
 	done := make(chan res, 1)
 	go func() {
 		o, e := sess.Run(rctx, f.target, prelude, f.up, f.client, a.m)
@@ -353,6 +356,10 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 				tick.Reset(time.Second)
 			}
 			a.m.tick(now, f.s.cfg.StallMs)
+			// a phone that slept stalls every flow it had open: not the path
+			if sleptMs(a.start) < brain.SleepGraceMs && a.m.stallOnce() {
+				f.s.noteStall(a.path, a.startMs)
+			}
 			if a.m.noteOnce() {
 				sn = a.m.snap()
 				f.s.noteGoodput(a.path, sn.busyDown, sn.busyMs, a.startMs)

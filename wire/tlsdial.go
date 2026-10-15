@@ -93,7 +93,11 @@ func dialTCP(ctx context.Context, host string, port int) (net.Conn, error) {
 		Timeout:         16 * time.Second,
 		KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: 45 * time.Second, Interval: 45 * time.Second, Count: -1},
 	}
-	return d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		return nil, err
+	}
+	return &recordConn{Conn: c}, nil
 }
 
 // handshakeTLS runs a TLS client handshake over c that looks like the

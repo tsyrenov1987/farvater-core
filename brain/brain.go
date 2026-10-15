@@ -541,14 +541,35 @@ func (b *Brain) Observe(r Receipt) {
 		b.Diag.NoteDst(r.Dst, r.Path, true, now)
 	}
 	s.Observe(r, now, b.cfg.HalfLifeMs)
+	if r.StallNoted && r.Sig() == SigThrottle {
+		return // the breaker took this stall while the flow ran
+	}
 	if tripped, sig := b.Breaker.Note(r, now); tripped {
-		if r.Path == b.leader {
-			old := b.leader
-			b.demoted[old] = now
-			b.leader = "" // force re-election on the next Pick, bypassing hysteresis
-			b.J.Add(now, "lead_trip", "breaker: "+sig.String()+" on leader", old)
-		} else {
-			b.J.Add(now, "trip", "breaker: "+sig.String(), r.Path)
-		}
+		b.tripped(r.Path, sig, now)
+	}
+}
+
+// NoteStall takes a flow's first stall while the flow still runs. The app
+// waits on the frozen bytes until its own timeout, half a minute on many, and
+// every flow picked meanwhile would go to the same path: the stall counts
+// against the path now, not when the app gives up.
+func (b *Brain) NoteStall(path string, startMs, now int64) {
+	s, ok := b.st[path]
+	if !ok || startMs < b.switchedAt {
+		return // the flow began on the network the device has left
+	}
+	s.stallRun++
+	if tripped, sig := b.Breaker.NoteSig(path, SigThrottle, now); tripped {
+		b.tripped(path, sig, now)
+	}
+}
+
+func (b *Brain) tripped(path string, sig BlockSig, now int64) {
+	if path == b.leader {
+		b.demoted[path] = now
+		b.leader = "" // force re-election on the next Pick, bypassing hysteresis
+		b.J.Add(now, "lead_trip", "breaker: "+sig.String()+" on leader", path)
+	} else {
+		b.J.Add(now, "trip", "breaker: "+sig.String(), path)
 	}
 }

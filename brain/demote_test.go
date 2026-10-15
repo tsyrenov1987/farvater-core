@@ -34,3 +34,20 @@ func TestStalledLeaderIsNotReelectedAtOnce(t *testing.T) {
 		}
 	}
 }
+
+// A stall taken while its flow ran is not counted again when the flow ends:
+// one frozen flow is one strike and one soft signal, not two.
+func TestStallNotedLiveCountsOnce(t *testing.T) {
+	br := New(DefaultConfig(), "t", []PathInfo{{ID: "a", SNI: "a.ex", IP: "10.0.0.1"}, {ID: "b", SNI: "b.ex", IP: "10.0.0.2"}}, 7)
+	now := int64(10_000)
+	br.NoteStall("a", now-5000, now)
+	r := Receipt{Path: "a", AtMs: now + 20_000, WireReadyMs: 30, FirstByteMs: 80, Down: 10 << 10, Stalls: 1, StallNoted: true,
+		DurMs: 25_000, End: EndLocalClose, DownAtFail: -1}
+	br.Observe(r)
+	if n := br.State("a").ConsecutiveStalls(); n != 1 {
+		t.Fatalf("%d strikes for one frozen flow, want 1", n)
+	}
+	if br.Breaker.Tripped("a", now+20_000) {
+		t.Fatal("one frozen flow tripped the breaker")
+	}
+}

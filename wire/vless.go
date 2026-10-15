@@ -71,6 +71,8 @@ type vlessSession struct {
 
 func (s *vlessSession) Close() error { return s.conn.Close() }
 
+func (s *vlessSession) InRecord() bool { return inRecord(s.conn) }
+
 // vlessHeader is the VLESS request: version 0, the UUID, the addons (the flow
 // name for Vision, else none), the command, then the destination (omitted for
 // Mux). cmd: 1 TCP, 2 UDP, 3 Mux.

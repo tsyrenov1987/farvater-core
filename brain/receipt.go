@@ -74,12 +74,15 @@ type Receipt struct {
 	// (NoteGoodput), so the receipt does not count it again.
 	GoodputNoted bool
 	Stalls       int
-	End          End
-	DownAtFail   int64 // -1: n/a
-	Dst          string
-	DstClass     DstClass
-	Explore      bool
-	SleptMs      int64 // how long the device slept while the flow was open
+	// StallNoted: the flow's first stall already reached the brain while it
+	// ran (NoteStall), so the receipt does not count it again.
+	StallNoted bool
+	End        End
+	DownAtFail int64 // -1: n/a
+	Dst        string
+	DstClass   DstClass
+	Explore    bool
+	SleptMs    int64 // how long the device slept while the flow was open
 }
 
 // FirstByte reports whether the destination answered through this path.

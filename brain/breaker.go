@@ -147,11 +147,16 @@ func (b *Breaker) rail(path string) *railBreaker {
 // Note folds one receipt in and reports whether it tripped the rail, and on
 // which signature. A delivered flow clears the rail's soft history.
 func (b *Breaker) Note(r Receipt, now int64) (bool, BlockSig) {
-	sig := classify(r)
+	return b.NoteSig(r.Path, classify(r), now)
+}
+
+// NoteSig folds one signature seen on a rail, from a receipt or from a flow
+// still running.
+func (b *Breaker) NoteSig(path string, sig BlockSig, now int64) (bool, BlockSig) {
 	if !b.cfg.Enabled {
 		return false, sig
 	}
-	rb := b.rail(r.Path)
+	rb := b.rail(path)
 	if sig == SigNone {
 		rb.soft = rb.soft[:0]
 		return false, SigNone

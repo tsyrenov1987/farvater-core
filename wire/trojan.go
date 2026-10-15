@@ -53,6 +53,8 @@ type trojanSession struct {
 
 func (s *trojanSession) Close() error { return s.conn.Close() }
 
+func (s *trojanSession) InRecord() bool { return inRecord(s.conn) }
+
 // trojanHeader is the request Trojan sends before the payload: the password
 // hash, CRLF, the command (1 TCP, 3 UDP), the SOCKS-style address, CRLF.
 func trojanHeader(key []byte, cmd byte, t Target) ([]byte, error) {

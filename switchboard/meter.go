@@ -34,7 +34,9 @@ type meter struct {
 	noted       bool  // the goodput went to the brain while the flow ran
 	stalls      int
 	inStall     bool
+	stallNoted  bool // the first stall went to the brain while the flow ran
 	tls         tlsTrack
+	held        func() bool // the path's own stream stopped inside a record (wire.Framed), if it can tell
 }
 
 func (m *meter) Up(p []byte) {
@@ -92,14 +94,15 @@ const maxBusyGapMs = 5000
 // that were already on their way: a stall. Quiet at a record boundary is the
 // server having nothing more to say, which is how every keep-alive connection
 // spends most of its life, and is not evidence of anything. Flows that are not
-// TLS get no stall verdict once they have answered.
+// TLS get no stall verdict once they have answered. The site's records can
+// stop whole while the path's own record is cut (held): a stall as well.
 func (m *meter) tick(now, stallMs int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.firstDownAt == 0 || m.inStall {
 		return
 	}
-	if now-m.lastDownAt > stallMs && m.tls.midRecord() {
+	if now-m.lastDownAt > stallMs && (m.tls.midRecord() || m.held != nil && m.held()) {
 		m.inStall = true
 		m.stalls++
 	}
@@ -117,10 +120,21 @@ func (m *meter) noteOnce() bool {
 	return true
 }
 
+// stallOnce reports, the first time only, that the flow has stalled.
+func (m *meter) stallOnce() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stallNoted || m.stalls == 0 {
+		return false
+	}
+	m.stallNoted = true
+	return true
+}
+
 type snapshot struct {
 	up, down, firstUpAt, firstDownAt, maxGap int64
 	busyMs, busyDown                         int64
-	noted                                    bool
+	noted, stallNoted                        bool
 	stalls                                   int
 	inStall                                  bool
 }
@@ -128,7 +142,7 @@ type snapshot struct {
 func (m *meter) snap() snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return snapshot{m.up, m.down, m.firstUpAt, m.firstDownAt, m.maxGap, m.busyMs, m.busyDown, m.noted, m.stalls, m.inStall}
+	return snapshot{m.up, m.down, m.firstUpAt, m.firstDownAt, m.maxGap, m.busyMs, m.busyDown, m.noted, m.stallNoted, m.stalls, m.inStall}
 }
 
 // tlsTrack follows TLS record framing in a downstream byte stream. The

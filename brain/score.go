@@ -127,7 +127,9 @@ func (s *PathState) Observe(r Receipt, now, halfLifeMs int64) {
 		s.noteGoodput(r.BusyDown, r.BusyMs, now)
 	}
 	if r.Stalls > 0 {
-		s.stallRun++
+		if !r.StallNoted {
+			s.stallRun++
+		}
 	} else if dv == 1 {
 		s.stallRun = 0
 	}
