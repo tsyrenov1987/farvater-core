@@ -59,6 +59,9 @@ func settle(ctx context.Context, upErr, downErr <-chan error, cancel func(), aft
 	for {
 		select {
 		case err := <-downErr:
+			// Read the context before cancel ends it: a reset the path dealt
+			// mid-flow must not pass for a flow the caller ended.
+			ended := ctx.Err()
 			cancel()
 			if err == nil || err == io.EOF {
 				if clientDone {
@@ -66,8 +69,8 @@ func settle(ctx context.Context, upErr, downErr <-chan error, cancel func(), aft
 				}
 				return OutcomeRemoteFin, nil
 			}
-			if ctx.Err() != nil {
-				return OutcomeCanceled, ctx.Err()
+			if ended != nil {
+				return OutcomeCanceled, ended
 			}
 			return OutcomeError, err
 		case err := <-upErr:
