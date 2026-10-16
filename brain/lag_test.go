@@ -115,3 +115,37 @@ func TestQuickButShapedPathDoesNotTakeTheLead(t *testing.T) {
 		t.Fatalf("leader %q (lead_lag %d): the shaped %s took the lead from %s", br.Leader(), br.J.Count("lead_lag"), other, lead)
 	}
 }
+
+// Every path shaped alike, over a transport that carries all flows of a path
+// on one connection: the leader carries the load, so its answers queue behind
+// its own downloads, while an idle path, as slow, answers at once. A leader
+// already measured slow is left on goodput, not on answer time: an idle path
+// whose goodput is not known does not take the lead for answering quicker.
+func TestSlowLeaderIsNotLeftForAnIdlePathThatAnswersQuicker(t *testing.T) {
+	br := New(DefaultConfig(), "t", lagPaths(), 7)
+	now := int64(1000)
+	br.Pick(now, "x", DstTLS443)
+	lead := br.Leader()
+	idle := "a"
+	if lead == "a" {
+		idle = "b"
+	}
+	for i := 0; i < 2; i++ { // the leader: 1 MB at 16 KB/s
+		now += 1000
+		br.NoteGoodput(lead, 1<<20, 64_000, now-64_000, now)
+	}
+	for i := 0; i < 6; i++ { // its answers, behind its own downloads
+		now += 1000
+		br.Observe(page(lead, now, 800))
+	}
+	for i := 0; i < 3; i++ { // the idle path's few answers
+		now += 1000
+		br.Observe(page(idle, now, 100))
+	}
+	now += 1000
+	br.Pick(now, "x", DstTLS443)
+	if br.Leader() != lead || br.J.Count("lead_lag") != 0 {
+		t.Fatalf("leader %q (lead_lag %d): a slow leader left for %s, whose goodput is unknown, on answer time alone",
+			br.Leader(), br.J.Count("lead_lag"), idle)
+	}
+}

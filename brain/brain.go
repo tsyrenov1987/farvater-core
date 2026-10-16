@@ -181,8 +181,12 @@ func (b *Brain) NetDown(now int64) bool {
 
 func (b *Brain) available(now int64) []string {
 	out := make([]string, 0, len(b.paths))
+	// In a restricted network a path entering through an allow-listed address
+	// is the one meant to pass: a trip earned while the lists still held it
+	// back does not keep it out once they let it through.
+	white := b.Restricted()
 	for _, p := range b.paths {
-		if !b.asleep[p.ID] && !b.Diag.Parked(p.ID, now) && !b.Breaker.Tripped(p.ID, now) {
+		if !b.asleep[p.ID] && !b.Diag.Parked(p.ID, now) && (!b.Breaker.Tripped(p.ID, now) || white && p.White) {
 			out = append(out, p.ID)
 		}
 	}
@@ -415,12 +419,22 @@ func (b *Brain) quicker(avail []string, now int64) (string, string) {
 	if ln < 5 {
 		return "", ""
 	}
+	// A leader measured slow carries the load: on a transport that puts all
+	// of a path's flows on one connection its answers queue behind its own
+	// downloads, while an idle path, shaped alike, answers at once. It is
+	// left for a path measured not slow (faster), not on answer time alone.
+	_, slow := b.slowLeader(now)
 	best, bestMs := "", int64(0)
 	for _, p := range avail {
 		if p == b.leader || b.held(p, now) || b.muchSlower(p, now) {
 			continue
 		}
 		s := b.st[p]
+		if slow {
+			if bps, _, fresh := s.Goodput(now, b.cfg.GoodputFreshMs); !fresh || bps < b.cfg.SlowBps {
+				continue
+			}
+		}
 		ms, n := s.Answer(now, b.cfg.GoodputFreshMs)
 		if n < lagSamples || float64(ms)*b.cfg.LagFactor > float64(lead) || lead-ms < b.cfg.LagGapMs {
 			continue
