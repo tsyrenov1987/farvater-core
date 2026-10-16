@@ -19,7 +19,8 @@ replaces it.
 ## 2. Principles
 
 1. **Receipts over probes.** Evidence = bytes actually delivered on real user connections. Synthetic probes
-   are a fallback for idle periods and are always volume probes (≥256 KB), never pings.
+   are always volume probes (≥256 KB), never pings, and run only where a receipt would cost the user a wait:
+   the delivery proof after connect, and a sweep while the leader is in doubt (§5).
 2. **The brain owns the choice; transports are dumb.** No transport contains selection logic, groups or fallbacks.
 3. **No path is ever removed.** Bad paths get a low posterior and a small exploration budget; they can always recover.
 4. **Switch only between connections and only on evidence.** Never inside a live connection. RTT is not a criterion anywhere.
@@ -80,7 +81,13 @@ quarter weight; priors never outweigh 5 fresh receipts.
   twenty; a path without data gets more until it has evidence. Floor: every path gets ≥1 flow per 10 minutes.
   Exploration flows are small-destination classes (dns, tls443) where possible; a flow that grows past 256 KB keeps
   going and is tagged `explore`. Exploration takes at most 10 % of a minute's flows (60 % in a storm): at 20 % the
-  simulator showed the same delivery for twice the dials an observer counts (`TestStealthReport`).
+  simulator showed the same delivery for twice the dials an observer counts (`TestStealthReport`). It passes over
+  a path whose sweep probe is still out (a flow beside the probe waits behind it and learns nothing the probe does
+  not), and, while the leader is neither slow nor late nor left a flow unanswered for 10 s, over a path whose own
+  fresh measure is poor (goodput under 128 KB/s or answers over 300 ms within 10 minutes): a flow sent there learns
+  nothing new and the user waits on it. A leader nobody asked is not in doubt: after the app goes quiet for a
+  minute, the first flow (a minute's share of exploration is 0 then) went to a path measured at 16 KB/s, and a 1 MB
+  download took 65 s, on the iPhone in six runs out of six. The floor still re-measures every path.
 - **Leader hysteresis:** the leader (about 90 % of flows outside a storm) changes only if a challenger is `δ = 0.15` better in posterior
   mean with ≥5 own receipts in 15 min, or the leader stalled twice in a row.
 - **Connect stage:** no first byte within `T_stagger = min(T_fb, p90_fb(leader)+300 ms)` → repeat the same connect
@@ -93,7 +100,20 @@ quarter weight; priors never outweigh 5 fresh receipts.
   each datagram's address — Trojan in its own address-framed packets, and Hysteria 2 in its QUIC datagrams. UDP gives no delivery evidence and files no
   receipts. UDP/443 (QUIC) is refused, so browsers and apps fall back to TCP, where delivery is measured.
 - **Idle:** one 256 KB volume probe (HTTP Range to `probe_urls`) on the leader right after connect; status is
-  "connecting" until it passes. Exploration probes ≤1 per 10 min per path, never on metered paths, never in bursts.
+  "connecting" until it passes.
+- **Sweep:** while the leader is in doubt, the same 256 KB probe runs at once over the leader and up to 8 other
+  paths, each a flow pinned to its path, and the leader goes to a path that delivers it 3× and 1 s sooner than the
+  leader does, as soon as that is known: the slow probes are not waited out. Doubt is *acute* when the leader
+  tripped or stalled out and the next leader has not answered yet, or lost two connect races in a row (its dial
+  still hung when the runner-up's came up: every flow is rescued by the connect-stage retry, so none files a
+  receipt against it, and only a race it wins ends this doubt); any available path is then probed. It is *chronic* when
+  the leader is measured slow, answers late, or holds flows back: two flows that spent 2 s with a record cut at the
+  tick (the site's own or the path's) at under 32 KB/s. Chronic sweeps probe only the paths with no fresh measure of
+  their own. Holding back catches a leader shaped while it carries only flows under 256 KB, which measure no
+  goodput (a feed of short videos) and would leave it never found slow; time between records (the site thinking, a
+  keep-alive connection idle) does not count. No sweep while the leader delivers; at most one per 15 s; probes dial
+  through the governor (§8); a probe begun before a network change counts for nothing. A sweep costs up to
+  9 × 256 KB. The core has no signal yet that a network is metered.
 
 ## 6. Fast reaction to active interference
 
@@ -168,8 +188,10 @@ measurement; none of them is a protocol constant.
 ## 8. Handshake governor
 
 Token buckets: ≤2 new TLS handshakes per SNI per 400 ms, ≤4 per IP per 1 s; excess waits in a queue (the local
-TCP SYN is acknowledged locally, the wire connects a few tens of ms later). Cold start: only the leader connects,
-plus the staggered connect-stage retry. No race of all paths. Hysteria2 runs with standard congestion control
+TCP SYN is acknowledged locally, the wire connects a few tens of ms later). A dial given up while it waits (a race
+another path won, a flow the app closed) hands its slot back, so the queue holds only dials still wanted. Cold start: only the leader connects,
+plus the staggered connect-stage retry. No race of all paths. A sweep (§5) dials through the same buckets, one
+probe per path: no SNI or IP sees a burst. Hysteria2 runs with standard congestion control
 (BBR), not a fixed-bandwidth custom CC, because custom CCs are fingerprintable by their reaction to loss.
 
 ## 9. Context memory and priors
@@ -224,6 +246,11 @@ CI fails if any `sagernet/*` module appears in `go list -deps`. Built with `gomo
   the port admits only them (RFC 1929); hev-socks5-tunnel presents them. No credentials, no proxy.
 - While the delivery proof runs, the mobile layer reports how much of the probe has arrived and its announced
   size, so the apps can count real bytes up to "connected" instead of spinning.
+- Device sleep: the phone often wakes to a network that forgot its connections (NAT entries), and the app's
+  requests on them wait in silence. A flow open across the sleep is no evidence against its path. One that asks
+  after waking and hears nothing for as long as a new flow waits for its first byte is closed, so the app
+  reconnects; it also proves the path's other flows that slept dead, and those that have heard nothing since
+  waking are closed at once, before the app asks on each and waits again.
 - Hosted paths: olcRTC carries TCP through a video call (WB Stream, Telemost, Jitsi). The call needs a WebRTC stack
   the core does not link, so the Android app runs olcRTC's own program as a separate process (its crash cannot take
   the tunnel down) and hands the core a loopback SOCKS5 door with fresh credentials. The core carries flows through
@@ -253,6 +280,17 @@ followed by keep-alive silence, and HTTP/2 control frames after a response, must
 a TLS record must. A live test drives real HTTP/2 traffic with idle pauses through the switchboard and requires
 receipts without stalls and no tripped rail. (The first Android run showed why: idle browser connections were
 scored as throttling and the best rail was benched.)
+
+A chaos lab (`devtest/chaos`, on the Mac and through gomobile on a phone) runs the real core over six local paths
+with injected faults (resets after the hello or mid-stream, black holes, freezes at 16 KB, shaping to 16 KB/s,
+added latency, flaky resets, allow lists, network switches, device sleep) and checks delivery, recovery and the
+leader. Sweeps were compared there on 2026-10-16 (Mac, same scenarios, sweeps off / in doubt / every path every
+10 s): in doubt, a leader shaped among shaped Hysteria paths was left at once instead of after 34–62 s, one shaped
+under 1 MB downloads at 29 s instead of 143 s, and one shaped under 128 KB chunks (`reels_throttled_leader`),
+never left with sweeps off, at 3.5 s (12 s once); a scenario of a minute or two spent 0.25–2.3 MB on probes, a
+15-minute soak 3.3 MB, and the scenarios without faults none.
+Every path every 10 s found a leader shaped from the start at once, but spent 1.5–3.8 MB per scenario of a minute
+or two whatever the leader did, and was not taken up.
 
 The simulator also counts what an observer of the client's connections sees (`sim/stealth.go`): servers per hour,
 distinct tunnels per ten minutes, exploration dials, failures, a failure followed within a second by a server unseen

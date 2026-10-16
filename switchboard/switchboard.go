@@ -59,6 +59,10 @@ type Config struct {
 	// the exit address.
 	User, Pass string
 
+	// ProbeURL is the https volume probe a sweep fetches over each path
+	// (brain/sweep.go). Empty: no sweeps.
+	ProbeURL string
+
 	DialTimeout      time.Duration
 	FirstByteTimeout time.Duration
 	FirstPayloadWait time.Duration
@@ -118,6 +122,10 @@ type Switchboard struct {
 	udpBack  map[string]int64 // path → until when UDP tries it last (udp.go)
 	wantTill map[string]int64 // hosted path → until when it is wanted up (Hosted)
 
+	lostAt sync.Map // path → when a flow open across a sleep asked on it and heard nothing (ms)
+
+	life context.Context // the serving context, for the switchboard's own flows (sweeps)
+
 	saveMu  sync.Mutex // one memory write at a time, never an older snapshot over a newer one
 	written uint64
 
@@ -129,8 +137,15 @@ type Switchboard struct {
 	direct  atomic.Int64
 }
 
+// labTune, when set (only by the chaos lab's build, sleep_chaos.go), changes
+// the config New is given.
+var labTune func(*Config)
+
 // New builds wires for every supported path of the catalogue and a brain over them.
 func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
+	if labTune != nil {
+		labTune(&cfg)
+	}
 	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, carried: map[string]*carried{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}, wantTill: map[string]int64{}}
 	var infos []brain.PathInfo
 	for _, e := range cat.Paths {
@@ -345,6 +360,9 @@ func (s *Switchboard) Start(ctx context.Context) error {
 }
 
 func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error {
+	s.mu.Lock()
+	s.life = ctx
+	s.mu.Unlock()
 	go func() {
 		<-ctx.Done()
 		ln.Close()
@@ -476,14 +494,23 @@ func (s *Switchboard) pace(ctx context.Context, path string) error {
 	if !s.wires[path].NeedsHandshake() {
 		return nil
 	}
-	if wait := s.acquire(path) - nowMs(); wait > 0 {
+	at := s.acquire(path)
+	if wait := at - nowMs(); wait > 0 {
 		select {
 		case <-time.After(time.Duration(wait) * time.Millisecond):
 		case <-ctx.Done():
+			s.release(path, at) // given up before its turn: the slot goes to the next dial
 			return ctx.Err()
 		}
 	}
 	return nil
+}
+
+func (s *Switchboard) release(path string, at int64) {
+	info := s.infos[path]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.Gov.Release(info.SNI, info.IP, at)
 }
 
 func (s *Switchboard) acquire(path string) int64 {
@@ -497,12 +524,55 @@ func (s *Switchboard) noteGoodput(path string, busyDown, busyMs, startMs int64) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.b.NoteGoodput(path, busyDown, busyMs, startMs, nowMs())
+	s.sweepDue(nowMs())
+}
+
+func (s *Switchboard) noteRace(path string, lost bool, startMs int64) {
+	if s.b == nil {
+		return // a bare test switchboard
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.NoteRace(path, lost, startMs, nowMs())
+	if lost {
+		s.sweepDue(nowMs())
+	}
+}
+
+func (s *Switchboard) noteSlow(path string, heldDown, heldMs, startMs int64) {
+	if s.b == nil {
+		return // a bare test switchboard
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.NoteSlow(path, heldDown, heldMs, startMs, nowMs())
+	s.sweepDue(nowMs())
 }
 
 func (s *Switchboard) noteStall(path string, startMs int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.b.NoteStall(path, startMs, nowMs())
+	s.sweepDue(nowMs())
+}
+
+func (s *Switchboard) noteAnswered(path string, startMs int64) {
+	if s.b == nil {
+		return // a bare test switchboard
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.NoteAnswered(path, startMs, nowMs())
+}
+
+// tripped reports whether the breaker avoids a path now.
+func (s *Switchboard) tripped(path string, now int64) bool {
+	if s.b == nil {
+		return false // a bare test switchboard
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Breaker.Tripped(path, now)
 }
 
 func (s *Switchboard) observe(r brain.Receipt) {
@@ -514,6 +584,7 @@ func (s *Switchboard) observe(r brain.Receipt) {
 		s.receipts = s.receipts[len(s.receipts)-n:]
 	}
 	now := nowMs()
+	s.sweepDue(now)
 	check := ""
 	if len(s.cfg.WhiteProbes) > 0 && !s.probing && now-s.probedAt >= whiteProbeEveryMs && s.b.NetDown(now) {
 		s.probing, s.probedAt, check = true, now, s.b.Ctx()

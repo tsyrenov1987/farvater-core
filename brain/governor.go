@@ -63,12 +63,30 @@ func (g *Governor) Acquire(sni, ip string, now int64) int64 {
 	return at
 }
 
+// Release gives back a slot Acquire returned that will not be used: a dial
+// given up before its turn. A later request may take it.
+func (g *Governor) Release(sni, ip string, at int64) {
+	g.perSNI[sni] = removeOne(g.perSNI[sni], at)
+	g.perIP[ip] = removeOne(g.perIP[ip], at)
+}
+
 // fits reports whether inserting at keeps every n+1 consecutive slots at least win apart,
-// i.e. no window of length win holds more than n slots.
+// i.e. no window of length win holds more than n slots. ts is sorted and within budget
+// already, so only the runs of n+1 that would hold at are checked, in place: Acquire
+// tries several candidates per queued slot, under the switchboard's lock.
 func fits(ts []int64, at int64, n int, win int64) bool {
-	m := insertSorted(append([]int64(nil), ts...), at)
-	for i := 0; i+n < len(m); i++ {
-		if m[i+n]-m[i] < win {
+	i := sort.Search(len(ts), func(i int) bool { return ts[i] > at })
+	slot := func(k int) int64 { // the k-th slot once at is inserted at i
+		switch {
+		case k < i:
+			return ts[k]
+		case k == i:
+			return at
+		}
+		return ts[k-1]
+	}
+	for j := max(0, i-n); j <= i && j+n <= len(ts); j++ {
+		if slot(j+n)-slot(j) < win {
 			return false
 		}
 	}
@@ -90,5 +108,13 @@ func insertSorted(ts []int64, t int64) []int64 {
 	ts = append(ts, 0)
 	copy(ts[i+1:], ts[i:])
 	ts[i] = t
+	return ts
+}
+
+func removeOne(ts []int64, t int64) []int64 {
+	i := sort.Search(len(ts), func(i int) bool { return ts[i] >= t })
+	if i < len(ts) && ts[i] == t {
+		return append(ts[:i], ts[i+1:]...)
+	}
 	return ts
 }

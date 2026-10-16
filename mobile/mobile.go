@@ -142,6 +142,10 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 	cfg.MemoryFile = memoryFile
 	cfg.Hosted = hosted
 	cfg.Direct = withoutProbes(direct, append([]string{DefaultProbeURL}, cat.ProbeURLs...))
+	cfg.ProbeURL = DefaultProbeURL
+	if len(cat.ProbeURLs) > 0 {
+		cfg.ProbeURL = cat.ProbeURLs[0]
+	}
 	s, err := switchboard.New(cfg, cat)
 	if err != nil {
 		return err
@@ -153,10 +157,7 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 	}
 	sb, cancel = s, c
 	user, pass = cfg.User, cfg.Pass
-	probe = DefaultProbeURL
-	if len(cat.ProbeURLs) > 0 {
-		probe = cat.ProbeURLs[0]
-	}
+	probe = cfg.ProbeURL
 	return nil
 }
 

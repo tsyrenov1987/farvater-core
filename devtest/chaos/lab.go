@@ -233,6 +233,10 @@ func uuidText(u [16]byte) string {
 // serveBytes answers /bytes?n=N with N bytes; a POST's body is read whole
 // first (an upload).
 func serveBytes(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.Host, "probe.") {
+		n, _ := strconv.Atoi(r.URL.Query().Get("n"))
+		probeBytes.Add(int64(n))
+	}
 	if r.Method == http.MethodPost {
 		if _, err := io.Copy(io.Discard, r.Body); err != nil {
 			return

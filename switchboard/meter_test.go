@@ -164,3 +164,46 @@ func TestBusyClockCountsShapedNotIdle(t *testing.T) {
 		t.Fatalf("busy bytes %d, want %d", s.busyDown, len(rec)-8000)
 	}
 }
+
+// A path that hands a site's records over slowly (2 KB every 125 ms, as a
+// shaper at 16 KB/s does) holds the flow back. Whole records with the site's
+// pauses between them do not, however long the pauses.
+func TestMeterFindsAFlowHeldBack(t *testing.T) {
+	m := newMeter()
+	m.Up(record(300))
+	m.Down(record(1000))
+	now := nowMs()
+	m.tick(now, 4000)
+	held := false
+	for i := 0; i < 4 && !held; i++ {
+		r := record(16384)
+		for off := 0; off < len(r) && !held; off += 2048 {
+			m.Down(r[off:min(off+2048, len(r))])
+			now += 125
+			if off%(4*2048) == 0 {
+				m.tick(now, 4000)
+				held = m.slowOnce()
+			}
+		}
+	}
+	if !held {
+		t.Fatalf("a flow fed 2 KB every 125 ms inside the records not found held back: %+v", m.snap())
+	}
+	if m.slowOnce() {
+		t.Fatal("held back reported twice")
+	}
+
+	m = newMeter()
+	m.Up(record(300))
+	m.Down(record(1000))
+	now = nowMs()
+	for i := 0; i < 6; i++ {
+		m.tick(now, 4000)
+		now += 900
+		m.Down(record(16384))
+		m.tick(now, 4000)
+		if m.slowOnce() {
+			t.Fatalf("whole records 900 ms apart found held back on record %d", i)
+		}
+	}
+}

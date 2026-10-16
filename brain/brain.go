@@ -64,6 +64,13 @@ type Config struct {
 	// long. Its long record of delivery predates the damage and would
 	// outweigh the few receipts of the path that took over.
 	DemoteHoldMs int64
+
+	// A leader in doubt has the paths swept (sweep.go): up to SweepMax of
+	// them get a volume probe at once, at most once per SweepMs (0: never).
+	// SweepAlways sweeps every SweepMs, doubt or not.
+	SweepMs     int64
+	SweepMax    int
+	SweepAlways bool
 }
 
 // DefaultConfig returns the design defaults.
@@ -73,7 +80,7 @@ func DefaultConfig() Config {
 		FirstByteDeadlineCapMs: 5000, Breaker: DefaultBreakerConfig(),
 		SlowBps: 128 * 1024, FasterFactor: 3, SpeedProbeShare: 0.3, SpeedProbeMax: 4, GoodputFreshMs: 10 * 60_000,
 		LagMs: 300, LagFactor: 2, LagGapMs: 250,
-		DemoteHoldMs: 2 * 60_000}
+		DemoteHoldMs: 2 * 60_000, SweepMs: 15_000, SweepMax: 8}
 }
 
 // Decision is the answer to "which wire for this flow".
@@ -120,6 +127,13 @@ type Brain struct {
 	upSeen     bool
 	asleep     map[string]bool  // paths whose transport is down (Sleep)
 	demoted    map[string]int64 // when a path was dethroned for what it did
+	doubtAt    int64            // when the leader last tripped or stalled out
+	sweptAt    int64            // when the last sweep began
+	sw         *sweepRun
+	slowAt     []int64 // when flows on the leader were found held back (NoteSlow)
+	raceLost   int     // connect races the leader lost in a row (NoteRace)
+	raceDoubt  int64   // when they reached two; 0 once it wins one
+	askedAt    int64   // the leader's first flow it has not answered since; 0: none
 }
 
 // New creates a brain for one network context.
@@ -313,6 +327,18 @@ func (b *Brain) laggyLeader(now int64) (int64, bool) {
 	return ms, n >= 5 && ms > b.cfg.LagMs
 }
 
+// knownPoor reports whether p's own fresh measure puts it under SlowBps or
+// over LagMs. Exploring it again before the measure goes stale (the floor
+// still does, every FloorMs) learns nothing new.
+func (b *Brain) knownPoor(p string, now int64) bool {
+	s := b.st[p]
+	if bps, _, fresh := s.Goodput(now, b.cfg.GoodputFreshMs); fresh && b.cfg.SlowBps > 0 && bps < b.cfg.SlowBps {
+		return true
+	}
+	ms, n := s.Answer(now, b.cfg.GoodputFreshMs)
+	return b.cfg.LagMs > 0 && n >= lagSamples && ms > b.cfg.LagMs
+}
+
 // speedProbe picks, while the leader is slow or answers late, a path whose
 // goodput or answer time is not known yet: by a Thompson draw, biased toward
 // a path unlike the leader, as shaping goes by address, name or protocol. ""
@@ -328,7 +354,7 @@ func (b *Brain) speedProbe(avail []string, now int64) (p string, share float64, 
 	lead := b.info(b.leader)
 	bestP, bestV, measured := "", -1.0, 0
 	for _, p := range avail {
-		if p == b.leader {
+		if p == b.leader || b.probing(p) {
 			continue
 		}
 		_, _, fresh := b.st[p].Goodput(now, b.cfg.GoodputFreshMs)
@@ -483,6 +509,7 @@ func (b *Brain) setLeader(p string, now int64, act, why string) {
 		return
 	}
 	b.leader, b.leaderSince = p, now
+	b.raceLost, b.raceDoubt, b.askedAt = 0, 0, 0
 	b.J.Add(now, act, why, p)
 }
 
@@ -504,6 +531,62 @@ func (b *Brain) exploreShare(now int64) float64 {
 	return float64(n) / float64(len(b.picks))
 }
 
+// LeadFreshMs: a path whose flows got an answer within this long gets through
+// now. A leader the breaker took away goes to such a path, the one that
+// answers quickest: when the leader goes dark the others often go dark with
+// it (allow lists, a block by protocol or address), and a long record is no
+// evidence that a path still gets through.
+const LeadFreshMs = 10000
+
+// answeredNow returns, of the available paths answered within LeadFreshMs of
+// now, the one whose answers come quickest (one with no answer time known
+// after those with one, the latest answered first); "" when none answered.
+func (b *Brain) answeredNow(avail []string, now int64) string {
+	best, bestMs, bestAt := "", int64(-1), int64(0)
+	for _, p := range avail {
+		s := b.st[p]
+		if s.AnsweredAt == 0 || s.AnsweredAt < now-LeadFreshMs {
+			continue
+		}
+		ms, n := s.Answer(now, b.cfg.GoodputFreshMs)
+		if n == 0 {
+			ms = -1
+		}
+		switch {
+		case best == "",
+			ms >= 0 && (bestMs < 0 || ms < bestMs),
+			ms < 0 && bestMs < 0 && s.AnsweredAt > bestAt:
+			best, bestMs, bestAt = p, ms, s.AnsweredAt
+		}
+	}
+	return best
+}
+
+// NoteAnswered takes a running flow's first answer: a keep-alive connection
+// ends, and its receipt with it, long after its path proved it gets through.
+func (b *Brain) NoteAnswered(path string, startMs, now int64) {
+	if s, ok := b.st[path]; ok && startMs >= b.switchedAt {
+		s.AnsweredAt = max(s.AnsweredAt, now)
+	}
+}
+
+// leaderAnswers reports whether the leader got an answer since it took the
+// lead, within LeadFreshMs: in a storm it is the path that still delivers,
+// and wide exploration would only carry flows to the paths that do not.
+func (b *Brain) leaderAnswers(now int64) bool {
+	s := b.st[b.leader]
+	return s != nil && s.AnsweredAt >= b.leaderSince && s.AnsweredAt >= now-LeadFreshMs
+}
+
+// leaderUnheard reports whether the leader has left a flow unanswered for
+// LeadFreshMs. A leader nobody asked is in no doubt: when the app goes quiet
+// for a minute (a reel plays, two downloads hold every connection) no path
+// answers anything.
+func (b *Brain) leaderUnheard(now int64) bool {
+	s := b.st[b.leader]
+	return s == nil || b.askedAt > s.AnsweredAt && now-b.askedAt >= LeadFreshMs
+}
+
 // Pick chooses the wire for a new flow.
 func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 	if !b.started {
@@ -520,6 +603,9 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 	if b.leader == "" || !contains(avail, b.leader) {
 		l, _ := b.bestBy(avail, "", false, now)
 		why := "start: best by prior/memory"
+		if p := b.answeredNow(avail, now); p != "" {
+			l, why = p, "answers now"
+		}
 		if s := b.soonestFree(avail, now); s != "" {
 			l, why = s, "every path tripped: the earliest trip"
 		}
@@ -532,6 +618,7 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 			if cand, _ := b.bestBy(avail, b.leader, false, now); cand != "" {
 				old := b.leader
 				b.setLeader(cand, now, "lead_stall", fmt.Sprintf("%d consecutive stalls on %s", ls.ConsecutiveStalls(), old))
+				b.doubtAt = now
 				ls.ResetStalls()
 				b.demoted[old] = now
 			}
@@ -565,12 +652,20 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 	}
 	storm := b.Breaker.Storm(now)
 	exploreCap := b.cfg.ExploreShare
-	if storm {
+	if storm && !b.leaderAnswers(now) {
 		exploreCap = b.Breaker.cfg.StormExplore
 	}
 	if !explore && b.exploreShare(now) < exploreCap {
+		// A path under a sweep's probe is being measured; one measured poor
+		// while the leader delivers well would only make the user wait.
+		_, slow := b.slowLeader(now)
+		_, lag := b.laggyLeader(now)
+		spare := !b.leaderUnheard(now) && !slow && !lag
 		bestP, bestV := "", -1.0
 		for _, p := range avail {
+			if p != b.leader && (b.probing(p) || spare && b.knownPoor(p, now)) {
+				continue
+			}
 			if v := b.st[p].Sample(b.rng); v > bestV {
 				bestP, bestV = p, v
 			}
@@ -589,8 +684,18 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		tertiary = b.bestEscape(avail, []string{primary, secondary}, from, now)
 	}
 	b.lastPick[primary] = now
+	if primary == b.leader && b.askedAt <= b.st[primary].AnsweredAt {
+		b.askedAt = now
+	}
 	b.picks = append(b.picks, pickRec{now, explore})
+	d := b.Pinned(primary)
+	d.Secondary, d.Tertiary, d.Explore, d.Reason = secondary, tertiary, explore, reason
+	return d
+}
 
+// Pinned is the decision for a flow that must go over path and no other (a
+// sweep's probe): its pacing of the first byte, no backup dial.
+func (b *Brain) Pinned(primary string) Decision {
 	stagger := b.st[primary].P90FirstByteMs() + b.cfg.StaggerPadMs
 	if stagger > b.cfg.FirstByteCapMs {
 		stagger = b.cfg.FirstByteCapMs
@@ -602,7 +707,7 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 	if cap := b.cfg.FirstByteDeadlineCapMs; cap > 0 && deadline > cap {
 		deadline = cap
 	}
-	return Decision{Primary: primary, Secondary: secondary, Tertiary: tertiary, Explore: explore, Reason: reason, StaggerMs: stagger, FirstByteDeadlineMs: deadline}
+	return Decision{Primary: primary, Explore: true, Reason: "sweep", StaggerMs: stagger, FirstByteDeadlineMs: deadline}
 }
 
 // UDPOrder lists every awake path in the order a UDP association tries them:
@@ -705,6 +810,7 @@ func (b *Brain) tripped(path string, sig BlockSig, now int64) {
 	if path == b.leader {
 		b.demoted[path] = now
 		b.leader = "" // force re-election on the next Pick, bypassing hysteresis
+		b.doubtAt = now
 		b.J.Add(now, "lead_trip", "breaker: "+sig.String()+" on leader", path)
 	} else {
 		b.J.Add(now, "trip", "breaker: "+sig.String(), path)

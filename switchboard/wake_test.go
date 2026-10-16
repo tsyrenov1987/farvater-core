@@ -30,17 +30,21 @@ func TestRequestOnAConnectionThatSleptIsClosed(t *testing.T) {
 		f := &flow{s: &Switchboard{cfg: DefaultConfig()}, fbDeadlineMs: 300, up: make(chan []byte)}
 		a := f.newAttempt("p", false)
 		if slept {
-			labSleep = func(start, _ time.Time) time.Duration {
+			sleep := func(start, _ time.Time) time.Duration {
 				if start.Equal(a.start) {
 					return 60 * time.Second
 				}
 				return 0
 			}
-			defer func() { labSleep = nil }()
+			labSleep.Store(&sleep)
+			defer labSleep.Store(nil)
 		}
-		done := make(chan bool, 1)
+		ctx, cancel := context.WithCancel(context.Background())
+		done, exited := make(chan bool, 1), make(chan struct{})
+		defer func() { cancel(); <-exited }()
 		go func() {
-			_, _, fb, _ := f.run(context.Background(), answeredOnce{}, a, nil)
+			defer close(exited)
+			_, _, fb, _ := f.run(ctx, answeredOnce{}, a, nil)
 			done <- fb
 		}()
 		time.Sleep(100 * time.Millisecond)

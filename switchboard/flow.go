@@ -20,6 +20,7 @@ type flow struct {
 	up           chan []byte
 	done         chan struct{}
 	fbDeadlineMs int64
+	pin          string // the only path that may carry the flow (a sweep's probe)
 
 	pmu      sync.Mutex
 	prelude  []byte
@@ -75,6 +76,8 @@ type attempt struct {
 	readyMs int64 // 0 = never
 	dialAt  int64 // when the dial began, its pacing waited out; 0 = never
 	m       *meter
+	// condemned: closed while stuck on a path the breaker condemned
+	condemned bool
 }
 
 func (f *flow) newAttempt(path string, explore bool) *attempt {
@@ -136,7 +139,7 @@ func (a *attempt) runReceipt(f *flow, preludeLen int, out wire.Outcome, err erro
 		r.End = brain.EndLocalClose
 		if fbTimeout {
 			r.End = brain.EndTimeout
-		} else if unanswered {
+		} else if unanswered || a.condemned {
 			r.End = brain.EndStallAbandon
 		}
 	default:
@@ -159,7 +162,14 @@ func (f *flow) serve(ctx context.Context) {
 	defer f.client.Close()
 	s := f.s
 
-	dec := s.pick(nowMs(), f.target.Host, f.class)
+	var dec brain.Decision
+	if f.pin != "" {
+		s.mu.Lock()
+		dec = s.b.Pinned(f.pin)
+		s.mu.Unlock()
+	} else {
+		dec = s.pick(nowMs(), f.target.Host, f.class)
+	}
 	if dec.Primary == "" {
 		return // every path is asleep: nothing to carry the flow
 	}
@@ -247,8 +257,13 @@ func (f *flow) dialRace(ctx context.Context, order []string, staggerMs int64, ex
 	results := make(chan dialResult, len(order))
 	rctx, cancelAll := context.WithCancel(ctx)
 	defer cancelAll()
+	var first *attempt
+	firstDone := false
 	launch := func(id string, ex bool) {
 		a := f.newAttempt(id, ex)
+		if first == nil {
+			first = a
+		}
 		go func() {
 			sess, err := f.dialOne(rctx, a)
 			results <- dialResult{a, sess, err}
@@ -274,10 +289,18 @@ func (f *flow) dialRace(ctx context.Context, order []string, staggerMs int64, ex
 			timer = nextStagger()
 		case r := <-results:
 			finished++
+			if r.a == first {
+				firstDone = true
+			}
 			if r.err == nil {
 				// First ready wins; drain the losing dials in the background.
 				cancelAll()
 				go f.drain(results, launched-finished)
+				// The first dial lost the race if it still hung (one that
+				// failed on its own filed its receipt).
+				if r.a == first || !firstDone {
+					f.s.noteRace(first.path, r.a != first, first.startMs)
+				}
 				return r.sess, r.a, nil
 			}
 			if rctx.Err() == nil {
@@ -343,7 +366,7 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 	if len(prelude) > 0 {
 		askedAt = nowMs()
 	}
-	var wokeAt int64 // when the flow first saw that the device had slept
+	var wokeAt, slept int64 // when the flow last saw that the device had slept, and for how long in all
 	for {
 		select {
 		case r := <-done:
@@ -365,6 +388,9 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 			if !coarse {
 				coarse = true
 				tick.Reset(time.Second)
+				if sleptMs(a.start) < brain.SleepGraceMs {
+					f.s.noteAnswered(a.path, a.startMs) // the path gets through now
+				}
 			}
 			// A connection open while the device slept has likely lost its NAT
 			// entry, and the app's request on it waits in silence until the
@@ -373,22 +399,46 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 			// sending nothing more, the flow is closed and the app reconnects.
 			// Its receipt is dropped as slept; the path's shared connection is
 			// refreshed as after a first-byte timeout.
-			if wokeAt == 0 && sleptMs(a.start) >= brain.SleepGraceMs {
-				wokeAt = now
+			if sl := sleptMs(a.start); sl >= slept+brain.SleepGraceMs {
+				wokeAt, slept = now, sl
 			}
 			if wokeAt > 0 && sn.asked > 0 && now-max(sn.lastUpAt, wokeAt) >= fbMs {
+				f.s.lostAt.Store(a.path, now)
 				fbTimeout = true
+				cancel()
+				continue
+			}
+			// That one flow proves the network forgot the path's connections
+			// while the phone slept: the others that slept as well and have
+			// heard nothing since waking are closed now, so the app reconnects
+			// them before it asks, not after a first-byte deadline on each.
+			if lost, ok := f.s.lostAt.Load(a.path); ok && wokeAt > 0 && lost.(int64) >= wokeAt && sn.lastDownAt < wokeAt {
 				cancel()
 				continue
 			}
 			a.m.tick(now, f.s.cfg.StallMs)
 			// a phone that slept stalls every flow it had open: not the path
-			if sleptMs(a.start) < brain.SleepGraceMs && a.m.stallOnce() {
+			if sleptMs(a.start) < brain.SleepGraceMs && (a.m.stallOnce() || a.m.unansweredOnce(now, f.s.cfg.StallMs)) {
 				f.s.noteStall(a.path, a.startMs)
+			}
+			// A path the breaker condemned (frozen, shaped, cut) keeps the flows
+			// already on it open in silence until the app's own timeout. One
+			// that stalled, or asked and got nothing back for as long as a new
+			// flow waits for its first byte, is closed: the app reconnects at
+			// once and its new flow goes to another path.
+			if sn = a.m.snap(); (sn.inStall || sn.asked > 0 && now-sn.askedAt >= fbMs) && f.s.tripped(a.path, now) {
+				a.condemned = true
+				cancel()
+				continue
 			}
 			if a.m.noteOnce() {
 				sn = a.m.snap()
 				f.s.noteGoodput(a.path, sn.busyDown, sn.busyMs, a.startMs)
+			}
+			// a sweep's probe reports itself (Swept)
+			if f.pin == "" && sleptMs(a.start) < brain.SleepGraceMs && a.m.slowOnce() {
+				sn = a.m.snap()
+				f.s.noteSlow(a.path, sn.heldDown, sn.heldMs, a.startMs)
 			}
 		}
 	}

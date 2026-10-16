@@ -88,14 +88,27 @@ func dethroneWhileFrozen(t *testing.T, whole bool) {
 	go func() { _ = s.serveListener(ctx, ln) }()
 	// the app keeps opening flows; some go to other paths to explore, the
 	// rest freeze on the leader
+	// The frozen flows close once their path is condemned (see
+	// TestStuckFlowOnACondemnedPathIsClosed), not before it.
 	dethroned := func() bool {
-		if l := leaderOf(s); l != victim && l != "" {
-			if len(s.Receipts()) != 6*len(ids) {
-				t.Fatalf("the frozen flows ended before the hand-over")
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		var at int64
+		for _, e := range s.b.J.Entries() {
+			if e.Act == "lead_trip" && e.Path == victim {
+				at = e.AtMs
+				break
 			}
-			return true
 		}
-		return false
+		if at == 0 {
+			return false
+		}
+		for _, r := range s.receipts[6*len(ids):] {
+			if r.Path == victim && r.AtMs < at {
+				t.Fatalf("a frozen flow ended before the hand-over: %+v", r)
+			}
+		}
+		return true
 	}
 	for i := 0; i < 6; i++ {
 		c, rep := socksTo(t, ln.Addr().String(), "example.com", 443)

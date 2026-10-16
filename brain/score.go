@@ -20,6 +20,7 @@ type PathState struct {
 	failBytes          []int64
 	bigOK              int
 	LastEvidenceMs     int64
+	AnsweredAt         int64 // when a flow on the path last got an answer with no block signature
 	lastDecayMs        int64
 	fbTimes            []int64
 	answers            []stamped // Receipt.AnswerMs, the last answerKeep
@@ -120,6 +121,9 @@ func (s *PathState) Observe(r Receipt, now, halfLifeMs int64) {
 				s.bigOK = 0
 			}
 		}
+	}
+	if r.FirstByte() && r.Sig() == SigNone {
+		s.AnsweredAt = max(s.AnsweredAt, now)
 	}
 	if r.Delivered() && r.Down >= 64*KB {
 		s.bigOK++

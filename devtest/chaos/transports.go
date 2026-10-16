@@ -20,6 +20,7 @@ import (
 	"golang.org/x/net/http2"
 
 	"github.com/tsyrenov1987/farvater-core/kilvater"
+	"github.com/tsyrenov1987/farvater-core/switchboard"
 	"github.com/tsyrenov1987/farvater-core/wire"
 )
 
@@ -41,6 +42,7 @@ func (l *lab) kilSetup() error {
 	roots := x509.NewCertPool()
 	roots.AddCert(leaf)
 	wire.SetLabRoots(roots)
+	switchboard.SetLabProbe(roots)
 	return nil
 }
 

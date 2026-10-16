@@ -51,6 +51,8 @@ type Result struct {
 	Flows    int64    `json:"flows"`
 	Retries  int64    `json:"retries"`
 	HeapMB   float64  `json:"heap_peak_mb"`
+	ProbeKB  int64    `json:"probe_kb"` // the origin sent for sweeps' probes
+	Sweep    string   `json:"sweep"`    // CHAOS_SWEEP: off, doubt (the default) or every10
 	Pass     bool     `json:"pass"`
 	Checks   []string `json:"checks"`
 	Error    string   `json:"error,omitempty"`
@@ -304,10 +306,14 @@ func (r *runner) finish() {
 		At     int64  `json:"at_ms"`
 		Path   string `json:"path"`
 		End    string `json:"end"`
+		Up     int64  `json:"up"`
 		Down   int64  `json:"down"`
 		DurMs  int64  `json:"dur_ms"`
+		GapMs  int64  `json:"max_gap_ms"`
+		FbMs   int64  `json:"first_byte_ms"`
 		Stalls int    `json:"stalls"`
 		AnsMs  int64  `json:"answer_ms"`
+		WireMs int64  `json:"wire_ms"`
 	}
 	_ = json.Unmarshal([]byte(mobile.ReceiptsJSON()), &rs)
 	fb := map[string][]int64{}
@@ -316,7 +322,7 @@ func (r *runner) finish() {
 			fb[e.Path] = append(fb[e.Path], e.AnsMs)
 		}
 		if (e.End != "remote_fin" && e.End != "local_close") || e.Stalls > 0 || e.DurMs > 5000 {
-			r.res.Bad = append(r.res.Bad, fmt.Sprintf("t+%d %s %s down=%d stalls=%d dur=%d", e.At-r.t0.UnixMilli(), e.Path, e.End, e.Down, e.Stalls, e.DurMs))
+			r.res.Bad = append(r.res.Bad, fmt.Sprintf("t+%d %s %s down=%d stalls=%d dur=%d up=%d fb=%d gap=%d wire=%d ans=%d", e.At-r.t0.UnixMilli(), e.Path, e.End, e.Down, e.Stalls, e.DurMs, e.Up, e.FbMs, e.GapMs, e.WireMs, e.AnsMs))
 		}
 	}
 	for _, p := range r.l.paths {
@@ -343,6 +349,7 @@ var (
 	page  = []int{4 << 10, 24 << 10, 8 << 10}
 	mixed = []int{4 << 10, 256 << 10, 24 << 10, 1 << 20, 8 << 10}
 	bulk  = []int{1 << 20}
+	reel  = []int{128 << 10} // a short video's chunk: under brain.BigBytes, so it measures no goodput
 )
 
 func shuffled(n int) []int {

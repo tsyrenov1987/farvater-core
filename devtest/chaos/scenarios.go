@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tsyrenov1987/farvater-core/mobile"
@@ -69,6 +70,13 @@ var scenarios = []scenario{
 		ph := r.load("загрузки по 1 МБ", 12, 2, bulk, 90*sec)
 		r.check(ph.Served == ph.Requests, "доставлено %d/%d", ph.Served, ph.Requests)
 		r.check(r.leaderIn(5), "ведущий — быстрый путь: %s", r.leaderName())
+	}},
+	{name: "reels_throttled_leader", about: "лента коротких видео: ведущий и ещё 2 пути зажаты до 16 КБ/с, куски по 128 КБ (меньше порога замера скорости)", run: func(r *runner) {
+		r.fault(Throttle, 0, 1, 2)
+		ph := r.load("куски по 128 КБ", 24, 2, reel, 30*sec)
+		r.check(ph.Served == ph.Requests, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(ph.P50Ms <= 2000, "медиана куска %d мс (≤ 2 с)", ph.P50Ms)
+		r.check(r.leaderIn(3, 4, 5), "ведущий — быстрый путь: %s", r.leaderName())
 	}},
 	{name: "latency", about: "3 пути с задержкой +350 мс на ответ, 3 быстрых", run: func(r *runner) {
 		r.fault(Latency, 0, 1, 2)
@@ -427,10 +435,12 @@ func Run(name string) string {
 			sc = &scenarios[i]
 		}
 	}
-	res := &Result{Scenario: name, Pass: true}
+	res := &Result{Scenario: name, Pass: true, Sweep: os.Getenv("CHAOS_SWEEP")}
 	t0 := time.Now()
+	probeBytes.Store(0)
 	out := func() string {
 		res.Ms = time.Since(t0).Milliseconds()
+		res.ProbeKB = probeBytes.Load() >> 10
 		b, _ := json.Marshal(res)
 		return string(b)
 	}
@@ -450,6 +460,7 @@ func Run(name string) string {
 		ctx = "chaos"
 	}
 	mobile.SetMemoryFile("")
+	switchboard.SetLabTune(labTune)
 	cat := l.catalogue(sc.net)
 	if sc.white != nil {
 		cat = l.catalogueJSON(sc.white)
@@ -467,4 +478,20 @@ func Run(name string) string {
 	sc.run(r)
 	r.finish()
 	return out()
+}
+
+// probeBytes counts what the origin was asked for by sweeps' probes.
+var probeBytes atomic.Int64
+
+// labTune sets the core up for the lab: its probe is the lab's origin, and
+// CHAOS_SWEEP picks the sweep settings compared: off, doubt (the core's
+// default) or every10 (every path every 10 s, doubt or not).
+func labTune(c *switchboard.Config) {
+	c.ProbeURL = "https://probe.chaos.test/bytes?n=262144"
+	switch os.Getenv("CHAOS_SWEEP") {
+	case "off":
+		c.Brain.SweepMs = 0
+	case "every10":
+		c.Brain.SweepMs, c.Brain.SweepAlways, c.Brain.SweepMax = 10_000, true, 0
+	}
 }
