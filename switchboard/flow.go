@@ -343,6 +343,7 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 	if len(prelude) > 0 {
 		askedAt = nowMs()
 	}
+	var wokeAt int64 // when the flow first saw that the device had slept
 	for {
 		select {
 		case r := <-done:
@@ -364,6 +365,21 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 			if !coarse {
 				coarse = true
 				tick.Reset(time.Second)
+			}
+			// A connection open while the device slept has likely lost its NAT
+			// entry, and the app's request on it waits in silence until the
+			// app's own timeout, half a minute or more. Once the app has asked
+			// and then waited as long as a new flow waits for its first byte,
+			// sending nothing more, the flow is closed and the app reconnects.
+			// Its receipt is dropped as slept; the path's shared connection is
+			// refreshed as after a first-byte timeout.
+			if wokeAt == 0 && sleptMs(a.start) >= brain.SleepGraceMs {
+				wokeAt = now
+			}
+			if wokeAt > 0 && sn.asked > 0 && now-max(sn.lastUpAt, wokeAt) >= fbMs {
+				fbTimeout = true
+				cancel()
+				continue
 			}
 			a.m.tick(now, f.s.cfg.StallMs)
 			// a phone that slept stalls every flow it had open: not the path

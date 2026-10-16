@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds the chaos bindings and runs every scenario on the iPhone given by its id.
+# Builds the chaos bindings and runs every scenario on the iPhone or the
+# simulator given by its id.
 # Needs the farvater-ios build prerequisites (Go, gomobile, Xcode, xcodegen);
 # XCAUTH may carry xcodebuild's -authenticationKey* arguments.
 set -e
@@ -17,8 +18,10 @@ exec "$GO" "\$@"
 SH
 chmod +x "$SHIM/go"
 export PATH="$SHIM:$(dirname "$GOMOBILE"):$(dirname "$GO"):$PATH"
-(cd "$CORE" && nice -n 10 "$GOMOBILE" bind -tags chaos -target=ios/arm64 -iosversion 17.0 -trimpath \
+TARGET=ios/arm64 PLATFORM=iOS
+if xcrun simctl list devices | grep -q "$DEV"; then TARGET=iossimulator/arm64 PLATFORM="iOS Simulator"; fi
+(cd "$CORE" && nice -n 10 "$GOMOBILE" bind -tags chaos -target=$TARGET -iosversion 17.0 -trimpath \
   -o "$HERE/FarvaterChaos.xcframework" ./devtest/chaos)
 cd "$HERE" && xcodegen generate -q
-xcodebuild test -project ChaosLab.xcodeproj -scheme ChaosLab -destination "platform=iOS,id=$DEV" \
+xcodebuild test -project ChaosLab.xcodeproj -scheme ChaosLab -destination "platform=$PLATFORM,id=$DEV" \
   -derivedDataPath "${DERIVED:-/tmp/chaoslab-dd}" -allowProvisioningUpdates $XCAUTH

@@ -15,8 +15,17 @@ func nowMs() int64 { return time.Now().UnixMilli() }
 // asleep.
 func sleptMs(start time.Time) int64 {
 	now := time.Now()
-	return (now.Round(0).Sub(start.Round(0)) - now.Sub(start)).Milliseconds()
+	d := now.Round(0).Sub(start.Round(0)) - now.Sub(start)
+	if labSleep != nil {
+		d += labSleep(start, now)
+	}
+	return d.Milliseconds()
 }
+
+// labSleep, when set (only by the chaos lab's build, sleep_chaos.go), adds a
+// sleep the lab played by stopping the process: a stopped process's monotonic
+// clock runs on, so the clocks alone do not show it.
+var labSleep func(start, now time.Time) time.Duration
 
 // meter is the per-attempt byte ledger. It implements wire.Meter.
 type meter struct {
@@ -144,13 +153,13 @@ type snapshot struct {
 	noted, stallNoted                        bool
 	stalls                                   int
 	inStall                                  bool
-	asked, askedAt                           int64
+	asked, askedAt, lastUpAt                 int64
 }
 
 func (m *meter) snap() snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return snapshot{m.up, m.down, m.firstUpAt, m.firstDownAt, m.maxGap, m.busyMs, m.busyDown, m.noted, m.stallNoted, m.stalls, m.inStall, m.asked, m.askedAt}
+	return snapshot{m.up, m.down, m.firstUpAt, m.firstDownAt, m.maxGap, m.busyMs, m.busyDown, m.noted, m.stallNoted, m.stalls, m.inStall, m.asked, m.askedAt, m.lastUpAt}
 }
 
 // tlsTrack follows TLS record framing in a downstream byte stream. The

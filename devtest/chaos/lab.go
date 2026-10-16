@@ -80,6 +80,7 @@ type path struct {
 	host   string // the proxy's address: paths on two addresses, as nodes are
 	fault  atomic.Int32
 	conns  atomic.Int64 // connections the proxy accepted
+	epoch  atomic.Int64 // bumped when the network drops every live connection silently
 	server net.Listener
 	proxy  net.Listener
 	// a Hysteria 2 path: its server and the UDP relay in front
@@ -379,6 +380,7 @@ func (l *lab) relay(p *path) {
 }
 
 func (l *lab) relayOne(p *path, c net.Conn, f Fault) {
+	ep := p.epoch.Load()
 	if f == RstLive {
 		f = RstHello
 	}
@@ -428,6 +430,10 @@ func (l *lab) relayOne(p *path, c net.Conn, f Fault) {
 		n, err := s.Read(buf[:k])
 		if n > 0 && f != Freeze16K && p.get() == FreezeLive {
 			hold(c) // the path froze under this live connection
+			return
+		}
+		if n > 0 && p.epoch.Load() != ep {
+			hold(c) // the network forgot this connection (a NAT entry gone while the phone slept)
 			return
 		}
 		if n > 0 && p.get() == RstLive {

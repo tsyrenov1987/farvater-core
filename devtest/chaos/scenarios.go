@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	mrand "math/rand/v2"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/tsyrenov1987/farvater-core/mobile"
+	"github.com/tsyrenov1987/farvater-core/switchboard"
 )
 
 type scenario struct {
@@ -21,6 +24,7 @@ type scenario struct {
 	white       map[int]bool   // paths entering through an allow-listed address (JSON catalogue)
 	kinds       []string       // path kinds by index (vless, trojan, kilvater, hy2); vless/trojan in turn by default
 	ctx         string         // network at Start
+	manual      bool           // needs a driver outside the process (sleep.sh); run by name only
 	run         func(r *runner)
 }
 
@@ -295,6 +299,53 @@ var scenarios = []scenario{
 		r.check(ph.RecoverMs >= 0 && ph.RecoverMs <= 5000, "связь с первой попытки через %d мс (≤ 5 с)", ph.RecoverMs)
 		r.check(r.leaderName() != victim, "ведущий сменился: %s → %s", victim, r.leaderName())
 	}},
+	{name: "sleep_wake", about: "сон телефона: загрузки идут, процесс замирает на 60 с (снаружи, sleep.sh), за это время сеть забыла все живые соединения (NAT); потом просыпается",
+		manual: true, run: func(r *runner) {
+			r.keepAlive()
+			r.load("прогрев", 30, 3, page, 15*sec)
+			leader := r.leaderName()
+			var slept time.Duration
+			ph := r.loadFor("сон посреди загрузок", 100*sec, 3, mixed, 20*sec, func() {
+				time.Sleep(15 * sec)
+				slept = r.sleep(60*sec, func() {
+					for _, p := range r.l.paths {
+						p.epoch.Add(1)
+					}
+				})
+			})
+			r.check(slept >= 50*sec, "процесс спал %d с (≥ 50)", int(slept.Seconds()))
+			r.check(share(ph.Served, ph.Requests) >= 0.95, "загрузки, пережившие сон: доставлено %d/%d", ph.Served, ph.Requests)
+			after := r.load("после сна", 40, 3, page, 15*sec)
+			r.check(share(after.Served, after.Requests) >= 0.97, "после сна доставлено %d/%d", after.Served, after.Requests)
+			r.check(after.RecoverMs >= 0 && after.RecoverMs <= 5000, "связь с первой попытки через %d мс (≤ 5 с)", after.RecoverMs)
+			n := r.count("lead_trip")
+			r.check(n == 0, "здоровые пути не выбиты предохранителем после сна: срабатываний %d (ведущий был %s, стал %s)", n, leader, r.leaderName())
+		}},
+}
+
+// sleep asks sleep.sh, outside the process, to stop it for d as iOS suspends
+// an app, and returns the longest pause it saw; 0 when no one stopped it.
+// woke runs as soon as the process sees it slept: what the network did
+// meanwhile.
+func (r *runner) sleep(d time.Duration, woke func()) time.Duration {
+	switchboard.SetLabSleep(time.Now(), d)
+	f := filepath.Join(os.TempDir(), "chaos-sleep")
+	_ = os.WriteFile(f, []byte(fmt.Sprintf("%d %d\n", os.Getpid(), int(d.Seconds()))), 0o644)
+	defer os.Remove(f)
+	var most time.Duration
+	last := time.Now()
+	for end := last.Add(d + 30*sec); time.Now().Before(end); {
+		time.Sleep(100 * time.Millisecond)
+		if gap := time.Since(last); gap > most {
+			most = gap
+		}
+		last = time.Now()
+		if most > d/2 {
+			woke()
+			break
+		}
+	}
+	return most
 }
 
 // count counts the core's journal entries whose act starts with prefix.
@@ -359,7 +410,9 @@ var runMu sync.Mutex
 func Scenarios() string {
 	var n []string
 	for _, s := range scenarios {
-		n = append(n, s.name)
+		if !s.manual {
+			n = append(n, s.name)
+		}
 	}
 	return strings.Join(n, ",")
 }
