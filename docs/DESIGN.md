@@ -106,7 +106,8 @@ quarter weight; priors never outweigh 5 fresh receipts.
   leader does, as soon as that is known: the slow probes are not waited out. Doubt is *acute* when the leader
   tripped or stalled out and the next leader has not answered yet, or lost two connect races in a row (its dial
   still hung when the runner-up's came up: every flow is rescued by the connect-stage retry, so none files a
-  receipt against it, and only a race it wins ends this doubt); any available path is then probed. It is *chronic* when
+  receipt against it, and only a race it wins ends this doubt), or left two requests unanswered (below); any
+  available path is then probed. It is *chronic* when
   the leader is measured slow, answers late, or holds flows back: two flows that spent 2 s with a record cut at the
   tick (the site's own or the path's) at under 32 KB/s. Chronic sweeps probe only the paths with no fresh measure of
   their own. Holding back catches a leader shaped while it carries only flows under 256 KB, which measure no
@@ -114,6 +115,16 @@ quarter weight; priors never outweigh 5 fresh receipts.
   keep-alive connection idle) does not count. No sweep while the leader delivers; at most one per 15 s; probes dial
   through the governor (§8); a probe begun before a network change counts for nothing. A sweep costs up to
   9 × 256 KB. The core has no signal yet that a network is metered.
+- **Requests left unanswered:** a leader frozen under the connections the app keeps open shows nothing else: no
+  record is cut, the requests are small (a few hundred bytes), no new flow is dialled, and the app waits for its own
+  timeout, 25 s and more. A flow that answered every request within 2 s, then sent 128 bytes or more and has heard
+  nothing for 2 s while the app waits, is left unanswered; fewer bytes are an HTTP/2 connection's control frames
+  (PING, WINDOW_UPDATE: 31–45 bytes on the wire) or a close_notify, which expect no answer, and a connection
+  whose earlier answer took longer is a long poll's. Two such flows on the leader put it in acute doubt. Nothing is
+  closed on that alone: when the sweep finds the leader does not deliver its probe while another path does, the
+  flows on it that have waited 2 s for an answer are closed, and the app reconnects to the new leader. On a leader
+  that delivers, a messenger's long polls cost a sweep and stay open. In the chaos lab (keepalive_freeze) a request
+  on a frozen connection waited 29.7 s at p95 before, 4.2 s after.
 
 ## 6. Fast reaction to active interference
 

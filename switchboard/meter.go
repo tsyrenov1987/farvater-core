@@ -55,6 +55,7 @@ type meter struct {
 	held        func() bool // the path's own stream stopped inside a record (wire.Framed), if it can tell
 	asked       int64       // bytes the app sent since the last answer
 	askedAt     int64       // when the first of them went
+	askNoted    bool        // they went to the brain as unanswered (askOnce)
 }
 
 func (m *meter) Up(p []byte) {
@@ -105,7 +106,7 @@ func (m *meter) Down(p []byte) {
 	m.down += int64(len(p))
 	m.lastDownAt = now
 	m.inStall = false
-	m.asked, m.askedAt = 0, 0
+	m.asked, m.askedAt, m.askNoted = 0, 0, false
 }
 
 // maxBusyGapMs caps what one pause adds to the busy clock: a phone that slept
@@ -198,6 +199,20 @@ func (m *meter) unansweredOnce(now, stallMs int64) bool {
 		return false
 	}
 	m.stallNoted = true
+	return true
+}
+
+// askOnce reports, once per request, that the flow is left unanswered
+// (brain.AskBytes, brain.AskMs): it answered every earlier request within
+// brain.AskMs, a connection the app reuses, not a long poll's that waited
+// before. A request still going out is the app waiting on its own bytes.
+func (m *meter) askOnce(now int64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.askNoted || m.firstDownAt == 0 || m.asked < brain.AskBytes || now-m.lastUpAt < brain.AskMs || m.maxGap >= brain.AskMs {
+		return false
+	}
+	m.askNoted = true
 	return true
 }
 

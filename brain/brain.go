@@ -134,13 +134,18 @@ type Brain struct {
 	raceLost   int     // connect races the leader lost in a row (NoteRace)
 	raceDoubt  int64   // when they reached two; 0 once it wins one
 	askedAt    int64   // the leader's first flow it has not answered since; 0: none
+
+	// when flows on the leader were left unanswered (NoteUnanswered), and when
+	// a path lost a sweep without delivering its probe, until it leads again
+	unheardAt []int64
+	probeLost map[string]int64
 }
 
 // New creates a brain for one network context.
 func New(cfg Config, ctx string, paths []PathInfo, seed uint64) *Brain {
 	b := &Brain{cfg: cfg, ctx: ctx, paths: paths, st: map[string]*PathState{}, lastPick: map[string]int64{},
 		Gov: NewGovernor(), Diag: NewDiagnoser(paths), Breaker: NewBreaker(cfg.Breaker), J: NewJournal(1000), rng: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
-		saved: map[string]ctxState{}, switchedAt: math.MinInt64, asleep: map[string]bool{}, demoted: map[string]int64{}}
+		saved: map[string]ctxState{}, switchedAt: math.MinInt64, asleep: map[string]bool{}, demoted: map[string]int64{}, probeLost: map[string]int64{}}
 	for _, p := range paths {
 		b.st[p.ID] = &PathState{}
 	}
@@ -510,6 +515,7 @@ func (b *Brain) setLeader(p string, now int64, act, why string) {
 	}
 	b.leader, b.leaderSince = p, now
 	b.raceLost, b.raceDoubt, b.askedAt = 0, 0, 0
+	delete(b.probeLost, p)
 	b.J.Add(now, act, why, p)
 }
 

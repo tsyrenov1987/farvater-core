@@ -431,6 +431,19 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 				cancel()
 				continue
 			}
+			// A path frozen under the app's open connections answers none of
+			// the requests sent on them: two left unanswered put the leader
+			// in doubt, and once a sweep finds it does not deliver either,
+			// the flows on it that have waited AskMs are closed. The app
+			// reconnects, and the new flow goes to the new leader.
+			if f.pin == "" && sleptMs(a.start) < brain.SleepGraceMs && a.m.askOnce(now) {
+				f.s.noteUnanswered(a.path, a.startMs)
+			}
+			if sn.asked > 0 && now-sn.askedAt >= brain.AskMs && f.s.probeLost(a.path) >= a.startMs {
+				a.condemned = true
+				cancel()
+				continue
+			}
 			if a.m.noteOnce() {
 				sn = a.m.snap()
 				f.s.noteGoodput(a.path, sn.busyDown, sn.busyMs, a.startMs)

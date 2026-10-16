@@ -192,6 +192,8 @@ var scenarios = []scenario{
 		ph := r.load("после заморозки ведущего ("+victim+")", 40, 3, mixed, 25*sec)
 		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
 		r.check(r.leaderName() != victim, "ведущий сменился: %s → %s", victim, r.leaderName())
+		// a request on a frozen connection waits until the app gives up (25 s here)
+		r.check(ph.P95Ms <= 10*sec.Milliseconds(), "запрос на замёрзшем соединении ждал p95 %d мс (≤ 10 с)", ph.P95Ms)
 	}},
 	{name: "whitelist_cell", about: "сотовая: включились белые списки — все пути глохнут, кроме входа через разрешённый адрес (white); потом списки сняли",
 		white: map[int]bool{5: true}, ctx: "cell", run: func(r *runner) {

@@ -290,3 +290,70 @@ func TestSweepOfALeaderThatLosesTheConnectRace(t *testing.T) {
 		t.Fatalf("swept %v though the leader won a race after its two losses", p)
 	}
 }
+
+// A leader frozen under the app's open connections answers none of the
+// requests sent on them, and nothing else shows it: no flow's record is cut,
+// no new flow is dialled. Two flows left unanswered put it in doubt, and the
+// sweep takes every available path, measured or not: it may be dead. A
+// leader that does not deliver its probe is marked so its flows waiting can
+// be closed, until it leads again; one that delivers, however slower, is not.
+// One flow left unanswered is not enough, nor flows on another path or ones
+// begun before the leader took the lead.
+func TestSweepOfALeaderThatLeavesRequestsUnanswered(t *testing.T) {
+	paths := sweepPaths()
+	setup := func() (*Brain, string, int64) {
+		br := New(DefaultConfig(), "t", paths, 7)
+		now := warm(br, paths, 1000)
+		br.Pick(now, "x", DstTLS443)
+		for _, p := range paths {
+			br.NoteGoodput(p.ID, 256<<10, 100, now-100, now) // every path measured fast
+		}
+		return br, br.Leader(), now + 5000
+	}
+	br, lead, now := setup()
+	br.NoteUnanswered(lead, now-3000, now)
+	if p := br.SweepDue(now); p != nil {
+		t.Fatalf("swept %v on one request unanswered", p)
+	}
+	for _, p := range paths {
+		if p.ID != lead {
+			br.NoteUnanswered(p.ID, now-3000, now) // not the leader
+			break
+		}
+	}
+	br.NoteUnanswered(lead, br.leaderSince-1, now) // a flow begun before it led
+	if p := br.SweepDue(now); p != nil {
+		t.Fatalf("swept %v on requests unanswered on another path or begun before the leader led", p)
+	}
+	now += 500
+	br.NoteUnanswered(lead, now-3000, now)
+	probed := br.SweepDue(now)
+	if len(probed) != len(paths) || probed[0] != lead {
+		t.Fatalf("swept %v on two requests unanswered, want the leader %s and the %d other paths", probed, lead, len(paths)-1)
+	}
+	br.Swept(probed[1], 256<<10, 20, true, now+20)
+	br.SweepCheck(now + 1100)
+	if br.Leader() == lead {
+		t.Fatalf("the leader %s kept the lead without delivering its probe", lead)
+	}
+	if at := br.ProbeLost(lead); at != now+1100 {
+		t.Fatalf("the leader that did not deliver its probe: ProbeLost %d, want %d", at, now+1100)
+	}
+	br.setLeader(lead, now+2000, "lead_test", "back")
+	if at := br.ProbeLost(lead); at != 0 {
+		t.Fatalf("a path that leads again: ProbeLost %d, want 0", at)
+	}
+
+	br, lead, now = setup()
+	br.NoteUnanswered(lead, now-3000, now)
+	br.NoteUnanswered(lead, now-3000, now)
+	probed = br.SweepDue(now)
+	br.Swept(probed[1], 256<<10, 20, true, now+20)
+	br.Swept(lead, 256<<10, 3000, true, now+3000)
+	if br.Leader() == lead {
+		t.Fatalf("the leader %s kept the lead delivering its probe in 3000 ms vs 20", lead)
+	}
+	if at := br.ProbeLost(lead); at != 0 {
+		t.Fatalf("a leader that delivered its probe, slower: ProbeLost %d, want 0", at)
+	}
+}

@@ -12,9 +12,10 @@ import (
 // flow sent to a bad path to learn that is a page or a video the user waits
 // for. A sweep spends probes instead, only while the leader is in doubt:
 //
-//   - acute: the leader's breaker tripped, it stalled out or it lost two
-//     connect races in a row (any path may be the one that still delivers, so
-//     the sweep takes the available paths);
+//   - acute: the leader's breaker tripped, it stalled out, it lost two
+//     connect races in a row or left two requests unanswered
+//     (NoteUnanswered; any path may be the one that still delivers, so the
+//     sweep takes the available paths);
 //   - chronic: the leader is measured slow, answers late or holds flows back
 //     (NoteSlow); the sweep takes the paths with no goodput or answer time of
 //     their own yet.
@@ -79,6 +80,52 @@ func (b *Brain) heldSince(since int64) int {
 	return n
 }
 
+// AskBytes and AskMs: a flow that answered every request within AskMs, then
+// sent AskBytes or more and has heard nothing back for AskMs while the app
+// waits, is left unanswered by its path. Fewer bytes are an HTTP/2
+// connection's control frames (PING, WINDOW_UPDATE: 31-45 bytes on the wire,
+// two at the end of a download) or a close_notify, which expect no answer.
+const (
+	AskBytes = 128
+	AskMs    = 2000
+)
+
+// NoteUnanswered takes a flow on path left unanswered (AskBytes, AskMs). A
+// connection the app keeps open and the TSPU freezes under it shows nothing
+// else: no record is cut, the request is small, and the app waits for its own
+// timeout, 25 s and more, before it dials again. Two of them put the leader
+// in doubt: a sweep probes it beside the other paths, and the flows waiting
+// on a leader that does not deliver its probe are closed (ProbeLost). A
+// messenger's long poll on a healthy leader costs a sweep, no more.
+func (b *Brain) NoteUnanswered(path string, startMs, now int64) {
+	if path != b.leader || startMs < b.leaderSince || startMs < b.switchedAt {
+		return
+	}
+	b.unheardAt = append(b.unheardAt, now)
+	if len(b.unheardAt) > 8 {
+		b.unheardAt = b.unheardAt[len(b.unheardAt)-8:]
+	}
+	if n := b.unheardSince(b.sweptAt); n >= 1 && n <= 2 {
+		b.J.Add(now, "unanswered", fmt.Sprintf("a request unanswered for %d ms, flow %d of 2", AskMs, n), path)
+	}
+}
+
+// unheardSince counts the flows on the leader left unanswered since it took
+// the lead and after since.
+func (b *Brain) unheardSince(since int64) int {
+	n := 0
+	for _, at := range b.unheardAt {
+		if at >= b.leaderSince && at > since {
+			n++
+		}
+	}
+	return n
+}
+
+// ProbeLost returns when path last lost a sweep without delivering its probe
+// while another path delivered, if it has not led since; 0 if not.
+func (b *Brain) ProbeLost(path string) int64 { return b.probeLost[path] }
+
 // NoteRace takes a connect race a flow's first dial was in: lost when another
 // path's dial came up first while it still hung. A leader whose dials hang
 // while the runner-up's connect (an allow list, a block of new handshakes)
@@ -126,12 +173,17 @@ func (b *Brain) SweepDue(now int64) []string {
 	held := !slow && b.suspect(now)
 	// A doubt the leader has answered since (the next leader delivers) is over.
 	acute := b.doubtAt > b.sweptAt && (b.leader == "" || !b.leaderAnswers(now)) || b.raceDoubt > b.sweptAt
+	unheard := b.unheardSince(max(b.sweptAt, now-LeadFreshMs)) >= 2
 	var cands []string
 	why := ""
 	switch {
-	case acute || b.cfg.SweepAlways:
-		why = "the leader is in doubt"
-		if !acute {
+	case acute || unheard || b.cfg.SweepAlways:
+		switch {
+		case acute:
+			why = "the leader is in doubt"
+		case unheard:
+			why = "the leader leaves requests unanswered"
+		default:
 			why = "every sweep interval"
 		}
 		for _, p := range avail {
@@ -304,6 +356,9 @@ func (b *Brain) sweepVerdict(now int64) {
 	w.decided = true
 	if lead != "" {
 		b.demoted[lead] = now
+		if probed && !ldone {
+			b.probeLost[lead] = now
+		}
 	}
 	b.setLeader(best, now, "lead_sweep", why)
 }

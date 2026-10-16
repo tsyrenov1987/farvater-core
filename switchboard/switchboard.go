@@ -556,6 +556,27 @@ func (s *Switchboard) noteStall(path string, startMs int64) {
 	s.sweepDue(nowMs())
 }
 
+func (s *Switchboard) noteUnanswered(path string, startMs int64) {
+	if s.b == nil {
+		return // a bare test switchboard
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.NoteUnanswered(path, startMs, nowMs())
+	s.sweepDue(nowMs())
+}
+
+// probeLost returns when the path last lost a sweep without delivering its
+// probe, if it has not led since (brain.ProbeLost); 0 if not.
+func (s *Switchboard) probeLost(path string) int64 {
+	if s.b == nil {
+		return 0 // a bare test switchboard
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.ProbeLost(path)
+}
+
 func (s *Switchboard) noteAnswered(path string, startMs int64) {
 	if s.b == nil {
 		return // a bare test switchboard
