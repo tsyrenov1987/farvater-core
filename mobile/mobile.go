@@ -310,6 +310,18 @@ func Running() bool {
 	return sb != nil
 }
 
+// EnsureListening makes sure the SOCKS port takes connections, listening
+// again on the same port when the system took the socket while the app slept.
+// The apps call it when they come to the foreground, before their clients
+// reconnect. Blocks up to two seconds; false if the port did not come back.
+func EnsureListening() bool {
+	s := current()
+	if s == nil {
+		return false
+	}
+	return s.EnsureListening(2 * time.Second)
+}
+
 func current() *switchboard.Switchboard {
 	mu.Lock()
 	defer mu.Unlock()

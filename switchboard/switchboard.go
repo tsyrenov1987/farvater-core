@@ -126,6 +126,10 @@ type Switchboard struct {
 
 	life context.Context // the serving context, for the switchboard's own flows (sweeps)
 
+	lnMu   sync.Mutex
+	ln     net.Listener // the SOCKS listener the accept loop waits on
+	lnAddr string
+
 	saveMu  sync.Mutex // one memory write at a time, never an older snapshot over a newer one
 	written uint64
 
@@ -370,13 +374,14 @@ func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error 
 	s.life = ctx
 	s.mu.Unlock()
 	addr := ln.Addr().String()
-	var lnMu sync.Mutex
-	current := ln
+	s.lnMu.Lock()
+	s.ln, s.lnAddr = ln, addr
+	s.lnMu.Unlock()
 	go func() {
 		<-ctx.Done()
-		lnMu.Lock()
-		current.Close()
-		lnMu.Unlock()
+		s.lnMu.Lock()
+		s.ln.Close()
+		s.lnMu.Unlock()
 		for _, w := range s.wires {
 			w.Close()
 		}
@@ -402,9 +407,9 @@ func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error 
 			if rerr != nil {
 				return rerr
 			}
-			lnMu.Lock()
-			current, ln = next, next
-			lnMu.Unlock()
+			s.lnMu.Lock()
+			s.ln, ln = next, next
+			s.lnMu.Unlock()
 			if ctx.Err() != nil {
 				next.Close()
 				return nil
@@ -413,6 +418,42 @@ func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error 
 		}
 		go s.handle(ctx, c)
 	}
+}
+
+// EnsureListening checks that the SOCKS port still takes connections and,
+// when it does not, has the accept loop listen again on the same address,
+// waiting up to wait for the port to come back. iOS can take the listening
+// socket of a suspended app without failing the Accept that waits on it: the
+// app wakes to a refused port and the loop never learns. Closing the listener
+// wakes that Accept with an error, and the loop listens again.
+func (s *Switchboard) EnsureListening(wait time.Duration) bool {
+	s.lnMu.Lock()
+	ln, addr := s.ln, s.lnAddr
+	s.lnMu.Unlock()
+	if ln == nil {
+		return false
+	}
+	if takesConnections(addr) {
+		return true
+	}
+	s.logf("listener on %s refuses connections, listening again", addr)
+	ln.Close()
+	for deadline := time.Now().Add(wait); time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+		if takesConnections(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func takesConnections(addr string) bool {
+	c, err := net.DialTimeout("tcp", addr, 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
 }
 
 // relisten binds addr again, retrying while the old socket lets go of it,
