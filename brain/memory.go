@@ -215,6 +215,16 @@ func (b *Brain) EnterRestricted(now int64) {
 	}
 }
 
+// AnsweredSince reports whether a flow on any path got an answer at or after since.
+func (b *Brain) AnsweredSince(since int64) bool {
+	for _, s := range b.st {
+		if s.AnsweredAt >= since {
+			return true
+		}
+	}
+	return false
+}
+
 // noteBack counts the silent paths of a restricted network that connect again.
 func (b *Brain) noteBack(path string, now int64) {
 	if !b.silent[path] {

@@ -222,7 +222,10 @@ connects, the switchboard dials a few allow-listed sites directly (verified TLS,
 means the network is up and shuts the paths out: the brain moves to the network's restricted variant, where the
 paths that delivered there before go first (the first time, those the catalogue labels `white`), and for two
 minutes after each answer a path that fails to connect is evidence against it, not a sign of a dead network.
-When two of the paths that were silent at entry connect again, the brain returns to the plain network. Only the
+A path that answered while the sites were dialled is not shut out: the network is up (failures count again),
+and the brain stays in the plain network with the leader that answered. Otherwise the restricted variant
+started over by its priors, on a path the network had just reset (kil_tspu_hello_rst: 4-8 runs in 60 ended
+with such a leader, 0 in 40 after). When two of the paths that were silent at entry connect again, the brain returns to the plain network. Only the
 order changes: every path stays in the fan.
 
 ## 10. Catalogue

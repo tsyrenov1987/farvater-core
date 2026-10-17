@@ -153,6 +153,20 @@ func TestRestrictedNetworkCheck(t *testing.T) {
 	if st := late.Status(); st.Ctx != "wifi:0a1b2c3d" {
 		t.Fatalf("a check that answered after the network changed moved the brain: ctx %q", st.Ctx)
 	}
+
+	// A path answered while the check was out: the paths are not shut out,
+	// and the leader that answered stays.
+	answered, _ := New(cfg, threeDead(t))
+	release = make(chan struct{})
+	answered.probe = func(context.Context, []string) bool { <-release; return true }
+	answered.observe(wireFailed("a"))
+	answered.observe(wireFailed("b"))
+	answered.noteAnswered("c", nowMs())
+	close(release)
+	time.Sleep(100 * time.Millisecond)
+	if st := answered.Status(); st.Ctx != "cell" {
+		t.Fatalf("a check that answered after a path did moved the brain: ctx %q", st.Ctx)
+	}
 }
 
 func waitCtx(t *testing.T, s *Switchboard, want string) {

@@ -285,7 +285,9 @@ func (s *Switchboard) refresh(path string, at time.Time) {
 // checkRestricted runs when no path connects: if an allow-listed site answers
 // directly, the network is up and shuts the paths out, and the brain moves to
 // (or stays in) the network's restricted variant. A result that arrives after
-// the network changed is ignored.
+// the network changed is ignored. A path that answered while the check was out
+// is not shut out: the network is up, and the brain stays where it is (its
+// restricted variant would start over without the leader that answered).
 func (s *Switchboard) checkRestricted(ctxAtStart string) {
 	ctx, cancel := context.WithTimeout(context.Background(), whiteProbeTimeout)
 	defer cancel()
@@ -293,12 +295,16 @@ func (s *Switchboard) checkRestricted(ctxAtStart string) {
 	s.mu.Lock()
 	s.probing = false
 	same := s.b.Ctx() == ctxAtStart
-	if up && same {
+	answered := s.b.AnsweredSince(s.probedAt)
+	switch {
+	case up && same && answered:
+		s.b.NetworkUp(nowMs())
+	case up && same:
 		s.b.EnterRestricted(nowMs())
 	}
 	ctxNow := s.b.Ctx()
 	s.mu.Unlock()
-	s.logf("no path connects; allow-listed sites answer: %v; network %s", up && same, ctxNow)
+	s.logf("no path connects; allow-listed sites answer: %v; a path answered since: %v; network %s", up && same, answered, ctxNow)
 }
 
 // probeWhite reports whether any of hosts completes a verified TLS handshake
