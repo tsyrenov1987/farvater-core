@@ -369,9 +369,14 @@ func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error 
 	s.mu.Lock()
 	s.life = ctx
 	s.mu.Unlock()
+	addr := ln.Addr().String()
+	var lnMu sync.Mutex
+	current := ln
 	go func() {
 		<-ctx.Done()
-		ln.Close()
+		lnMu.Lock()
+		current.Close()
+		lnMu.Unlock()
 		for _, w := range s.wires {
 			w.Close()
 		}
@@ -387,9 +392,44 @@ func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error 
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
-			return err
+			// iOS takes the listening socket away from an app it suspends; the
+			// app wakes to a port nobody listens on while Running still says yes.
+			// Listen again on the same address: the clients keep the port and the
+			// credentials they were given.
+			s.logf("listener on %s failed (%v), listening again", addr, err)
+			ln.Close()
+			next, rerr := relisten(ctx, addr)
+			if rerr != nil {
+				return rerr
+			}
+			lnMu.Lock()
+			current, ln = next, next
+			lnMu.Unlock()
+			if ctx.Err() != nil {
+				next.Close()
+				return nil
+			}
+			continue
 		}
 		go s.handle(ctx, c)
+	}
+}
+
+// relisten binds addr again, retrying while the old socket lets go of it,
+// until ctx ends.
+func relisten(ctx context.Context, addr string) (net.Listener, error) {
+	delay := 50 * time.Millisecond
+	for {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			return ln, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 2*time.Second)
 	}
 }
 
