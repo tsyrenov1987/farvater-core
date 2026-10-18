@@ -18,7 +18,8 @@ import (
 // [data length u16][header length u8][SOCKS5 address][data]. An association
 // rides the leader, falls through the brain's order when a path cannot carry
 // it, and files no receipts. UDP/443 is QUIC: refused, so apps fall back to
-// TCP, where delivery is measured.
+// TCP, where delivery is measured. An association to a Russian destination
+// (Config.RuDirect) goes over the device's own network instead.
 
 const (
 	// hevUDPBuf holds a datagram and its address on the way back; a larger one
@@ -119,6 +120,7 @@ func replyFrom(src wire.Target, to wire.Target, name bool) netip.AddrPort {
 type udpAssoc struct {
 	s     *Switchboard
 	ps    wire.PacketSession
+	dc    net.Conn // or this, to a Russian destination over the device's own network (ru.go)
 	path  string
 	c     *carried // the path's session totals
 	to    wire.Target
@@ -147,6 +149,17 @@ func (s *Switchboard) serveUDP(ctx context.Context, c net.Conn) {
 		if err != nil || d.to.Port == 443 || !routable(d.to.Host) {
 			break
 		}
+		if a.ps == nil && a.dc == nil && s.ruDirect(d.to.Host) && s.openRuUDP(ctx, a, d) {
+			go a.pumpDirect(cancel, c)
+		}
+		if a.dc != nil {
+			a.last.Store(nowMs())
+			a.up.Add(int64(len(d.data)))
+			if _, err := a.dc.Write(d.data); err != nil {
+				break
+			}
+			continue
+		}
 		if a.ps == nil {
 			if !s.openUDP(ctx, a, d) {
 				break
@@ -164,6 +177,10 @@ func (s *Switchboard) serveUDP(ctx context.Context, c net.Conn) {
 	cancel() // before the session closes: its end is then not the path's doing
 	if a.ps != nil {
 		a.finish()
+	}
+	if a.dc != nil {
+		a.dc.Close()
+		s.logf("udp ru direct dst=%s up=%d down=%d answers=%d dur=%dms", a.to.Host, a.up.Load(), a.down.Load(), a.answers.Load(), time.Since(a.start).Milliseconds())
 	}
 }
 

@@ -160,6 +160,7 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 	cfg.MemoryFile = memoryFile
 	cfg.Hosted = hosted
 	cfg.Direct = withoutProbes(direct, append([]string{DefaultProbeURL}, cat.ProbeURLs...))
+	cfg.RuDirect = true
 	cfg.ProbeURL = DefaultProbeURL
 	if len(cat.ProbeURLs) > 0 {
 		cfg.ProbeURL = cat.ProbeURLs[0]

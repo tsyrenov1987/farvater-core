@@ -87,6 +87,12 @@ func (s *Switchboard) serveDirect(ctx context.Context, c net.Conn, req socksRequ
 		_ = replySocks5(c, 4) // host unreachable
 		return
 	}
+	s.pipeDirect(ctx, c, r)
+}
+
+// pipeDirect answers the app and copies both ways between it and r, the
+// destination dialled directly, until either side ends.
+func (s *Switchboard) pipeDirect(ctx context.Context, c, r net.Conn) {
 	defer r.Close()
 	if err := replySocks5(c, 0); err != nil {
 		return

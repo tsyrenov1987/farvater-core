@@ -54,6 +54,12 @@ type Config struct {
 	// only itself. In DirectNames form. Empty: none.
 	Direct []string
 
+	// RuDirect sends Russian sites straight to the network too (ru.go): the
+	// .ru, .su and .рф zones, big Russian services and "what is my IP"
+	// services by name, Russian addresses by address. A site whose direct
+	// dial fails goes over the paths for a while. The probes' hosts never go.
+	RuDirect bool
+
 	// User and Pass, when set, make SOCKS5 clients authenticate (RFC 1929).
 	// The mobile apps set fresh random ones each session: every app on the
 	// device can reach a loopback port, and an open proxy there would show it
@@ -122,6 +128,9 @@ type Switchboard struct {
 	probe    func(ctx context.Context, hosts []string) bool
 	udpBack  map[string]int64 // path → until when UDP tries it last (udp.go)
 	wantTill map[string]int64 // hosted path → until when it is wanted up (Hosted)
+	ruFailed map[string]int64 // Russian site → until when it goes over the paths (ru.go)
+
+	probeHosts []string // the delivery probes' hosts: never sent around the paths
 
 	// served and blocked count the session's receipts as PathStatus does, but
 	// on every network at once (a path's counts are its network's and change
@@ -158,7 +167,7 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 	if labTune != nil {
 		labTune(&cfg)
 	}
-	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, carried: map[string]*carried{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}, wantTill: map[string]int64{}}
+	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, carried: map[string]*carried{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}, wantTill: map[string]int64{}, ruFailed: map[string]int64{}}
 	var infos []brain.PathInfo
 	for _, e := range cat.Paths {
 		if wire.IsHosted(e.Spec.Kind) && !slices.Contains(cfg.Hosted, e.Spec.Kind) {
@@ -183,6 +192,11 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 	s.b = brain.New(cfg.Brain, cfg.Ctx, infos, uint64(time.Now().UnixNano()))
 	if u, err := url.Parse(cfg.ProbeURL); err == nil {
 		s.probeHost = u.Hostname()
+	}
+	for _, p := range append([]string{cfg.ProbeURL}, cat.ProbeURLs...) {
+		if u, err := url.Parse(p); err == nil && u.Hostname() != "" {
+			s.probeHosts = append(s.probeHosts, strings.ToLower(u.Hostname()))
+		}
 	}
 	for _, id := range s.order {
 		if _, ok := s.wires[id].(wire.HostedWire); ok {
@@ -544,6 +558,9 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 	}
 	if s.isDirect(req.Host) {
 		s.serveDirect(ctx, c, req)
+		return
+	}
+	if s.ruDirect(req.Host) && s.serveRuDirect(ctx, c, req) {
 		return
 	}
 	// Counted only once admitted: scanners, the iOS tunnel's liveness probe

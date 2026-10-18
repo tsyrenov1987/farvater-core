@@ -42,6 +42,15 @@ Support libraries:
   golang.org/x/mobile                    BSD-3 (Android/iOS bindings: gobind and bind/seq)
 
 ------------------------------------------------------------------------------
+Data embedded in the compiled binary
+------------------------------------------------------------------------------
+
+  switchboard/ru4.bin, switchboard/ru6.bin — the IPv4 and IPv6 blocks
+  registered to RU, merged, from the RIPE NCC delegation statistics
+  (https://ftp.ripe.net/pub/stats/ripencc/delegated-ripencc-extended-latest,
+  17 October 2026), made by tools/ruip.
+
+------------------------------------------------------------------------------
 Used only by the tests (not linked into the compiled binary)
 ------------------------------------------------------------------------------
 
