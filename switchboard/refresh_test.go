@@ -106,3 +106,19 @@ func TestNetworkChangeRefreshesSharedConnections(t *testing.T) {
 		t.Fatal("the first flow after the network change rode the old network's connection")
 	}
 }
+
+// The network given back after the system blocked it (Android, a cached app
+// woken by a push) leaves every shared connection behind: the push is for a
+// message or a call, and its first request must not wait on a quiet one.
+func TestNetworkBackAfterBlockRefreshesSharedConnections(t *testing.T) {
+	s, addr, w := sharedBoard(t)
+	if !answered(t, addr) {
+		t.Fatal("setup: the live connection did not answer")
+	}
+	w.dead.Store(true)
+	s.SetBlocked(true)
+	s.SetBlocked(false)
+	if !answered(t, addr) {
+		t.Fatal("the first flow after the network came back rode the quiet connection")
+	}
+}

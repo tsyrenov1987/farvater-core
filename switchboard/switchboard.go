@@ -303,6 +303,28 @@ func (s *Switchboard) SetNetwork(ctx string) {
 	}
 }
 
+// SetBlocked tells the switchboard the system blocked the app's network on
+// the same network, or gave it back (Android cuts a cached app off, resetting
+// its sockets, until a push wakes it). What fails meanwhile is not the paths'
+// doing (brain.Blocked). Once it is back, a connection shared across flows may
+// have lost what it sent while blocked and wait out its retransmit timer: the
+// next flow over each path dials a fresh one, and live flows finish where
+// they are.
+func (s *Switchboard) SetBlocked(blocked bool) {
+	s.mu.Lock()
+	if blocked {
+		s.b.Blocked(nowMs())
+		s.mu.Unlock()
+		return
+	}
+	s.b.Unblocked(nowMs())
+	s.mu.Unlock()
+	at := time.Now()
+	for _, id := range s.order {
+		s.refresh(id, at)
+	}
+}
+
 // refresh makes the next flow over path dial a fresh connection when the
 // path's wire shares one across flows (wire.Refresher) and made it before at.
 func (s *Switchboard) refresh(path string, at time.Time) {

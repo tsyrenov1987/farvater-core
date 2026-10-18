@@ -133,6 +133,17 @@ func SetNetwork(networkCtx string) {
 	}
 }
 
+// SetBlocked tells the running core the system blocked the app's network, or
+// gave it back (Android cuts a cached app off until a push wakes it): what
+// fails meanwhile does not count against the paths, and once the network is
+// back the next flow over each path dials a fresh connection instead of
+// waiting on one that went quiet. A no-op when not running.
+func SetBlocked(blocked bool) {
+	if s := current(); s != nil {
+		s.SetBlocked(blocked)
+	}
+}
+
 // Start loads the catalogue and starts the switchboard on 127.0.0.1:socksPort.
 // catalogueSrc is either an http(s) URL of a catalogue/subscription, or the
 // catalogue text itself (JSON, base64 subscription, or share links).

@@ -118,6 +118,7 @@ type tripEvent struct {
 }
 
 type railBreaker struct {
+	trippedAt    int64
 	trippedUntil int64
 	sig          BlockSig
 	soft         []tripEvent // soft signals still inside the window
@@ -184,12 +185,37 @@ func (b *Breaker) NoteSig(path string, sig BlockSig, now int64) (bool, BlockSig)
 	if cd == 0 {
 		cd = 30_000
 	}
-	rb.trippedUntil = now + cd
+	rb.trippedAt, rb.trippedUntil = now, now+cd
 	rb.sig = sig
 	rb.soft = rb.soft[:0]
 	b.trips = append(b.trips, tripEvent{now, sig})
 	b.pruneTrips(now)
 	return true, sig
+}
+
+// Forgive takes back every trip and soft signal from since on: what the
+// system did to the app's sockets then (Brain.Blocked) says nothing of the
+// rails.
+func (b *Breaker) Forgive(since int64) {
+	for _, rb := range b.rails {
+		if rb.trippedUntil > 0 && rb.trippedAt >= since {
+			rb.trippedAt, rb.trippedUntil, rb.sig = 0, 0, SigNone
+		}
+		kept := rb.soft[:0]
+		for _, e := range rb.soft {
+			if e.at < since {
+				kept = append(kept, e)
+			}
+		}
+		rb.soft = kept
+	}
+	kept := b.trips[:0]
+	for _, e := range b.trips {
+		if e.at < since {
+			kept = append(kept, e)
+		}
+	}
+	b.trips = kept
 }
 
 func (b *Breaker) pruneTrips(now int64) {

@@ -121,6 +121,7 @@ type Brain struct {
 	mem        *Memory                     // what earlier sessions learned (nil: none)
 	priors     map[string]map[string]Prior // the catalogue's, per network
 	switchedAt int64                       // last network change: flows begun before it are not evidence
+	blockedAt  int64                       // the system blocked the app's network (Blocked); 0: it has not
 	silent     map[string]bool             // restricted network: paths silent when it was entered
 	back       map[string]bool             // ...and those of them that connected since
 	upAt       int64                       // an allow-listed site last answered directly
@@ -761,6 +762,11 @@ func (b *Brain) Observe(r Receipt) {
 		b.J.Add(now, "drop_sleep", "the device slept during the flow: not evidence against the path", r.Path)
 		return
 	}
+	if b.blockedAt != 0 && r.AtMs >= b.blockedAt-BlockSlackMs {
+		b.Dropped++
+		b.J.Add(now, "drop_blocked", "the system blocked the app's network: not evidence against the path", r.Path)
+		return
+	}
 	if r.AtMs-r.DurMs < b.switchedAt {
 		// The flow began on the network the device has left.
 		b.Dropped++
@@ -803,12 +809,54 @@ func (b *Brain) Observe(r Receipt) {
 // against the path now, not when the app gives up.
 func (b *Brain) NoteStall(path string, startMs, now int64) {
 	s, ok := b.st[path]
-	if !ok || startMs < b.switchedAt {
-		return // the flow began on the network the device has left
+	if !ok || startMs < b.switchedAt || b.blockedAt != 0 {
+		return // the flow began on the network the device has left, or the system blocks the app's
 	}
 	s.stallRun++
 	if tripped, sig := b.Breaker.NoteSig(path, SigThrottle, now); tripped {
 		b.tripped(path, sig, now)
+	}
+}
+
+// BlockSlackMs: the system resets the app's sockets as it blocks its network
+// and tells the app a moment later, so what failed this long before Blocked
+// is taken for the block as well.
+const BlockSlackMs = 2000
+
+// Blocked records that the system blocked the app's network (Android cuts a
+// cached app off until a push wakes it, resetting its sockets): the flows it
+// kills and those that fail while it lasts are not evidence against their
+// paths, and the trips they caused are taken back. Unblocked ends it.
+func (b *Brain) Blocked(now int64) {
+	if b.blockedAt != 0 {
+		return
+	}
+	b.blockedAt = now
+	b.forgive(now - BlockSlackMs)
+	b.J.Add(now, "net_blocked", "the system blocked the app's network", b.leader)
+}
+
+// Unblocked ends Blocked: flows begun before now are not evidence (as after a
+// network change), and nothing tripped while the network was blocked.
+func (b *Brain) Unblocked(now int64) {
+	if b.blockedAt == 0 {
+		return
+	}
+	b.forgive(b.blockedAt - BlockSlackMs)
+	b.blockedAt = 0
+	b.switchedAt = now
+	b.J.Add(now, "net_unblocked", "the system gave the app its network back", b.leader)
+}
+
+func (b *Brain) forgive(since int64) {
+	b.Breaker.Forgive(since)
+	for path, at := range b.demoted {
+		if at >= since {
+			delete(b.demoted, path)
+		}
+	}
+	if b.doubtAt >= since {
+		b.doubtAt = 0
 	}
 }
 
