@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -122,6 +123,13 @@ type Switchboard struct {
 	udpBack  map[string]int64 // path → until when UDP tries it last (udp.go)
 	wantTill map[string]int64 // hosted path → until when it is wanted up (Hosted)
 
+	// served and blocked count the session's receipts as PathStatus does, but
+	// on every network at once (a path's counts are its network's and change
+	// with it) and without the switchboard's own probes (probeHost): what the
+	// apps asked for and got, or got a block signature instead.
+	served, blocked int64
+	probeHost       string
+
 	lostAt sync.Map // path → when a flow open across a sleep asked on it and heard nothing (ms)
 
 	life context.Context // the serving context, for the switchboard's own flows (sweeps)
@@ -173,6 +181,9 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 		return nil, errors.New("switchboard: no usable paths")
 	}
 	s.b = brain.New(cfg.Brain, cfg.Ctx, infos, uint64(time.Now().UnixNano()))
+	if u, err := url.Parse(cfg.ProbeURL); err == nil {
+		s.probeHost = u.Hostname()
+	}
 	for _, id := range s.order {
 		if _, ok := s.wires[id].(wire.HostedWire); ok {
 			s.b.Sleep(id, nowMs()) // until the app brings it up
@@ -687,6 +698,14 @@ func (s *Switchboard) observe(r brain.Receipt) {
 	s.mu.Lock()
 	r.Ctx = s.b.Ctx()
 	s.b.Observe(r)
+	if s.probeHost == "" || r.Dst != s.probeHost {
+		switch {
+		case r.Sig() != brain.SigNone:
+			s.blocked++
+		case r.FirstByte():
+			s.served++
+		}
+	}
 	s.receipts = append(s.receipts, r)
 	if n := s.cfg.ReceiptHistory; n > 0 && len(s.receipts) > n {
 		s.receipts = s.receipts[len(s.receipts)-n:]
@@ -783,6 +802,8 @@ type Status struct {
 	UDP       int64         `json:"udp"`    // UDP associations that reached a path
 	Direct    int64         `json:"direct"` // flows that went around the paths (Config.Direct)
 	Dropped   int           `json:"dropped"`
+	Served    int64         `json:"served"`  // the session's receipts served, on every network, probes left out
+	Blocked   int64         `json:"blocked"` // the session's receipts with a block signature, the same way
 	Paths     []PathStatus  `json:"paths"`
 	Skipped   []string      `json:"skipped"`
 	Journal   int           `json:"journal_entries"`
@@ -798,7 +819,7 @@ func (s *Switchboard) Status() Status {
 		Version: Version, UptimeSec: int64(time.Since(s.started).Seconds()),
 		Listen: s.cfg.Listen, Ctx: s.b.Ctx(), Catalogue: s.cat.Title, Leader: s.b.Leader(),
 		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Dropped: s.b.Dropped,
-		Skipped: s.Skipped, Journal: len(s.b.J.Entries()),
+		Skipped: s.Skipped, Journal: len(s.b.J.Entries()), Served: s.served, Blocked: s.blocked,
 	}
 	for _, id := range s.order {
 		ps := s.b.State(id)

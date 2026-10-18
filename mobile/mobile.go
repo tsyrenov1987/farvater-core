@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"os"
 	"runtime/debug"
 	"runtime/metrics"
 	"slices"
@@ -91,6 +92,23 @@ func SetMemoryFile(path string) {
 	mu.Lock()
 	defer mu.Unlock()
 	memoryFile = path
+}
+
+// SetCrashFile names the file where the Go runtime also writes what it prints
+// when the core dies of a panic or a fatal error (runtime/debug.SetCrashOutput):
+// a released core has no symbols, so the system's own crash record shows only
+// an offset in it. The file is emptied here; the app reads what an earlier run
+// left before calling this. Empty: no such file.
+func SetCrashFile(path string) error {
+	if path == "" {
+		return debug.SetCrashOutput(nil, debug.CrashOptions{})
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close() // SetCrashOutput keeps its own copy of the descriptor
+	return debug.SetCrashOutput(f, debug.CrashOptions{})
 }
 
 // contextName maps the apps' network names onto the core's network keys
