@@ -77,3 +77,16 @@ func TestNetHintLabelsTheNextLinkOnly(t *testing.T) {
 		t.Fatalf("paths %d, nets %q %q: want cell then none", len(c.Paths), c.Paths[0].Labels.Net, c.Paths[len(c.Paths)-1].Labels.Net)
 	}
 }
+
+// A "#white" line marks only the link after it as an allow-listed entry, and
+// stacks with "#net=" in either order.
+func TestWhiteHintLabelsTheNextLinkOnly(t *testing.T) {
+	body := base64.StdEncoding.EncodeToString([]byte("#net=cell\n#white\n" + l1 + "\n#white\nss://unsupported@x:1#c\n" + l2 + "\n"))
+	c, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Paths) != 2 || !c.Paths[0].Labels.White || c.Paths[0].Labels.Net != "cell" || c.Paths[1].Labels.White {
+		t.Fatalf("paths %d, labels %+v: want white+cell then plain", len(c.Paths), c.Paths)
+	}
+}

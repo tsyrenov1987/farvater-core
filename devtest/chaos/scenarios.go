@@ -23,6 +23,8 @@ type scenario struct {
 	paths       int
 	net         map[int]string // #net labels by path index
 	white       map[int]bool   // paths entering through an allow-listed address (JSON catalogue)
+	plain       bool           // white goes as "#white" lines in the plain list instead
+	dead        []int          // paths silent from before Start (cold start)
 	kinds       []string       // path kinds by index (vless, trojan, kilvater, hy2); vless/trojan in turn by default
 	ctx         string         // network at Start
 	manual      bool           // needs a driver outside the process (sleep.sh); run by name only
@@ -279,6 +281,14 @@ var scenarios = []scenario{
 			r.check(ph.RecoverMs >= 0 && ph.RecoverMs <= 15000, "связь вернулась через %d мс (≤ 15 с)", ph.RecoverMs)
 			r.check(r.leaderIn(5), "ведущий — white-вход: %s", r.leaderName())
 		}},
+	{name: "whitelist_cold_list", about: "холодный старт на сотовой в зоне белых списков: все заграничные пути глухие с самого начала, жив только белый вход p5; список простой, как его отдаёт Orden (#net=cell, #white)",
+		net: map[int]string{5: "cell"}, white: map[int]bool{5: true}, plain: true, dead: []int{0, 1, 2, 3, 4}, ctx: "cell", run: func(r *runner) {
+			first := r.load("первый запрос", 1, 1, page, 15*sec)
+			r.check(first.Served == 1 && first.FirstTry == 1 && first.MaxMs <= 5000, "первый запрос: доставлен %d, с первой попытки %d, %d мс (≤ 5 с, без 15-секундного ожидания)", first.Served, first.FirstTry, first.MaxMs)
+			ph := r.load("дальше", 20, 3, page, 15*sec)
+			r.check(share(ph.FirstTry, ph.Requests) >= 0.9, "с первой попытки %d/%d", ph.FirstTry, ph.Requests)
+			r.check(r.leaderIn(5), "ведущий — белый вход: %s", r.leaderName())
+		}},
 	{name: "soak_15min", about: "15 мин нагрузки; каждые 2 мин на 2–4 случайных путях случайная помеха, хотя бы один путь жив", run: func(r *runner) {
 		r.load("прогрев", 20, 3, page, 15*sec)
 		g0 := runtime.NumGoroutine()
@@ -463,8 +473,13 @@ func Run(name string) string {
 	}
 	mobile.SetMemoryFile("")
 	switchboard.SetLabTune(labTune)
-	cat := l.catalogue(sc.net)
-	if sc.white != nil {
+	for _, i := range sc.dead {
+		l.paths[i].set(Blackhole)
+	}
+	cat := l.catalogue(sc.net, nil)
+	if sc.plain {
+		cat = l.catalogue(sc.net, sc.white)
+	} else if sc.white != nil {
 		cat = l.catalogueJSON(sc.white)
 	}
 	if err := mobile.Start(cat, socksPort, ctx); err != nil {

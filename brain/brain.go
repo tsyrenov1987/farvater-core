@@ -690,6 +690,9 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 	if storm && b.Breaker.cfg.StormFanout {
 		tertiary = b.bestEscape(avail, []string{primary, secondary}, from, now)
 	}
+	if tertiary == "" && !b.info(primary).White && !b.info(secondary).White {
+		tertiary = b.whiteEscape(avail, now)
+	}
 	b.lastPick[primary] = now
 	if primary == b.leader && b.askedAt <= b.st[primary].AnsweredAt {
 		b.askedAt = now
@@ -698,6 +701,23 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 	d := b.Pinned(primary)
 	d.Secondary, d.Tertiary, d.Explore, d.Reason = secondary, tertiary, explore, reason
 	return d
+}
+
+// whiteEscape is an allow-listed path to dial third while the leader has not
+// answered on this network: where allow-listing silences every other path, a
+// first flow then gets through on it instead of waiting out silent dials. A
+// leader that answers is ready long before the third dial is due.
+func (b *Brain) whiteEscape(avail []string, now int64) string {
+	if b.leaderAnswers(now) {
+		return ""
+	}
+	best, bestM := "", -1.0
+	for _, p := range avail {
+		if i := b.info(p); i.White && !b.offNet(i) && b.st[p].Mean() > bestM {
+			best, bestM = p, b.st[p].Mean()
+		}
+	}
+	return best
 }
 
 // Pinned is the decision for a flow that must go over path and no other (a

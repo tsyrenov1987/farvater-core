@@ -179,12 +179,16 @@ func (l *lab) close() {
 	}
 }
 
-// catalogue lists the paths as share links; net, if set, labels path i.
-func (l *lab) catalogue(labels map[int]string) string {
+// catalogue lists the paths as share links; net, if set, labels path i, and
+// so does white, as the plain list a worker serves.
+func (l *lab) catalogue(labels map[int]string, white map[int]bool) string {
 	var s string
 	for i, p := range l.paths {
 		if n := labels[i]; n != "" {
 			s += "#net=" + n + "\n"
+		}
+		if white[i] {
+			s += "#white\n"
 		}
 		// each path its own SNI, as nodes have: the core paces handshakes per SNI and per IP
 		hp := net.JoinHostPort(p.host, strconv.Itoa(p.port()))
@@ -212,7 +216,7 @@ func (l *lab) catalogueJSON(white map[int]bool) string {
 		Labels map[string]any `json:"labels"`
 	}
 	var paths []entry
-	for i, line := range strings.Split(strings.TrimSpace(l.catalogue(nil)), "\n") {
+	for i, line := range strings.Split(strings.TrimSpace(l.catalogue(nil, nil)), "\n") {
 		e := entry{ID: l.paths[i].id, URI: line, Labels: map[string]any{}}
 		if white[i] {
 			e.Labels["white"] = true

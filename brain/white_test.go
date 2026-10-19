@@ -36,3 +36,28 @@ func TestRestrictedNetworkLeadsWithTheWhitePath(t *testing.T) {
 		}
 	}
 }
+
+// Cold start on a mobile network: until the leader answers, every flow also
+// dials the allow-listed path, so where the lists silence the rest the first
+// flow does not wait out silent dials. On Wi-Fi a mobile-only white path is
+// not dialed so, and once the leader answers it is not either.
+func TestWhitePathJoinsTheFirstDialsUntilTheLeaderAnswers(t *testing.T) {
+	paths := []PathInfo{{ID: "a", SNI: "a.ex", IP: "10.0.0.1"}, {ID: "b", SNI: "b.ex", IP: "10.0.0.2"},
+		{ID: "c", SNI: "c.ex", IP: "10.0.0.4"}, {ID: "w", SNI: "w.ex", IP: "10.0.0.3", White: true, Net: "cell"}}
+	br := New(DefaultConfig(), "cell", paths, 7)
+	now := int64(1000)
+	d := br.Pick(now, "x", DstTLS443)
+	if d.Primary != "w" && d.Secondary != "w" && d.Tertiary != "w" {
+		t.Fatalf("cold start on cell: dials %q %q %q, want the white path w among them", d.Primary, d.Secondary, d.Tertiary)
+	}
+	wifi := New(DefaultConfig(), "wifi:home", paths, 7)
+	if d := wifi.Pick(now, "x", DstTLS443); d.Tertiary == "w" {
+		t.Fatalf("cold start on Wi-Fi: the mobile-only white path dialed third")
+	}
+	if l := br.Leader(); l != "w" {
+		br.NoteAnswered(l, now, now+200)
+		if d := br.Pick(now+300, "x", DstTLS443); d.Tertiary == "w" {
+			t.Fatalf("leader %s answers: the white path still dialed third", l)
+		}
+	}
+}

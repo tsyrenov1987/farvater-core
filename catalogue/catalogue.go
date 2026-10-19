@@ -144,18 +144,23 @@ func Parse(body []byte) (*Catalogue, error) {
 	sc := bufio.NewScanner(strings.NewReader(t))
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	seen := map[string]int{}
-	net := "" // a "#net=<any|cell|wifi>" line labels the link after it
+	net := ""      // a "#net=<any|cell|wifi>" line labels the link after it
+	white := false // so does a "#white" line: an entry allow-listed networks let through
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if v, ok := strings.CutPrefix(line, "#net="); ok {
 			net = strings.TrimSpace(v)
 			continue
 		}
+		if line == "#white" {
+			white = true
+			continue
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		lineNet := net
-		net = ""
+		lineNet, lineWhite := net, white
+		net, white = "", false
 		s, err := wire.ParseURI(line)
 		if err != nil {
 			continue // unsupported scheme or malformed: skip, never fail the whole list
@@ -164,7 +169,7 @@ func Parse(body []byte) (*Catalogue, error) {
 		if seen[s.ID] > 1 {
 			s.ID = fmt.Sprintf("%s#%d", s.ID, seen[s.ID])
 		}
-		c.Paths = append(c.Paths, Entry{ID: s.ID, URI: line, Labels: Labels{Rail: s.Rail(), Net: lineNet, UDP: s.Kind == wire.KindHysteria2}, Spec: s})
+		c.Paths = append(c.Paths, Entry{ID: s.ID, URI: line, Labels: Labels{Rail: s.Rail(), Net: lineNet, White: lineWhite, UDP: s.Kind == wire.KindHysteria2}, Spec: s})
 	}
 	if len(c.Paths) == 0 {
 		return nil, errors.New("catalogue: no supported paths")
