@@ -271,15 +271,24 @@ func (w *visionWriter) writeFirst(content []byte) error {
 }
 
 // reshape splits a buffer that is too large to carry in one padded frame.
+// Xray reshapes one 8 KiB buffer at a time; pumpUp hands over up to 32 KiB,
+// so cut repeatedly until every piece fits (a longer one made xtlsPadding
+// panic on a negative padding length).
 func reshape(p []byte) [][]byte {
-	if len(p) < visBufSize-21 {
-		return [][]byte{p}
+	var out [][]byte
+	for len(p) >= visBufSize-21 {
+		head := p
+		if len(head) > visBufSize {
+			head = head[:visBufSize]
+		}
+		idx := bytes.LastIndex(head, tlsAppDataStart)
+		if idx < 21 || idx > visBufSize-21 {
+			idx = visBufSize / 2
+		}
+		out = append(out, p[:idx])
+		p = p[idx:]
 	}
-	idx := bytes.LastIndex(p, tlsAppDataStart)
-	if idx < 21 || idx > visBufSize-21 {
-		idx = visBufSize / 2
-	}
-	return [][]byte{p[:idx], p[idx:]}
+	return append(out, p)
 }
 
 // visionReader wraps the TLS connection and strips padding from the server's

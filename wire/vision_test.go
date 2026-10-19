@@ -107,3 +107,36 @@ func TestVisionCarriesInnerTLSAfterDirect(t *testing.T) {
 		}
 	}
 }
+
+// pumpUp reads up to 32 KiB at a time. reshape cut such a chunk into only two
+// pieces, and a piece longer than visBufSize-21 made xtlsPadding call make
+// with a negative length: "makeslice: len out of range" killed the app.
+func TestReshapeLargeChunkFitsFrames(t *testing.T) {
+	rec := func(n int) []byte {
+		b := make([]byte, 5+n)
+		copy(b, []byte{0x17, 0x03, 0x03, byte(n >> 8), byte(n)})
+		return b
+	}
+	cases := map[string][]byte{
+		"32KiB raw":           make([]byte, 32*1024),
+		"16000 raw":           make([]byte, 16000),
+		"record start near 0": append(make([]byte, 100), rec(16000)...),
+		"many small records":  bytes.Repeat(rec(1000), 30),
+		"exactly the limit":   make([]byte, visBufSize-21),
+	}
+	for name, p := range cases {
+		pieces := reshape(p)
+		var joined []byte
+		for _, piece := range pieces {
+			if len(piece) > visBufSize-21 {
+				t.Fatalf("%s: piece of %d bytes does not fit one frame", name, len(piece))
+			}
+			joined = append(joined, piece...)
+			uuid := []byte(nil)
+			_ = xtlsPadding(piece, visCmdContinue, &uuid, true)
+		}
+		if !bytes.Equal(joined, p) {
+			t.Fatalf("%s: pieces do not add up to the input", name)
+		}
+	}
+}
