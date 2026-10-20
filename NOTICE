@@ -28,6 +28,22 @@ Transports and TLS:
   github.com/apernet/quic-go             MIT       QUIC
   github.com/quic-go/qpack               MIT       QPACK for QUIC
 
+VK call relays (package vkturn, the vkturn:// path):
+  github.com/pion/turn/v5                MIT       TURN client
+  github.com/pion/stun/v3                MIT
+  github.com/pion/dtls/v3                MIT
+  github.com/pion/transport/v4           MIT
+  github.com/pion/logging                MIT
+  github.com/pion/randutil               MIT
+  github.com/wlynxg/anet                 BSD-3
+  github.com/xtaci/kcp-go/v5             MIT       KCP over the relays
+  github.com/xtaci/smux                  MIT       streams over KCP
+  github.com/klauspost/reedsolomon       MIT
+  github.com/klauspost/cpuid/v2          MIT
+  github.com/tjfoc/gmsm                  Apache-2.0
+  github.com/pkg/errors                  BSD-2
+  golang.org/x/time                      BSD-3
+
 Support libraries:
   github.com/andybalholm/brotli          MIT
   github.com/klauspost/compress          Apache-2.0

@@ -143,7 +143,13 @@ func handshakeTLS(ctx context.Context, c net.Conn, s PathSpec, http11 bool) (*ut
 // dialSecure connects to the path's server and runs its TLS or REALITY
 // handshake.
 func dialSecure(ctx context.Context, s PathSpec, http11 bool) (*utls.UConn, error) {
-	c, err := dialTCP(ctx, s.Host, s.Port)
+	var c net.Conn
+	var err error
+	if s.TURN != nil {
+		c, err = dialTURN(ctx, s)
+	} else {
+		c, err = dialTCP(ctx, s.Host, s.Port)
+	}
 	if err != nil {
 		return nil, err
 	}

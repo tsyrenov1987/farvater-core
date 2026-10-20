@@ -75,10 +75,17 @@ type PathSpec struct {
 	// parameter. Set, the client sends v2 tags (the server verifies in O(1) by
 	// id); empty, it sends v1 tags. The link's key is the derived key.
 	KeyID string
+
+	// TURN, set, carries the path's TCP connection through VK's call relays
+	// to the node instead of dialing Host:Port (a vkturn:// link; see vkturn.go).
+	TURN *TURNSpec
 }
 
 // Rail is the informational label of the path's transport.
 func (p PathSpec) Rail() string {
+	if p.TURN != nil {
+		return "vkturn"
+	}
 	switch p.Kind {
 	case KindKilvater:
 		return "kilvater"
@@ -104,9 +111,9 @@ func (p PathSpec) Rail() string {
 // HTTPLike reports whether the path's traffic looks like HTTP(S) to an
 // observer: TLS, REALITY, WebSocket, gRPC, XHTTP, or QUIC with no
 // obfuscation. Salamander turns Hysteria 2 into noise that resembles nothing;
-// olcRTC is a video call (WebRTC).
+// olcRTC is a video call (WebRTC), and so is a path over VK's call relays.
 func (p PathSpec) HTTPLike() bool {
-	return !(p.Kind == KindHysteria2 && p.Obfs != "") && p.Kind != KindOlcRTC
+	return !(p.Kind == KindHysteria2 && p.Obfs != "") && p.Kind != KindOlcRTC && p.TURN == nil
 }
 
 // ServerSNI is the TLS server name the wire presents (for the handshake governor).
@@ -120,12 +127,15 @@ func (p PathSpec) ServerSNI() string {
 	return p.Host
 }
 
-// ParseURI parses a vless://, trojan://, vmess://, hysteria2:// or olcrtc://
+// ParseURI parses a vless://, trojan://, vmess://, hysteria2://, olcrtc:// or vkturn://
 // share link; vmess:// also in v2rayN's form, the base64 of a JSON object.
 func ParseURI(raw string) (PathSpec, error) {
 	raw = strings.TrimSpace(raw)
 	if len(raw) > 9 && strings.EqualFold(raw[:9], "olcrtc://") {
 		return parseOlcRTC(raw[9:])
+	}
+	if len(raw) > 9 && strings.EqualFold(raw[:9], "vkturn://") {
+		return parseVKTurn(raw)
 	}
 	if len(raw) > 8 && strings.EqualFold(raw[:8], "vmess://") {
 		if b64, name, _ := strings.Cut(raw[8:], "#"); !strings.Contains(b64, "@") {
