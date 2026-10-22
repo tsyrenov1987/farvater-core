@@ -47,3 +47,25 @@ func TestSessionCountsSpanNetworksAndLeaveProbesOut(t *testing.T) {
 		t.Fatalf("after the network change: served %d blocked %d, want 2 and 2", st.Served, st.Blocked)
 	}
 }
+
+// A flow the phone slept through is neither served nor blocked for the
+// session: the brain leaves it out of the evidence (drop_sleep), and the
+// half-hour windows of a sleeping phone are not windows without delivery.
+func TestSessionCountsLeaveSleepOut(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Ctx = "cell"
+	s, err := New(cfg, threeDead(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.probe = func(context.Context, []string) bool { return false }
+	asleep := wireFailed("a")
+	asleep.SleptMs = brain.SleepGraceMs
+	s.observe(asleep)
+	s.observe(wireFailed("b"))
+
+	st := s.Status()
+	if st.Blocked != 1 || st.Slept != 1 || st.Drops.Sleep != 1 {
+		t.Fatalf("blocked %d slept %d drops.sleep %d, want 1, 1 and 1", st.Blocked, st.Slept, st.Drops.Sleep)
+	}
+}

@@ -137,6 +137,7 @@ type Switchboard struct {
 	// with it) and without the switchboard's own probes (probeHost): what the
 	// apps asked for and got, or got a block signature instead.
 	served, blocked int64
+	slept           int64 // the session's receipts of flows the device slept through: neither served nor blocked
 	probeHost       string
 
 	lostAt sync.Map // path → when a flow open across a sleep asked on it and heard nothing (ms)
@@ -739,6 +740,10 @@ func (s *Switchboard) observe(r brain.Receipt) {
 	s.b.Observe(r)
 	if s.probeHost == "" || r.Dst != s.probeHost {
 		switch {
+		case r.SleptMs >= brain.SleepGraceMs:
+			// The brain does not hold these against the path (drop_sleep), nor do
+			// the session's counts: a phone asleep loses its flows whatever the path.
+			s.slept++
 		case r.Sig() != brain.SigNone:
 			s.blocked++
 		case r.FirstByte():
@@ -843,6 +848,8 @@ type Status struct {
 	Dropped   int           `json:"dropped"`
 	Served    int64         `json:"served"`  // the session's receipts served, on every network, probes left out
 	Blocked   int64         `json:"blocked"` // the session's receipts with a block signature, the same way
+	Slept     int64         `json:"slept"`   // the session's receipts of flows the device slept through, the same way
+	Drops     brain.Drops   `json:"drops"`   // receipts the brain left out of the evidence, by why
 	Paths     []PathStatus  `json:"paths"`
 	Skipped   []string      `json:"skipped"`
 	Journal   int           `json:"journal_entries"`
@@ -858,7 +865,7 @@ func (s *Switchboard) Status() Status {
 		Version: Version, UptimeSec: int64(time.Since(s.started).Seconds()),
 		Listen: s.cfg.Listen, Ctx: s.b.Ctx(), Catalogue: s.cat.Title, Leader: s.b.Leader(),
 		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Dropped: s.b.Dropped,
-		Skipped: s.Skipped, Journal: len(s.b.J.Entries()), Served: s.served, Blocked: s.blocked,
+		Skipped: s.Skipped, Journal: len(s.b.J.Entries()), Served: s.served, Blocked: s.blocked, Slept: s.slept, Drops: s.b.Drops,
 	}
 	for _, id := range s.order {
 		ps := s.b.State(id)
