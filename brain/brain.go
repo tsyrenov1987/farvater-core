@@ -115,7 +115,8 @@ type Brain struct {
 	Breaker     *Breaker
 	J           *Journal
 	rng         *rand.Rand
-	Dropped     int // receipts not counted (network down / quarantined destination)
+	Dropped     int   // receipts not counted (network down / quarantined destination)
+	Drops       Drops // Dropped by why
 
 	saved      map[string]ctxState         // networks left this session
 	mem        *Memory                     // what earlier sessions learned (nil: none)
@@ -769,6 +770,17 @@ func (b *Brain) UDPOrder(now int64) []string {
 	return out
 }
 
+// Drops counts the receipts Observe left out of the evidence, by why: the
+// device slept during the flow, the system blocked the app's network, the
+// network changed, no path connected, the destination was quarantined.
+type Drops struct {
+	Sleep     int `json:"sleep"`
+	Blocked   int `json:"blocked"`
+	NetChange int `json:"netchange"`
+	NetDown   int `json:"netdown"`
+	Dst       int `json:"dst"`
+}
+
 // Observe folds a receipt into the evidence, after differential diagnosis.
 func (b *Brain) Observe(r Receipt) {
 	if _, ok := b.st[r.Path]; !ok {
@@ -779,17 +791,20 @@ func (b *Brain) Observe(r Receipt) {
 		// A phone asleep loses its flows whatever the path: NAT mappings
 		// expire and the radio goes quiet.
 		b.Dropped++
+		b.Drops.Sleep++
 		b.J.Add(now, "drop_sleep", "the device slept during the flow: not evidence against the path", r.Path)
 		return
 	}
 	if b.blockedAt != 0 && r.AtMs >= b.blockedAt-BlockSlackMs {
 		b.Dropped++
+		b.Drops.Blocked++
 		b.J.Add(now, "drop_blocked", "the system blocked the app's network: not evidence against the path", r.Path)
 		return
 	}
 	if r.AtMs-r.DurMs < b.switchedAt {
 		// The flow began on the network the device has left.
 		b.Dropped++
+		b.Drops.NetChange++
 		b.J.Add(now, "drop_netchange", "the network changed during the flow: not evidence for either network", r.Path)
 		return
 	}
@@ -801,12 +816,14 @@ func (b *Brain) Observe(r Receipt) {
 	b.Diag.NoteWire(r.Path, wireOK, now)
 	if !wireOK && b.NetDown(now) && !b.networkUp(now) {
 		b.Dropped++
+		b.Drops.NetDown++
 		b.J.Add(now, "drop_netdown", "no path connects: not evidence against the path", r.Path)
 		return
 	}
 	if wireOK && !r.FirstByte() && r.Dst != "" {
 		if b.Diag.DstQuarantined(r.Dst, now) {
 			b.Dropped++
+			b.Drops.Dst++
 			return
 		}
 		b.Diag.NoteDst(r.Dst, r.Path, false, now)
