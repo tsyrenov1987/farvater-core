@@ -108,10 +108,16 @@ func FetchWithProvider(u string) ([]byte, *Provider, error) {
 	return body, ProviderFrom(resp.Header), nil
 }
 
-// Parse accepts the JSON catalogue, a base64 subscription, or plain share links.
+// Parse accepts the JSON catalogue, a base64 subscription, plain share links,
+// or another client's subscription (see foreign).
 func Parse(body []byte) (*Catalogue, error) {
-	t := strings.TrimSpace(string(body))
-	if strings.HasPrefix(t, "{") {
+	t := strings.TrimSpace(strings.TrimPrefix(string(body), "\ufeff"))
+	if links, ok := foreign(t); ok {
+		t = links // another client's format, now share links
+	} else if strings.HasPrefix(t, "{") || strings.HasPrefix(t, "[") {
+		if !strings.Contains(t, `"paths"`) {
+			return nil, errors.New("catalogue: JSON of an unknown format")
+		}
 		var c Catalogue
 		if err := json.Unmarshal([]byte(t), &c); err != nil {
 			return nil, fmt.Errorf("catalogue json: %w", err)
@@ -133,12 +139,15 @@ func Parse(body []byte) (*Catalogue, error) {
 		}
 		return &c, nil
 	}
-	if !strings.Contains(t, "://") {
+	if t != "" && !strings.Contains(t, "://") {
 		dec, err := decodeB64(t)
 		if err != nil {
 			return nil, errors.New("catalogue: neither JSON, nor share links, nor base64")
 		}
 		t = string(dec)
+		if links, ok := foreign(strings.TrimSpace(t)); ok {
+			t = links
+		}
 	}
 	c := &Catalogue{V: 1} // a plain list carries no title
 	sc := bufio.NewScanner(strings.NewReader(t))
