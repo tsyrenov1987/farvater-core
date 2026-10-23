@@ -24,6 +24,15 @@ import (
 //	                        a coloured notice with an optional button
 //	invite-url              Farvater's addition: the account's invite link,
 //	                        shown as a QR code for a friend to scan
+//	invite-bonus            Farvater's addition: days the next friend brings
+//	access-code             Farvater's addition: the account's code, for
+//	                        paying and for support
+//	month-traffic           Farvater's addition: used=; cap=; slow=1 (bytes
+//	                        this month, the cap before the speed drops)
+//	white-traffic           Farvater's addition: used=; cap=; paused=1 (the
+//	                        same for the entries that work under whitelists)
+//	renew-url               Farvater's addition: where the account is
+//	                        renewed, when sub-expire-button-link is absent
 //
 // Text may be plain ASCII or "base64:" and the base64 of UTF-8. Links must be
 // https. A header that breaks these rules is left out, not guessed at.
@@ -43,6 +52,18 @@ type Provider struct {
 	InfoButtonText string `json:"info_button_text,omitempty"`
 	InfoButtonURL  string `json:"info_button_url,omitempty"`
 	InviteURL      string `json:"invite_url,omitempty"`
+	InviteDays     int    `json:"invite_days,omitempty"`
+	Code           string `json:"code,omitempty"`
+	Month          *Meter `json:"month,omitempty"`
+	White          *Meter `json:"white,omitempty"`
+}
+
+// Meter is a monthly allowance: bytes used, the cap (0: none) and whether
+// it is spent (the speed dropped, or the entries are paused).
+type Meter struct {
+	Used  int64 `json:"used"`
+	Cap   int64 `json:"cap"`
+	Spent bool  `json:"spent,omitempty"`
 }
 
 // ProviderFrom reads the headers; nil when the provider sent none of them.
@@ -57,21 +78,22 @@ func ProviderFrom(h http.Header) *Provider {
 		InfoButtonText: headerText(h.Get("sub-info-button-text"), 25),
 		InfoButtonURL:  httpsOnly(h.Get("sub-info-button-link")),
 		InviteURL:      httpsOnly(h.Get("invite-url")),
+		Code:           accessCode(h.Get("access-code")),
+		Month:          meter(h.Get("month-traffic"), "slow"),
+		White:          meter(h.Get("white-traffic"), "paused"),
+	}
+	if p.RenewURL == "" {
+		p.RenewURL = httpsOnly(h.Get("renew-url"))
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(h.Get("invite-bonus"))); err == nil && n > 0 && n <= 3650 {
+		p.InviteDays = n
 	}
 	p.UpdateHours, _ = strconv.Atoi(strings.TrimSpace(h.Get("profile-update-interval")))
 	if p.UpdateHours < 0 {
 		p.UpdateHours = 0
 	}
-	for _, kv := range strings.Split(h.Get("subscription-userinfo"), ";") {
-		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
-		if !ok {
-			continue
-		}
-		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
-		if err != nil || n < 0 {
-			continue
-		}
-		switch strings.ToLower(strings.TrimSpace(k)) {
+	for k, n := range pairs(h.Get("subscription-userinfo")) {
+		switch k {
 		case "upload":
 			p.Upload = n
 		case "download":
@@ -94,6 +116,47 @@ func ProviderFrom(h http.Header) *Provider {
 		return nil
 	}
 	return &p
+}
+
+// pairs reads "a=1; b=2" into lower-case keys and non-negative numbers.
+func pairs(v string) map[string]int64 {
+	out := map[string]int64{}
+	for _, kv := range strings.Split(v, ";") {
+		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+		if !ok {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil || n < 0 {
+			continue
+		}
+		out[strings.ToLower(strings.TrimSpace(k))] = n
+	}
+	return out
+}
+
+// meter reads "used=; cap=; <flag>=1"; nil without used.
+func meter(v, flag string) *Meter {
+	kv := pairs(v)
+	used, ok := kv["used"]
+	if !ok {
+		return nil
+	}
+	return &Meter{Used: used, Cap: kv["cap"], Spent: kv[flag] == 1}
+}
+
+// accessCode keeps a code of letters, digits and dashes; anything else is dropped.
+func accessCode(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || len(v) > 40 {
+		return ""
+	}
+	for _, r := range v {
+		if !(r == '-' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z') {
+			return ""
+		}
+	}
+	return v
 }
 
 // headerText decodes a "base64:" value and keeps at most max characters of
