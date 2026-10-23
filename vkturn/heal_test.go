@@ -44,7 +44,8 @@ func testTURN(t *testing.T, users ...string) string {
 }
 
 // testServer speaks the node side the way orden-vkturn's server does: peers
-// per session, learned from any frame, dropped after peerIdle without one.
+// per session, learned from any frame, dropped after peerIdle without one;
+// keepalives are echoed.
 // Relay addresses in deaf are neither heard nor answered: a silently dead
 // allocation.
 type testServer struct {
@@ -99,14 +100,18 @@ func newTestServer(t *testing.T, psk []byte) *testServer {
 				s.mu.Unlock()
 				continue
 			}
-			found := false
+			var me *testPeer
 			for _, p := range s.peers[sid] {
 				if p.addr.String() == from.String() {
-					p.seen, found = time.Now(), true
+					p.seen, me = time.Now(), p
 				}
 			}
-			if !found {
-				s.peers[sid] = append(s.peers[sid], &testPeer{addr: from, st: NewStream(), seen: time.Now()})
+			if me == nil {
+				me = &testPeer{addr: from, st: NewStream(), seen: time.Now()}
+				s.peers[sid] = append(s.peers[sid], me)
+			}
+			if len(payload) == 0 { // keepalive: echo it like the server does
+				pc.WriteTo(sealer.Seal(nil, me.st, sid, nil), from)
 			}
 			s.mu.Unlock()
 			if len(payload) > 0 {

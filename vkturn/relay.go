@@ -36,14 +36,15 @@ const deadAfter = 5
 // A relay allocation can die without a write failing: VK drops it, the
 // carrier's NAT moves the phone's port, the refresh is refused. The server
 // then stops hearing the channel and stops answering on it, so silence is the
-// sign. A channel silent for chanSilent while another one hears the server is
-// replaced; when no channel has heard anything for stallAfter, all of them are
+// sign. Once the server is known to echo keepalives (each channel then hears
+// it every 5 s), a channel silent for chanSilent while another one hears the
+// server is replaced; when no channel has heard anything for stallAfter, all of them are
 // (smux gives up after 40 s, so the session survives that). Past giveUp the
 // relays are lost and the session closes so the owner opens a new one.
 // Variables only so tests can run them fast.
 var (
 	healEvery  = 2 * time.Second
-	chanSilent = 45 * time.Second
+	chanSilent = 20 * time.Second
 	fresh      = 15 * time.Second
 	stallAfter = 15 * time.Second
 	giveUp     = 40 * time.Second
@@ -82,6 +83,7 @@ type relayConn struct {
 	once   sync.Once
 	rr     atomic.Uint32
 	heals  atomic.Int32
+	echo   atomic.Bool // the server answers keepalives
 	tm     timings
 }
 
@@ -187,7 +189,7 @@ func (c *relayConn) heal() {
 			switch {
 			case ch == nil, ch.dead.Load():
 			case stalled && now.Sub(time.Unix(0, ch.lastRecv.Load())) > c.tm.stall:
-			case now.Sub(heard) < c.tm.fresh && now.Sub(time.Unix(0, ch.lastRecv.Load())) > c.tm.silent:
+			case c.echo.Load() && now.Sub(heard) < c.tm.fresh && now.Sub(time.Unix(0, ch.lastRecv.Load())) > c.tm.silent:
 			default:
 				continue
 			}
@@ -337,6 +339,7 @@ func (c *relayConn) readLoop(ch *channel) {
 		ch.lastRecv.Store(now)
 		c.heard.Store(now)
 		if len(payload) == 0 {
+			c.echo.Store(true)
 			continue
 		}
 		select {
