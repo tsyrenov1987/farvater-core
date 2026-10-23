@@ -64,3 +64,34 @@ func TestFetchWithProviderReturnsTheHeaders(t *testing.T) {
 		t.Fatalf("body %q provider %+v err %v", body, p, err)
 	}
 }
+
+func TestProviderReadsFarvatersAccountHeaders(t *testing.T) {
+	h := http.Header{}
+	h.Set("access-code", "ORDEN-MJM57-VZ1BW")
+	h.Set("month-traffic", "used=11; cap=322122547200; slow=1")
+	h.Set("white-traffic", "used=3; cap=5368709120")
+	h.Set("renew-url", "https://myorden.ru/cabinet")
+	h.Set("invite-bonus", "30")
+	p := ProviderFrom(h)
+	if p == nil || p.Code != "ORDEN-MJM57-VZ1BW" || p.RenewURL != "https://myorden.ru/cabinet" || p.InviteDays != 30 {
+		t.Fatalf("got %+v", p)
+	}
+	if p.Month == nil || *p.Month != (Meter{Used: 11, Cap: 322122547200, Spent: true}) {
+		t.Fatalf("month %+v", p.Month)
+	}
+	if p.White == nil || *p.White != (Meter{Used: 3, Cap: 5368709120}) {
+		t.Fatalf("white %+v", p.White)
+	}
+
+	h = http.Header{}
+	h.Set("profile-title", "T")
+	h.Set("sub-expire-button-link", "https://a.example/renew")
+	h.Set("renew-url", "https://b.example/renew")
+	h.Set("access-code", "<script>")
+	h.Set("month-traffic", "cap=5")
+	h.Set("invite-bonus", "-3")
+	p = ProviderFrom(h)
+	if p.RenewURL != "https://a.example/renew" || p.Code != "" || p.Month != nil || p.InviteDays != 0 {
+		t.Fatalf("got %+v", p)
+	}
+}
