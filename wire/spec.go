@@ -18,12 +18,13 @@ import (
 type Kind string
 
 const (
-	KindVLESS     Kind = "vless"
-	KindTrojan    Kind = "trojan"
-	KindVMess     Kind = "vmess"
-	KindHysteria2 Kind = "hysteria2"
-	KindOlcRTC    Kind = "olcrtc"
-	KindKilvater  Kind = "kilvater"
+	KindVLESS       Kind = "vless"
+	KindTrojan      Kind = "trojan"
+	KindVMess       Kind = "vmess"
+	KindHysteria2   Kind = "hysteria2"
+	KindOlcRTC      Kind = "olcrtc"
+	KindKilvater    Kind = "kilvater"
+	KindShadowsocks Kind = "ss"
 )
 
 // PathSpec is a parsed, provider-neutral description of one path.
@@ -35,8 +36,8 @@ type PathSpec struct {
 
 	// VLESS, Trojan, VMess
 	UUID        string // VLESS, VMess
-	Password    string // Trojan
-	Cipher      string // VMess body cipher: auto | aes-128-gcm | chacha20-poly1305 | none | zero
+	Password    string // Trojan, Shadowsocks
+	Cipher      string // VMess body cipher: auto | aes-128-gcm | chacha20-poly1305 | none | zero; Shadowsocks method
 	Flow        string // VLESS: "" or xtls-rprx-vision
 	Network     string // tcp | ws | xhttp | grpc
 	Security    string // none | tls | reality
@@ -91,6 +92,8 @@ func (p PathSpec) Rail() string {
 		return "kilvater"
 	case KindHysteria2:
 		return "hy2"
+	case KindShadowsocks:
+		return "ss"
 	case KindVLESS, KindTrojan, KindVMess:
 		switch p.Network {
 		case "xhttp":
@@ -113,7 +116,7 @@ func (p PathSpec) Rail() string {
 // obfuscation. Salamander turns Hysteria 2 into noise that resembles nothing;
 // olcRTC is a video call (WebRTC), and so is a path over VK's call relays.
 func (p PathSpec) HTTPLike() bool {
-	return !(p.Kind == KindHysteria2 && p.Obfs != "") && p.Kind != KindOlcRTC && p.TURN == nil
+	return !(p.Kind == KindHysteria2 && p.Obfs != "") && p.Kind != KindOlcRTC && p.Kind != KindShadowsocks && p.TURN == nil
 }
 
 // ServerSNI is the TLS server name the wire presents (for the handshake governor).
@@ -136,6 +139,9 @@ func ParseURI(raw string) (PathSpec, error) {
 	}
 	if len(raw) > 9 && strings.EqualFold(raw[:9], "vkturn://") {
 		return parseVKTurn(raw)
+	}
+	if len(raw) > 5 && strings.EqualFold(raw[:5], "ss://") {
+		return parseShadowsocks(raw[5:])
 	}
 	if len(raw) > 8 && strings.EqualFold(raw[:8], "vmess://") {
 		if b64, name, _ := strings.Cut(raw[8:], "#"); !strings.Contains(b64, "@") {

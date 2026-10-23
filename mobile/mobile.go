@@ -124,6 +124,13 @@ func contextName(network string) string {
 	return n
 }
 
+// SetDevice names the device to subscription providers (see
+// catalogue.Device): hwid is an id the app made once for this install and
+// keeps; os is "Android" or "iOS". Call it before the first fetch.
+func SetDevice(hwid, os, osVersion, model string) {
+	catalogue.Device.HWID, catalogue.Device.OS, catalogue.Device.OSVersion, catalogue.Device.Model = hwid, os, osVersion, model
+}
+
 // SetNetwork tells the running core the device moved to another network
 // (names as for Start), so it resumes what it knows of that network without
 // restarting the tunnel. A no-op when not running.

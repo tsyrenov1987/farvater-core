@@ -74,8 +74,11 @@ func TestParseClashYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Paths) != 4 {
-		t.Fatalf("want 4 paths (ss left out), got %d: %+v", len(c.Paths), c.Paths)
+	if len(c.Paths) != 5 {
+		t.Fatalf("want 5 paths, got %d: %+v", len(c.Paths), c.Paths)
+	}
+	if ss := c.Paths[4].Spec; ss.Kind != wire.KindShadowsocks || ss.Cipher != "aes-128-gcm" || ss.Password != "s" || ss.Port != 8388 {
+		t.Fatalf("ss: %+v", ss)
 	}
 	r, v, tr, hy := c.Paths[0].Spec, c.Paths[1].Spec, c.Paths[2].Spec, c.Paths[3].Spec
 	if r.ID != "NL reality" || r.Security != "reality" || r.SNI != "www.example.com" || len(r.PublicKey) != 32 || r.Flow != "xtls-rprx-vision" || r.Fingerprint != "chrome" {
@@ -94,7 +97,7 @@ func TestParseClashYAML(t *testing.T) {
 
 func TestParseBase64ClashYAML(t *testing.T) {
 	c, err := Parse([]byte(base64.StdEncoding.EncodeToString([]byte(clashBody))))
-	if err != nil || len(c.Paths) != 4 {
+	if err != nil || len(c.Paths) != 5 {
 		t.Fatal(err, c)
 	}
 }
@@ -123,10 +126,13 @@ func TestParseSingBoxJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Paths) != 3 {
-		t.Fatalf("want 3, got %+v", c.Paths)
+	if len(c.Paths) != 4 {
+		t.Fatalf("want 4, got %+v", c.Paths)
 	}
 	a, b, hy := c.Paths[0].Spec, c.Paths[1].Spec, c.Paths[2].Spec
+	if ss := c.Paths[3].Spec; ss.ID != "d" || ss.Kind != wire.KindShadowsocks || ss.Cipher != "aes-128-gcm" {
+		t.Fatalf("ss: %+v", ss)
+	}
 	if a.ID != "a" || a.Security != "reality" || len(a.ShortID) != 2 || a.Port != 443 {
 		t.Fatalf("a: %+v", a)
 	}
@@ -183,9 +189,18 @@ func TestParseXrayJSON(t *testing.T) {
 	}
 }
 
+// SIP008, Outline's and shadowsocks' JSON; a server with a plugin is left out.
+func TestParseSIP008(t *testing.T) {
+	c, err := Parse([]byte(`{"version":1,"servers":[
+	  {"id":"1","remarks":"NL","server":"203.0.113.12","server_port":8388,"method":"aes-256-gcm","password":"s"},
+	  {"server":"203.0.113.13","server_port":8388,"method":"aes-256-gcm","password":"s","plugin":"v2ray-plugin"}]}`))
+	if err != nil || len(c.Paths) != 1 || c.Paths[0].Spec.ID != "NL" || c.Paths[0].Spec.Cipher != "aes-256-gcm" {
+		t.Fatal(err, c)
+	}
+}
+
 func TestParseRejectsJSONItCannotRead(t *testing.T) {
 	for _, body := range []string{
-		`{"version":1,"servers":[{"server":"203.0.113.12","server_port":8388,"method":"aes-256-gcm","password":"s"}]}`, // SIP008
 		`{"hello":"world"}`,
 		`<html><body>Subscription</body></html>`,
 	} {

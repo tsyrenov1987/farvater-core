@@ -86,6 +86,13 @@ func Fetch(u string) ([]byte, error) {
 // which app a subscriber uses. Same shape as other clients (Happ/<v>/ios).
 var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ")"
 
+// Device is what the subscription fetch says about the device, in the headers
+// Remnawave and Marzban panels read (as Happ sends them): x-hwid, x-device-os,
+// x-ver-os, x-device-model. A panel with a device limit answers 404 to a fetch
+// without x-hwid. The app sets it once; HWID is an id the app made for this
+// install, not a hardware serial. Empty fields are not sent.
+var Device struct{ HWID, OS, OSVersion, Model string }
+
 // FetchWithProvider is Fetch that also reads what the provider says in the
 // response headers (see Provider); the provider is nil when it said nothing.
 func FetchWithProvider(u string) ([]byte, *Provider, error) {
@@ -93,6 +100,11 @@ func FetchWithProvider(u string) ([]byte, *Provider, error) {
 	req, _ := http.NewRequest("GET", u, nil)
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Accept", "application/farvater-catalogue+json, text/plain;q=0.9, */*;q=0.5")
+	for k, v := range map[string]string{"x-hwid": Device.HWID, "x-device-os": Device.OS, "x-ver-os": Device.OSVersion, "x-device-model": Device.Model} {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
+	}
 	resp, err := cl.Do(req)
 	if err != nil {
 		return nil, nil, err

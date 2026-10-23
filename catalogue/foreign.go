@@ -1,6 +1,7 @@
 package catalogue
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -15,7 +16,7 @@ import (
 // per line, for the plain-list parser: Clash/Mihomo YAML (proxies:), sing-box
 // JSON (outbounds with server/server_port), Xray JSON (one config or an array of
 // them, as Happ, v2rayN and Remnawave's XRAY_JSON serve) and SIP008. A server
-// these wires cannot carry (Shadowsocks, h2, QUIC...) is left out; ok is false
+// these wires cannot carry (Shadowsocks 2022 or with a plugin, h2, QUIC...) is left out; ok is false
 // when the body is none of these formats.
 func foreign(t string) (links string, ok bool) {
 	var out []string
@@ -37,8 +38,14 @@ func foreign(t string) (links string, ok bool) {
 			if _, ok := m["paths"]; ok {
 				return "", false // our own catalogue
 			}
-			if _, has := m["servers"]; has {
-				ok = true // SIP008: Shadowsocks only, nothing these wires carry
+			if srv, has := m["servers"].([]any); has {
+				ok = true // SIP008
+				for _, x := range srv {
+					v := obj(x)
+					if l := ssLink(str(v["method"]), str(v["password"]), str(v["server"]), str(v["server_port"]), first(str(v["remarks"]), str(v["id"])), str(v["plugin"])); l != "" {
+						out = append(out, l)
+					}
+				}
 			}
 			obs, has := m["outbounds"].([]any)
 			if !has {
@@ -102,6 +109,9 @@ func clashLink(p map[string]any) string {
 		set(q, "obfs-password", str(p["obfs-password"]))
 		return link("hysteria2", first(str(p["password"]), str(p["auth"])), host, port, q, name)
 	}
+	if kind == "ss" {
+		return ssLink(str(p["cipher"]), str(p["password"]), host, port, name, str(p["plugin"]))
+	}
 	user := str(p["uuid"])
 	switch kind {
 	case "vless":
@@ -163,6 +173,9 @@ func singLink(o map[string]any) string {
 		}
 		return link("hysteria2", str(o["password"]), host, port, q, name)
 	}
+	if kind == "shadowsocks" {
+		return ssLink(str(o["method"]), str(o["password"]), host, port, name, str(o["plugin"]))
+	}
 	user := str(o["uuid"])
 	switch kind {
 	case "vless":
@@ -219,6 +232,13 @@ func xrayLink(o map[string]any, remarks string) string {
 		u = obj(v[0])
 	}
 	host, port := str(srv["address"]), str(srv["port"])
+	name := str(o["tag"])
+	if remarks != "" {
+		name = remarks // a config per server: its remarks name it
+	}
+	if kind == "shadowsocks" {
+		return ssLink(str(srv["method"]), str(srv["password"]), host, port, name, "")
+	}
 	q := url.Values{}
 	user := str(u["id"])
 	switch kind {
@@ -274,11 +294,16 @@ func xrayLink(o map[string]any, remarks string) string {
 		set(q, "sid", str(r["shortId"]))
 		set(q, "spx", str(r["spiderX"]))
 	}
-	name := str(o["tag"])
-	if remarks != "" {
-		name = remarks // a config per server: its remarks name it
-	}
 	return link(kind, user, host, port, q, name)
+}
+
+// ssLink is the SIP002 link of a Shadowsocks server; one with a plugin is
+// left out (no plugin is carried).
+func ssLink(method, password, host, port, name, plugin string) string {
+	if plugin != "" || method == "" || password == "" {
+		return ""
+	}
+	return link("ss", base64.RawURLEncoding.EncodeToString([]byte(method+":"+password)), host, port, nil, name)
 }
 
 func link(scheme, user, host, port string, q url.Values, name string) string {
