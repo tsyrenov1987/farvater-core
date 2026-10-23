@@ -116,6 +116,8 @@ func Build(spec PathSpec) (Wire, error) {
 		return newHosted(spec), nil
 	case KindKilvater:
 		return newKilvater(spec)
+	case KindShadowsocks:
+		return newShadowsocks(spec)
 	}
 	return nil, errors.New("wire: unsupported kind " + string(spec.Kind))
 }
