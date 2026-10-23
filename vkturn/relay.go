@@ -26,11 +26,45 @@ type channel struct {
 	recv     atomic.Int64
 	errs     atomic.Int32 // writes failed in a row
 	dead     atomic.Bool  // errs hit deadAfter: the allocation is gone
+	lastRecv atomic.Int64 // unix nanos of the last frame of our session; born at open
 }
 
 // deadAfter failed writes in a row retire a channel; one failure may be a
 // transient socket error.
 const deadAfter = 5
+
+// A relay allocation can die without a write failing: VK drops it, the
+// carrier's NAT moves the phone's port, the refresh is refused. The server
+// then stops hearing the channel and stops answering on it, so silence is the
+// sign. A channel silent for chanSilent while another one hears the server is
+// replaced; when no channel has heard anything for stallAfter, all of them are
+// (smux gives up after 40 s, so the session survives that). Past giveUp the
+// relays are lost and the session closes so the owner opens a new one.
+// Variables only so tests can run them fast.
+var (
+	healEvery  = 2 * time.Second
+	chanSilent = 45 * time.Second
+	fresh      = 15 * time.Second
+	stallAfter = 15 * time.Second
+	giveUp     = 40 * time.Second
+	retryFirst = 15 * time.Second
+	retryMax   = 5 * time.Minute
+)
+
+// slot is one creds entry and the channel it carries, if any.
+// timings are the heal knobs, copied into each conn when it opens.
+type timings struct{ every, silent, fresh, stall, giveUp, retryFirst, retryMax time.Duration }
+
+func curTimings() timings {
+	return timings{healEvery, chanSilent, fresh, stallAfter, giveUp, retryFirst, retryMax}
+}
+
+type slot struct {
+	creds   Creds
+	fixing  bool
+	nextTry time.Time
+	backoff time.Duration
+}
 
 // relayConn is a net.PacketConn whose writes go out over the channels.
 // The address arguments are ignored: there is only one peer, the server.
@@ -38,12 +72,17 @@ type relayConn struct {
 	sealer *Sealer
 	sid    SessionID
 	server *net.UDPAddr
-	chans  []*channel
+	bits   int
+	chans  atomic.Pointer[[]*channel] // one per slot, nil while the slot has none; replaced, never edited
+	mu     sync.Mutex                 // guards slots and swapping chans
+	slots  []*slot
+	heard  atomic.Int64 // unix nanos of the last frame on any channel
 	in     chan []byte
 	done   chan struct{}
 	once   sync.Once
 	rr     atomic.Uint32
-	alive  atomic.Int32
+	heals  atomic.Int32
+	tm     timings
 }
 
 // dialRelays opens one channel per creds entry; channels that fail are
@@ -58,14 +97,16 @@ func dialRelays(ctx context.Context, server string, psk []byte, creds []Creds, b
 	if err != nil {
 		return nil, err
 	}
-	c := &relayConn{sealer: sealer, server: srv, in: make(chan []byte, 4096), done: make(chan struct{})}
+	c := &relayConn{sealer: sealer, server: srv, bits: bitsPerChan, in: make(chan []byte, 4096), done: make(chan struct{}), tm: curTimings()}
 	rand.Read(c.sid[:])
+	chans := make([]*channel, len(creds))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	abandoned := false
-	for _, cr := range creds {
+	for i, cr := range creds {
+		c.slots = append(c.slots, &slot{creds: cr, backoff: c.tm.retryFirst})
 		wg.Add(1)
-		go func(cr Creds) {
+		go func(i int, cr Creds) {
 			defer wg.Done()
 			ch, err := openChannel(cr, srv, bitsPerChan)
 			if err != nil {
@@ -77,8 +118,8 @@ func dialRelays(ctx context.Context, server string, psk []byte, creds []Creds, b
 				ch.close()
 				return
 			}
-			c.chans = append(c.chans, ch)
-		}(cr)
+			chans[i] = ch
+		}(i, cr)
 	}
 	all := make(chan struct{})
 	go func() { wg.Wait(); close(all) }()
@@ -87,21 +128,118 @@ func dialRelays(ctx context.Context, server string, psk []byte, creds []Creds, b
 	case <-ctx.Done():
 		mu.Lock()
 		abandoned = true
-		for _, ch := range c.chans {
-			ch.close()
+		for _, ch := range chans {
+			if ch != nil {
+				ch.close()
+			}
 		}
 		mu.Unlock()
 		return nil, ctx.Err()
 	}
-	if len(c.chans) == 0 {
+	up := 0
+	for i, ch := range chans {
+		if ch != nil {
+			up++
+		} else {
+			c.slots[i].nextTry = time.Now().Add(c.tm.retryFirst)
+		}
+	}
+	if up == 0 {
 		return nil, errors.New("vkturn: no relay allocation came up")
 	}
-	c.alive.Store(int32(len(c.chans)))
-	for _, ch := range c.chans {
-		go c.readLoop(ch)
-		go c.keepalive(ch)
+	c.chans.Store(&chans)
+	c.heard.Store(time.Now().UnixNano())
+	for _, ch := range chans {
+		if ch != nil {
+			c.start(ch)
+		}
 	}
+	go c.heal()
 	return c, nil
+}
+
+func (c *relayConn) start(ch *channel) {
+	go c.readLoop(ch)
+	go c.keepalive(ch)
+}
+
+// heal replaces the channels that died or went silent, keeping the session
+// (the server keys it on sid, not on a relay address), and closes the
+// session once nothing has been heard for giveUp.
+func (c *relayConn) heal() {
+	t := time.NewTicker(c.tm.every)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-t.C:
+		}
+		now := time.Now()
+		heard := time.Unix(0, c.heard.Load())
+		if now.Sub(heard) > c.tm.giveUp {
+			c.Close()
+			return
+		}
+		stalled := now.Sub(heard) > c.tm.stall
+		chans := *c.chans.Load()
+		for i, ch := range chans {
+			switch {
+			case ch == nil, ch.dead.Load():
+			case stalled && now.Sub(time.Unix(0, ch.lastRecv.Load())) > c.tm.stall:
+			case now.Sub(heard) < c.tm.fresh && now.Sub(time.Unix(0, ch.lastRecv.Load())) > c.tm.silent:
+			default:
+				continue
+			}
+			c.fix(i, now)
+		}
+	}
+}
+
+// fix opens a new channel for slot i and swaps it in, make before break.
+// A slot whose open fails waits longer each time, so creds VK no longer
+// takes do not hammer the relays.
+func (c *relayConn) fix(i int, now time.Time) {
+	c.mu.Lock()
+	sl := c.slots[i]
+	if sl.fixing || now.Before(sl.nextTry) {
+		c.mu.Unlock()
+		return
+	}
+	sl.fixing = true
+	c.mu.Unlock()
+	go func() {
+		ch, err := openChannel(sl.creds, c.server, c.bits)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		sl.fixing = false
+		select {
+		case <-c.done:
+			if ch != nil {
+				ch.close()
+			}
+			return
+		default:
+		}
+		if err != nil {
+			sl.nextTry = time.Now().Add(sl.backoff)
+			if sl.backoff *= 2; sl.backoff > c.tm.retryMax {
+				sl.backoff = c.tm.retryMax
+			}
+			return
+		}
+		// A fresh channel gets a full chanSilent before it can be judged.
+		sl.backoff, sl.nextTry = c.tm.retryFirst, time.Now().Add(c.tm.stall)
+		old := *c.chans.Load()
+		next := append([]*channel(nil), old...)
+		next[i] = ch
+		c.chans.Store(&next)
+		c.heals.Add(1)
+		c.start(ch)
+		if old[i] != nil {
+			old[i].close()
+		}
+	}()
 }
 
 func openChannel(cr Creds, srv *net.UDPAddr, bits int) (*channel, error) {
@@ -132,7 +270,9 @@ func openChannel(cr Creds, srv *net.UDPAddr, bits int) (*channel, error) {
 		pc.Close()
 		return nil, err
 	}
-	return &channel{creds: cr, underlay: pc, client: cl, relay: relay, st: NewStream(), pace: newPacer(bits)}, nil
+	ch := &channel{creds: cr, underlay: pc, client: cl, relay: relay, st: NewStream(), pace: newPacer(bits)}
+	ch.lastRecv.Store(time.Now().UnixNano())
+	return ch, nil
 }
 
 func (ch *channel) close() {
@@ -142,13 +282,28 @@ func (ch *channel) close() {
 }
 
 // Channels reports how many relay allocations carry the session.
-func (c *relayConn) Channels() int { return int(c.alive.Load()) }
+func (c *relayConn) Channels() int {
+	n := 0
+	for _, ch := range *c.chans.Load() {
+		if ch != nil && !ch.dead.Load() {
+			n++
+		}
+	}
+	return n
+}
 
-// Stats returns bytes sent and received per channel, in channel order.
+// Heals reports how many channels were replaced.
+func (c *relayConn) Heals() int { return int(c.heals.Load()) }
+
+// Stats returns bytes sent and received per slot, in creds order.
 func (c *relayConn) Stats() (sent, recv []int64) {
-	for _, ch := range c.chans {
-		sent = append(sent, ch.sent.Load())
-		recv = append(recv, ch.recv.Load())
+	for _, ch := range *c.chans.Load() {
+		var s, r int64
+		if ch != nil {
+			s, r = ch.sent.Load(), ch.recv.Load()
+		}
+		sent = append(sent, s)
+		recv = append(recv, r)
 	}
 	return
 }
@@ -160,12 +315,8 @@ func (c *relayConn) send(ch *channel, payload []byte) error {
 	_, err := ch.relay.WriteTo(pkt, c.server)
 	if err == nil {
 		ch.errs.Store(0)
-	} else if ch.errs.Add(1) >= deadAfter && !ch.dead.Swap(true) {
-		c.alive.Add(-1)
-		if c.alive.Load() <= 0 {
-			// Nothing left to carry the session: close so the owner rebuilds.
-			go c.Close()
-		}
+	} else if ch.errs.Add(1) >= deadAfter {
+		ch.dead.Store(true) // heal replaces it, or closes the session
 	}
 	return err
 }
@@ -179,7 +330,13 @@ func (c *relayConn) readLoop(ch *channel) {
 		}
 		ch.recv.Add(int64(n))
 		sid, payload, err := c.sealer.Open(buf[:n])
-		if err != nil || sid != c.sid || len(payload) == 0 {
+		if err != nil || sid != c.sid {
+			continue
+		}
+		now := time.Now().UnixNano()
+		ch.lastRecv.Store(now)
+		c.heard.Store(now)
+		if len(payload) == 0 {
 			continue
 		}
 		select {
@@ -209,11 +366,18 @@ func (c *relayConn) keepalive(ch *channel) {
 // pick returns the channel with the most pacing room, starting the scan
 // round-robin so equal channels share the load.
 func (c *relayConn) pick() *channel {
+	chans := *c.chans.Load()
 	start := int(c.rr.Add(1))
-	var best *channel
+	var best, any *channel
 	bestLevel := 0.0
-	for i := 0; i < len(c.chans); i++ {
-		ch := c.chans[(start+i)%len(c.chans)]
+	for i := 0; i < len(chans); i++ {
+		ch := chans[(start+i)%len(chans)]
+		if ch == nil {
+			continue
+		}
+		if any == nil {
+			any = ch
+		}
 		if ch.dead.Load() {
 			continue
 		}
@@ -222,13 +386,17 @@ func (c *relayConn) pick() *channel {
 		}
 	}
 	if best == nil {
-		best = c.chans[start%len(c.chans)]
+		best = any
 	}
 	return best
 }
 
 func (c *relayConn) WriteTo(p []byte, _ net.Addr) (int, error) {
-	if err := c.send(c.pick(), p); err != nil {
+	ch := c.pick()
+	if ch == nil {
+		return 0, net.ErrClosed
+	}
+	if err := c.send(ch, p); err != nil {
 		return 0, err
 	}
 	return len(p), nil
@@ -243,12 +411,25 @@ func (c *relayConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	}
 }
 
+func (c *relayConn) closed() bool {
+	select {
+	case <-c.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *relayConn) Close() error {
 	c.once.Do(func() {
+		c.mu.Lock()
 		close(c.done)
-		for _, ch := range c.chans {
-			ch.close()
+		for _, ch := range *c.chans.Load() {
+			if ch != nil {
+				ch.close()
+			}
 		}
+		c.mu.Unlock()
 	})
 	return nil
 }

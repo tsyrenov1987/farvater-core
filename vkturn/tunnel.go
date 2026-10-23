@@ -106,13 +106,16 @@ func Open(ctx context.Context, cfg Config) (*Tunnel, error) {
 }
 
 // Closed reports whether the session ended (the relays died or Close ran).
-func (t *Tunnel) Closed() bool { return t.sess.IsClosed() }
+func (t *Tunnel) Closed() bool { return t.sess.IsClosed() || t.rc.closed() }
 
 // Streams reports how many streams are open.
 func (t *Tunnel) Streams() int { return t.sess.NumStreams() }
 
 // Channels reports how many relay allocations carry the session.
 func (t *Tunnel) Channels() int { return t.rc.Channels() }
+
+// Heals reports how many relay allocations were replaced under the session.
+func (t *Tunnel) Heals() int { return t.rc.Heals() }
 
 // Close ends the tunnel, its streams and its allocations.
 func (t *Tunnel) Close() error {
