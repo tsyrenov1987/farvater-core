@@ -376,6 +376,7 @@ func TestSweepWhenNothingIsDelivered(t *testing.T) {
 		r := blackhole(path, at)
 		r.SleptMs = 60_000
 		br.Observe(r)
+		br.NoteQuiet(r)
 	}
 	step := QuietMs / int64(QuietFails-1)
 
@@ -393,6 +394,7 @@ func TestSweepWhenNothingIsDelivered(t *testing.T) {
 		if i == QuietFails/2 {
 			r := deliv(lead, now)
 			br.Observe(r)
+			br.NoteQuiet(r)
 		}
 		fail(br, lead, now)
 		now += step
@@ -420,9 +422,30 @@ func TestSweepWhenNothingIsDelivered(t *testing.T) {
 	if br.Leader() == lead {
 		t.Fatalf("the leader %s kept the lead without delivering its probe", lead)
 	}
-	// the next doubt waits for QuietMs and QuietFails more
-	fail(br, br.Leader(), now+2000)
+	// The next doubt in a row waits twice as long: QuietMs is not enough.
+	lead = br.Leader()
+	for i := 0; i < 2*QuietFails; i++ {
+		now += QuietMs / int64(2*QuietFails-1)
+		fail(br, lead, now)
+	}
 	if br.J.Count("lead_quiet") != 1 {
-		t.Fatalf("lead_quiet %d right after the last, want 1", br.J.Count("lead_quiet"))
+		t.Fatalf("lead_quiet %d after another QuietMs, want 1: the second doubt in a row waits 2*QuietMs", br.J.Count("lead_quiet"))
+	}
+	for i := 0; i < 2*QuietFails; i++ {
+		now += QuietMs / int64(2*QuietFails-1)
+		fail(br, lead, now)
+	}
+	if br.J.Count("lead_quiet") != 2 {
+		t.Fatalf("lead_quiet %d after 2*QuietMs, want 2", br.J.Count("lead_quiet"))
+	}
+	// A flow delivered ends the run: the next doubt waits QuietMs again.
+	r := deliv(lead, now)
+	br.NoteQuiet(r)
+	for i := 0; i < QuietFails; i++ {
+		now += step
+		fail(br, lead, now)
+	}
+	if br.J.Count("lead_quiet") != 3 {
+		t.Fatalf("lead_quiet %d after a delivery and QuietMs more, want 3", br.J.Count("lead_quiet"))
 	}
 }

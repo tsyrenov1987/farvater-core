@@ -111,25 +111,32 @@ func (b *Brain) NoteUnanswered(path string, startMs, now int64) {
 }
 
 // QuietFails flows failed and none delivered for QuietMs put the leader in
-// doubt (noteQuiet).
+// doubt (NoteQuiet); each doubt in a row with nothing delivered between
+// doubles the wait, up to QuietMs<<QuietMaxRuns.
 const (
-	QuietFails = 6
-	QuietMs    = 120_000
+	QuietFails   = 6
+	QuietMs      = 120_000
+	QuietMaxRuns = 4
 )
 
-// noteQuiet takes every receipt, the ones Observe then leaves out of the
-// evidence as well. A connection dead under a phone that slept fails every
-// flow, each dropped as slept: none counts against the path, and the leader
-// keeps the lead while nothing gets through, for an hour and more in the field
-// until the network changed. QuietFails flows failed and none delivered for
-// QuietMs put the leader in doubt: a sweep probes it beside the other paths,
-// and a path that delivers its probe takes the lead from one that does not.
-// A leader that delivers its probe keeps it. Flows the system or a network
-// change cut say nothing of the paths.
-func (b *Brain) noteQuiet(r Receipt) {
+// NoteQuiet takes every receipt of the app's flows, the ones Observe then
+// leaves out of the evidence as well; the sweeps' own probes do not come here,
+// or a dead network's failed probes would call the next sweep. A connection
+// dead under a phone that slept fails every flow, each dropped as slept: none
+// counts against the path, and the leader keeps the lead while nothing gets
+// through, for an hour and more in the field until the network changed.
+// QuietFails flows failed and none delivered for QuietMs put the leader in
+// doubt: a sweep probes it beside the other paths, and a path that delivers
+// its probe takes the lead from one that does not. A leader that delivers its
+// probe keeps it, and the next doubt waits twice as long. Flows the system or
+// a network change cut say nothing of the paths.
+func (b *Brain) NoteQuiet(r Receipt) {
+	if _, ok := b.st[r.Path]; !ok {
+		return
+	}
 	now := r.AtMs
 	if r.Delivered() {
-		b.quietFrom, b.quietFails = 0, 0
+		b.quietFrom, b.quietFails, b.quietRuns = 0, 0, 0
 		return
 	}
 	if r.Sig() == SigNone || b.blockedAt != 0 && now >= b.blockedAt-BlockSlackMs || now-r.DurMs < b.switchedAt {
@@ -139,10 +146,12 @@ func (b *Brain) noteQuiet(r Receipt) {
 		b.quietFrom = now
 	}
 	b.quietFails++
-	if b.quietFails < QuietFails || now-b.quietFrom < QuietMs {
+	wait := int64(QuietMs) << min(b.quietRuns, QuietMaxRuns)
+	if b.quietFails < QuietFails || now-b.quietFrom < wait {
 		return
 	}
 	b.doubtAt = now
+	b.quietRuns++
 	b.J.Add(now, "lead_quiet", fmt.Sprintf("%d flows failed, none delivered for %d s", b.quietFails, (now-b.quietFrom)/1000), b.leader)
 	b.quietFrom, b.quietFails = 0, 0
 }
