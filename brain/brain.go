@@ -138,6 +138,7 @@ type Brain struct {
 	askedAt    int64   // the leader's first flow it has not answered since; 0: none
 	quietFrom  int64   // the first flow failed since one was last delivered (noteQuiet); 0: none
 	quietFails int     // ...and the flows failed since
+	quietRuns  int     // doubts nothing delivered raised in a row, none delivered between
 
 	// when flows on the leader were left unanswered (NoteUnanswered), and when
 	// a path lost a sweep without delivering its probe, until it leads again
@@ -789,7 +790,6 @@ func (b *Brain) Observe(r Receipt) {
 		return
 	}
 	now := r.AtMs
-	b.noteQuiet(r)
 	if r.SleptMs >= SleepGraceMs {
 		// A phone asleep loses its flows whatever the path: NAT mappings
 		// expire and the radio goes quiet.

@@ -739,6 +739,7 @@ func (s *Switchboard) observe(r brain.Receipt) {
 	r.Ctx = s.b.Ctx()
 	s.b.Observe(r)
 	if s.probeHost == "" || r.Dst != s.probeHost {
+		s.b.NoteQuiet(r)
 		switch {
 		case r.SleptMs >= brain.SleepGraceMs:
 			// The brain does not hold these against the path (drop_sleep), nor do
