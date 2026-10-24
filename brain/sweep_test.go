@@ -357,3 +357,72 @@ func TestSweepOfALeaderThatLeavesRequestsUnanswered(t *testing.T) {
 		t.Fatalf("a leader that delivered its probe, slower: ProbeLost %d, want 0", at)
 	}
 }
+
+// A connection dead under a phone that slept: every flow on the leader fails
+// and is dropped as slept, so none counts against the path and nothing
+// dethrones it. QuietFails flows failed and none delivered for QuietMs put the
+// leader in doubt: a sweep probes every path, and one that delivers leads.
+// Fewer failures (a phone idle in its pocket) or a flow delivered meanwhile
+// are no reason.
+func TestSweepWhenNothingIsDelivered(t *testing.T) {
+	paths := sweepPaths()
+	setup := func() (*Brain, string, int64) {
+		br := New(DefaultConfig(), "t", paths, 7)
+		now := warm(br, paths, 1000)
+		br.Pick(now, "x", DstTLS443)
+		return br, br.Leader(), now + 1000
+	}
+	fail := func(br *Brain, path string, at int64) {
+		r := blackhole(path, at)
+		r.SleptMs = 60_000
+		br.Observe(r)
+	}
+	step := QuietMs / int64(QuietFails-1)
+
+	br, lead, now := setup()
+	for i := 0; i < QuietFails-1; i++ {
+		fail(br, lead, now)
+		now += 2 * step
+	}
+	if p := br.SweepDue(now); p != nil {
+		t.Fatalf("swept %v on %d failures in %d ms", p, QuietFails-1, 2*QuietMs)
+	}
+
+	br, lead, now = setup()
+	for i := 0; i < QuietFails; i++ {
+		if i == QuietFails/2 {
+			r := deliv(lead, now)
+			br.Observe(r)
+		}
+		fail(br, lead, now)
+		now += step
+	}
+	if p := br.SweepDue(now); p != nil {
+		t.Fatalf("swept %v though a flow was delivered", p)
+	}
+
+	br, lead, now = setup()
+	for i := 0; i < QuietFails; i++ {
+		fail(br, lead, now)
+		if i < QuietFails-1 {
+			now += step
+		}
+	}
+	if br.J.Count("lead_quiet") != 1 {
+		t.Fatalf("lead_quiet %d, want 1", br.J.Count("lead_quiet"))
+	}
+	probed := br.SweepDue(now)
+	if len(probed) != len(paths) || probed[0] != lead {
+		t.Fatalf("swept %v on nothing delivered, want the leader %s and the %d other paths", probed, lead, len(paths)-1)
+	}
+	br.Swept(probed[1], 256<<10, 20, true, now+20)
+	br.SweepCheck(now + 1100)
+	if br.Leader() == lead {
+		t.Fatalf("the leader %s kept the lead without delivering its probe", lead)
+	}
+	// the next doubt waits for QuietMs and QuietFails more
+	fail(br, br.Leader(), now+2000)
+	if br.J.Count("lead_quiet") != 1 {
+		t.Fatalf("lead_quiet %d right after the last, want 1", br.J.Count("lead_quiet"))
+	}
+}

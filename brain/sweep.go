@@ -110,6 +110,43 @@ func (b *Brain) NoteUnanswered(path string, startMs, now int64) {
 	}
 }
 
+// QuietFails flows failed and none delivered for QuietMs put the leader in
+// doubt (noteQuiet).
+const (
+	QuietFails = 6
+	QuietMs    = 120_000
+)
+
+// noteQuiet takes every receipt, the ones Observe then leaves out of the
+// evidence as well. A connection dead under a phone that slept fails every
+// flow, each dropped as slept: none counts against the path, and the leader
+// keeps the lead while nothing gets through, for an hour and more in the field
+// until the network changed. QuietFails flows failed and none delivered for
+// QuietMs put the leader in doubt: a sweep probes it beside the other paths,
+// and a path that delivers its probe takes the lead from one that does not.
+// A leader that delivers its probe keeps it. Flows the system or a network
+// change cut say nothing of the paths.
+func (b *Brain) noteQuiet(r Receipt) {
+	now := r.AtMs
+	if r.Delivered() {
+		b.quietFrom, b.quietFails = 0, 0
+		return
+	}
+	if r.Sig() == SigNone || b.blockedAt != 0 && now >= b.blockedAt-BlockSlackMs || now-r.DurMs < b.switchedAt {
+		return
+	}
+	if b.quietFails == 0 {
+		b.quietFrom = now
+	}
+	b.quietFails++
+	if b.quietFails < QuietFails || now-b.quietFrom < QuietMs {
+		return
+	}
+	b.doubtAt = now
+	b.J.Add(now, "lead_quiet", fmt.Sprintf("%d flows failed, none delivered for %d s", b.quietFails, (now-b.quietFrom)/1000), b.leader)
+	b.quietFrom, b.quietFails = 0, 0
+}
+
 // unheardSince counts the flows on the leader left unanswered since it took
 // the lead and after since.
 func (b *Brain) unheardSince(since int64) int {
