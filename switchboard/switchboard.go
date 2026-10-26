@@ -604,12 +604,13 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 	// First payload: most apps send it right after the SOCKS reply. Carrying it
 	// together with the proxy request saves a round trip.
 	_ = c.SetReadDeadline(time.Now().Add(s.cfg.FirstPayloadWait))
-	buf := make([]byte, 16*1024)
-	n, rerr := c.Read(buf)
+	pb := wire.GetBuf()
+	n, rerr := c.Read((*pb)[:16*1024])
 	_ = c.SetDeadline(time.Time{})
 	if n > 0 {
-		f.prelude = append([]byte(nil), buf[:n]...)
+		f.prelude = append([]byte(nil), (*pb)[:n]...)
 	}
+	wire.PutBuf(pb)
 	if rerr != nil {
 		var ne net.Error
 		if !errors.As(rerr, &ne) || !ne.Timeout() {

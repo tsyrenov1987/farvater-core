@@ -71,6 +71,12 @@ func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilW
 	} else {
 		w.mux = newH2Mux(dial, pingAfterIdle, pingTimeout)
 	}
+	// A connection left with no streams is closed after h2IdleClose, as on the
+	// other HTTP/2 transports and as a browser drops a site it left: without
+	// it an idle phone PINGs every pingAfterIdle for as long as the tunnel is
+	// up, and the cellular radio never gets to sleep. The next flow dials and
+	// warms a fresh one.
+	w.mux.tr.IdleConnTimeout = h2IdleClose
 	w.mux.warm = w.warm
 	w.mux.maxAge, w.mux.maxBytes = kilConnMaxAge, kilConnMaxBytes
 	return w, nil

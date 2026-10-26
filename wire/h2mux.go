@@ -60,10 +60,30 @@ type h2Mux struct {
 	n    *atomic.Int64 // bytes read and written on cc, for maxBytes
 }
 
+// h2StreamWindow is how much one stream may hold that the app has not read
+// yet: the SETTINGS_INITIAL_WINDOW_SIZE this layer's own Transport advertises.
+// Go's default is 4 MiB per stream, and on a phone that is the memory: when an
+// app stops reading (a player with enough buffered, a stalled download) the
+// server fills the whole window and it sits in the tunnel's heap, stream after
+// stream, while the iOS packet tunnel is killed near 50 MB. 1 MiB still keeps
+// one stream at ~80 Mbit/s over a 100 ms round trip. The connection window
+// stays Go's, so one stalled stream never starves the others. A transport
+// that wears a browser's HTTP/2 (h2Profile.transport) replaces tr and
+// advertises that browser's own window instead.
+const h2StreamWindow = 1 << 20
+
 func newH2Mux(dial func(context.Context) (net.Conn, error), pingAfterIdle, pingTimeout time.Duration) *h2Mux {
+	t2, err := http2.ConfigureTransports(&http.Transport{HTTP2: &http.HTTP2Config{
+		MaxReceiveBufferPerStream: h2StreamWindow,
+	}})
+	if err != nil {
+		// Only fails when the http.Transport already has h2 set up, which a fresh one never has.
+		panic(err)
+	}
+	t2.ReadIdleTimeout, t2.PingTimeout = pingAfterIdle, pingTimeout
 	return &h2Mux{
 		dial:       dial,
-		tr:         &http2.Transport{ReadIdleTimeout: pingAfterIdle, PingTimeout: pingTimeout},
+		tr:         t2,
 		retirePing: defaultRetirePing,
 	}
 }

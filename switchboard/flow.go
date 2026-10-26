@@ -49,7 +49,9 @@ func (f *flow) preludeCopy() ([]byte, bool) {
 // readLoop moves app bytes into the up channel until the app closes.
 func (f *flow) readLoop() {
 	defer close(f.up)
-	buf := make([]byte, 16*1024)
+	pb := wire.GetBuf()
+	defer wire.PutBuf(pb)
+	buf := (*pb)[:16*1024] // chunk size the wires were built around
 	for {
 		n, err := f.client.Read(buf)
 		if n > 0 {

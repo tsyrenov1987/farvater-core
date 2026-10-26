@@ -30,7 +30,9 @@ func pumpUp(ctx context.Context, up <-chan []byte, w io.Writer, m Meter, it *idl
 
 // pumpDown hands what r yields to the app until r ends (nil) or fails.
 func pumpDown(r io.Reader, down io.Writer, m Meter, it *idleTimer) error {
-	p := make([]byte, 32*1024)
+	pb := GetBuf()
+	defer PutBuf(pb)
+	p := *pb
 	for {
 		n, err := r.Read(p)
 		if n > 0 {

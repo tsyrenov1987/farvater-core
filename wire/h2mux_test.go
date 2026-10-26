@@ -467,3 +467,40 @@ func TestH2MuxNeedsDialOnExpiry(t *testing.T) {
 	}
 	a.Close()
 }
+
+// A stream whose reader has stopped holds at most h2StreamWindow in the client:
+// the server's writes block on flow control instead of filling the tunnel's
+// heap (an iOS packet tunnel is killed near 50 MB).
+func TestH2MuxStalledStreamHoldsAtMostItsWindow(t *testing.T) {
+	var sent atomic.Int64
+	dial := func(ctx context.Context) (net.Conn, error) {
+		c, s := net.Pipe()
+		go (&http2.Server{}).ServeConn(s, &http2.ServeConnOpts{
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				chunk := make([]byte, 16<<10)
+				for i := 0; i < 512; i++ { // 8 MiB, twice Go's default window
+					if _, err := w.Write(chunk); err != nil {
+						return
+					}
+					sent.Add(int64(len(chunk)))
+					w.(http.Flusher).Flush()
+				}
+			}),
+		})
+		return c, nil
+	}
+	m := newH2Mux(dial, 0, 0)
+	defer m.Close()
+	s := openOrFail(t, m)
+	defer s.Close()
+	one := make([]byte, 1)
+	if _, err := io.ReadFull(s, one); err != nil { // the response is under way
+		t.Fatalf("first byte: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	// The server may have one chunk in flight past the window.
+	if got, limit := sent.Load(), int64(h2StreamWindow+32<<10); got > limit {
+		t.Fatalf("a stalled stream let the server send %d bytes, want at most %d", got, limit)
+	}
+}
