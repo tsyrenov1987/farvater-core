@@ -65,12 +65,14 @@ type h2Mux struct {
 // Go's default is 4 MiB per stream, and on a phone that is the memory: when an
 // app stops reading (a player with enough buffered, a stalled download) the
 // server fills the whole window and it sits in the tunnel's heap, stream after
-// stream, while the iOS packet tunnel is killed near 50 MB. 1 MiB still keeps
-// one stream at ~80 Mbit/s over a 100 ms round trip. The connection window
-// stays Go's, so one stalled stream never starves the others. A transport
-// that wears a browser's HTTP/2 (h2Profile.transport) replaces tr and
-// advertises that browser's own window instead.
-const h2StreamWindow = 1 << 20
+// stream, while the iOS packet tunnel is killed near 50 MB. 2 MiB halves that
+// and costs no speed from Russia: 25 MB through gRPC and XHTTP paths from
+// Novosibirsk (67 ms to the nodes, ~60 Mbit/s) took as long as with 4 MiB,
+// while 1 MiB was up to 30% slower there and ~40% slower over a longer path.
+// The connection window stays Go's, so one stalled stream never starves the
+// others. A transport that wears a browser's HTTP/2 (h2Profile.transport)
+// replaces tr and advertises that browser's own window instead.
+const h2StreamWindow = 2 << 20
 
 func newH2Mux(dial func(context.Context) (net.Conn, error), pingAfterIdle, pingTimeout time.Duration) *h2Mux {
 	t2, err := http2.ConfigureTransports(&http.Transport{HTTP2: &http.HTTP2Config{
