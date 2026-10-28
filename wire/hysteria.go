@@ -19,6 +19,12 @@ import (
 	"github.com/apernet/quic-go"
 )
 
+// Chrome's QUIC receive windows (initial_max_stream_data, initial_max_data).
+const (
+	hyStreamWindow = 6291456
+	hyConnWindow   = 15728640
+)
+
 type hyWire struct {
 	spec PathSpec
 	mu   sync.Mutex
@@ -79,6 +85,16 @@ func (w *hyWire) config() (*client.Config, error) {
 		},
 		FastOpen: true,
 		// BandwidthConfig left zero: the congestion controller stays BBR.
+		// The Chrome parrot pins the starting windows to Chrome's, but auto-tuning
+		// could still grow them to hysteria's 8 MiB a stream and 20 MiB a
+		// connection, unread bytes the iOS packet tunnel holds near its 50 MB
+		// jetsam limit. The ceilings sit at the start, and nothing on the wire changes.
+		QUICConfig: client.QUICConfig{
+			InitialStreamReceiveWindow:     hyStreamWindow,
+			MaxStreamReceiveWindow:         hyStreamWindow,
+			InitialConnectionReceiveWindow: hyConnWindow,
+			MaxConnectionReceiveWindow:     hyConnWindow,
+		},
 	}
 	if w.spec.Obfs == "salamander" {
 		cfg.ConnFactory = salamanderFactory{psk: []byte(w.spec.ObfsPass)}

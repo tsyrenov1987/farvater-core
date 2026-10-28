@@ -69,14 +69,23 @@ type h2Mux struct {
 // and costs no speed from Russia: 25 MB through gRPC and XHTTP paths from
 // Novosibirsk (67 ms to the nodes, ~60 Mbit/s) took as long as with 4 MiB,
 // while 1 MiB was up to 30% slower there and ~40% slower over a longer path.
-// The connection window stays Go's, so one stalled stream never starves the
-// others. A transport that wears a browser's HTTP/2 (h2Profile.transport)
-// replaces tr and advertises that browser's own window instead.
+// A transport that wears a browser's HTTP/2 (h2Profile.transport) replaces tr
+// and advertises that browser's own window instead.
 const h2StreamWindow = 2 << 20
+
+// h2ConnWindow caps what all the streams of one connection may hold unread
+// together. Go's default is 1 GiB, and stalled streams added up: on iOS 1.0.1
+// (38) the packet tunnel died of jetsam's per-process limit in 47% of the
+// sessions it ended under an XHTTP leader, against 8% under Reality, whose
+// unread bytes wait in the kernel instead. Three stalled streams' worth, about
+// Chrome's 2.5: a stream that keeps reading never waits on one stalled stream,
+// and on three only until one of them reads again.
+const h2ConnWindow = 3 * h2StreamWindow
 
 func newH2Mux(dial func(context.Context) (net.Conn, error), pingAfterIdle, pingTimeout time.Duration) *h2Mux {
 	t2, err := http2.ConfigureTransports(&http.Transport{HTTP2: &http.HTTP2Config{
-		MaxReceiveBufferPerStream: h2StreamWindow,
+		MaxReceiveBufferPerStream:     h2StreamWindow,
+		MaxReceiveBufferPerConnection: h2ConnWindow,
 	}})
 	if err != nil {
 		// Only fails when the http.Transport already has h2 set up, which a fresh one never has.

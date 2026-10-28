@@ -69,7 +69,9 @@ func smuxConfig() *smux.Config {
 	c := smux.DefaultConfig()
 	c.KeepAliveInterval = 10 * time.Second
 	c.KeepAliveTimeout = 40 * time.Second
-	c.MaxReceiveBuffer = 8 << 20
+	// Three streams' worth, as wire's h2ConnWindow: what the session holds unread
+	// sits in the iOS packet tunnel's 50 MB.
+	c.MaxReceiveBuffer = 6 << 20
 	c.MaxStreamBuffer = 2 << 20
 	return c
 }
