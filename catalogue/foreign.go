@@ -15,7 +15,7 @@ import (
 // foreign turns the subscription bodies of other clients into share links, one
 // per line, for the plain-list parser: Clash/Mihomo YAML (proxies:), sing-box
 // JSON (outbounds with server/server_port), Xray JSON (one config or an array of
-// them, as Happ, v2rayN and Remnawave's XRAY_JSON serve) and SIP008. A server
+// them, as v2rayN exports and Remnawave's XRAY_JSON serve) and SIP008. A server
 // these wires cannot carry (Shadowsocks 2022 or with a plugin, h2, QUIC...) is left out; ok is false
 // when the body is none of these formats.
 func foreign(t string) (links string, ok bool) {

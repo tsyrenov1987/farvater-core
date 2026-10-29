@@ -10,7 +10,7 @@ import (
 )
 
 // Provider is what a subscription's provider says about the account, in the
-// response headers other clients read too (Happ, Hiddify, v2RayTun, Karing):
+// response headers panels (Remnawave, Marzban, 3x-ui) serve to every client:
 // so any provider that already fills them shows the same in Farvater.
 //
 //	subscription-userinfo   upload=; download=; total=; expire= (bytes, unix seconds)

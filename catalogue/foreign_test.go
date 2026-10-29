@@ -145,7 +145,7 @@ func TestParseSingBoxJSON(t *testing.T) {
 }
 
 // An array of whole Xray configs, one per server, as Remnawave's XRAY_JSON
-// and Happ's JSON subscriptions serve; the second uses newer Xray's flat
+// and panels' JSON subscriptions serve; the second uses newer Xray's flat
 // settings and xhttp.
 const xrayBody = `[
   {"remarks": "🇳🇱 NL", "outbounds": [

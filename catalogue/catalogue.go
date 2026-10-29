@@ -83,11 +83,11 @@ func Fetch(u string) ([]byte, error) {
 
 // UserAgent names the OS the core runs on ("farvater-core/0.1 (ios)"): one core
 // serves the iPhone and the Android app, and a provider could not otherwise tell
-// which app a subscriber uses. Same shape as other clients (Happ/<v>/ios).
+// which app a subscriber uses. Same "name/version (os)" shape panels already parse.
 var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ")"
 
 // Device is what the subscription fetch says about the device, in the headers
-// Remnawave and Marzban panels read (as Happ sends them): x-hwid, x-device-os,
+// Remnawave and Marzban panels read from any client: x-hwid, x-device-os,
 // x-ver-os, x-device-model. A panel with a device limit answers 404 to a fetch
 // without x-hwid. The app sets it once; HWID is an id the app made for this
 // install, not a hardware serial. Empty fields are not sent.
