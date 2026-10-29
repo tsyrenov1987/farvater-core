@@ -1,8 +1,9 @@
 # Transparency — what is inside a Farvater VPN build
 
-Build: **Farvater VPN for iPhone 1.0 (19)**. Core: tag [`ios-1.0-19`](https://github.com/tsyrenov1987/farvater-core/tree/ios-1.0-19).
-The core's Go code at that tag is the code of commit `a8b8174`, from which the build's `FarvaterCore.xcframework` was made;
-the tag adds only this document.
+Build: **Farvater VPN for iPhone 1.0.1 (40)**. Core: tag [`ios-1.0.1-40`](https://github.com/tsyrenov1987/farvater-core/tree/ios-1.0.1-40).
+The core's Go code at that tag is the code of commit `e4665db`, from which the build's `FarvaterCore.xcframework`
+(SHA-256 of the arm64 binary starts `1dfbbe196d0e0b04`) was made; the commits after it change only comments and this document.
+The previous edition of this document, for 1.0 (19), is at tag [`ios-1.0-19`](https://github.com/tsyrenov1987/farvater-core/blob/ios-1.0-19/docs/TRANSPARENCY.md).
 
 ## The app around the core
 
@@ -20,11 +21,11 @@ Measured on the arm64 slice of this build's `FarvaterCore.xcframework`: text sym
 
 | Part | Machine code | Share |
 |---|---:|---:|
-| Go runtime, standard library, golang.org/x | 2.92 MB | 67.3 % |
-| Third-party libraries (below) | 1.07 MB | 24.7 % |
-| Our core (`brain`, `switchboard`, `wire`, `kilvater`, `catalogue`, `mobile`) | 0.27 MB | 6.2 % |
-| Compiler-generated (type equality, wrappers, stubs) | 0.08 MB | 1.8 % |
-| Total | 4.34 MB | |
+| Go runtime, standard library, golang.org/x | 2.97 MB | 61.1 % |
+| Third-party libraries (below) | 1.31 MB | 26.9 % |
+| Our core (`brain`, `switchboard`, `wire`, `kilvater`, `vkturn`, `catalogue`, `mobile`) | 0.39 MB | 8.0 % |
+| Compiler-generated (type equality, wrappers, stubs) | 0.20 MB | 4.0 % |
+| Total | 4.87 MB | |
 
 Our part is small in bytes and is the part that decides: which path carries each connection, how delivery is
 measured, when a path is bypassed and when it is tried again. The libraries speak the wire formats; the runtime
@@ -32,7 +33,7 @@ runs it all.
 
 Not inside: sing-box / Libbox, gVisor, Xray-core or any other ready-made client core. The wire formats (VLESS with
 Vision and XUDP, Trojan, VMess, the REALITY client, WebSocket, gRPC framing, XHTTP) are this project's own code in
-package `wire`; Xray-core served only as the protocol reference (see [NOTICE](../NOTICE)). For this build
+package `wire`, and the relay path through TURN servers (package `vkturn`: KCP and smux over pion's TURN client) is ours too; Xray-core served only as the protocol reference (see [NOTICE](../NOTICE)). For this build
 `go tool nm go.o | grep -cE 'xtls/xray-core|xtls/reality|google.golang.org/grpc|google.golang.org/protobuf'` prints 0,
 and `go tool nm go.o | grep -c sagernet` prints 0 (`github.com/sagernet/sing` appears in `go.mod` only as an import
 path that `replace` points at our clean-room shim, `third_party/sing-shim`).
@@ -40,7 +41,7 @@ path that `replace` points at our clean-room shim, `third_party/sing-shim`).
 ### How to reproduce
 
 ```sh
-git checkout ios-1.0-19
+git checkout ios-1.0.1-40
 gomobile bind -target=ios/arm64 -iosversion 17.0 -trimpath -ldflags="-s -w" ./mobile   # upstream golang.org/x/mobile
 lipo FarvaterCore.xcframework/ios-arm64/FarvaterCore.framework/FarvaterCore -thin arm64 -output core.a
 ar -x core.a go.o
@@ -59,12 +60,23 @@ Every module with machine code in the core, with the version and `go.sum` hash a
 | github.com/apernet/quic-go | v0.63.1-0.20261004180939-a10df75c260c | MIT | 470 KB | `h1:cxK8qTA0YCsj68A7zLYDCfPgMTOyt3ePkHh+oXEmYU0=` |
 | github.com/refraction-networking/utls | v1.8.3-0.20260301010127-aa6edf4b11af | BSD-3-Clause | 411 KB | `h1:er2acxbi3N1nvEq6HXHUAR1nTWEJmQfqiGR8EVT9rfs=` |
 | github.com/klauspost/compress | v1.20.1 | BSD-3-Clause, Apache-2.0 (per package) | 93 KB | `h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=` |
+| github.com/klauspost/reedsolomon | v1.12.0 | MIT | 56 KB | `h1:I5FEp3xSwVCcEh3F5A7dofEfhXdF/bWhQWPH+XwBFno=` |
+| github.com/xtaci/kcp-go/v5 | v5.6.72 | MIT | 54 KB | `h1:FLaQPalgpufJYQRk0OK+gErEhXGLUPjv6FSRPrFR8Lk=` |
+| github.com/pion/turn/v5 | v5.0.3 | MIT | 48 KB | `h1:I+Nw0fQgdPWF1SXDj0egWDhCkcff7gWiigdQpOK52Ak=` |
 | github.com/apernet/hysteria/core/v2 | v2.13.0 | MIT | 47 KB (with extras) | `h1:6hWhxnbGAH04VpInXrq/AVoH+kscha4YECx7Tj2yc9Y=` |
 | github.com/apernet/hysteria/extras/v2 | v2.13.0 | MIT | (above) | `h1:cenZ6WcsvwyNvRAUjqNxjDcyAJH7GeGP8DLuSRFSfyo=` |
 | github.com/andybalholm/brotli | v1.1.0 | MIT | 35 KB | `h1:eLKJA0d02Lf0mVpIDgYnqXcUn0GqVmEFny3VuID1U3M=` |
+| github.com/xtaci/smux | v1.5.57 | MIT | 35 KB | `h1:N72VbGoSYxgcm6mPOYX0QzEZNVD3UI/JlVvAtXF+WrY=` |
+| github.com/pion/stun/v3 | v3.1.6 | MIT | 23 KB | `h1:WnhsD0eHCiwCfKNkVx0VJJwr2Y3eV4Ueih3KJ+dfZy8=` |
 | github.com/quic-go/qpack | v0.6.0 | MIT | 13 KB | `h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=` |
+| github.com/klauspost/cpuid/v2 | v2.3.0 | MIT | 6 KB | `h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=` |
+| github.com/pkg/errors | v0.9.1 | BSD-2-Clause | 4 KB | `h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=` |
+| github.com/pion/logging | v0.2.4 | MIT | 4 KB | `h1:tTew+7cmQ+Mc1pTBLKH2puKsOvhm32dROumOZ655zB8=` |
+| github.com/pion/dtls/v3 | v3.1.4 | MIT | 4 KB | `h1:QhvtMflMfu9Kf0RcDC5BJBle4caPskByrKQR6uuYqpY=` |
 | github.com/stretchr/testify | v1.12.1 | MIT | 2 KB | `h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=` |
+| github.com/pion/transport/v4 | v4.0.2 | MIT | 1 KB | `h1:ifYlPqNwsy6aKQ9y8yzxXlHae5431ZrH2avkD/Rn6Tk=` |
 | github.com/stretchr/objx | v0.5.3 | MIT | < 1 KB | `h1:jmXUvGomnU1o3W/V5h2VEradbpJDwGrzugQQvL0POH4=` |
+| github.com/tjfoc/gmsm | v1.4.1 | Apache-2.0 | < 1 KB | `h1:aMe1GlZb+0bLjn+cKTPEvvn9oUEBlJitaZiiBwsbgho=` |
 | golang.org/x/mobile (bind runtime) | v0.0.0-20260908204917-8b95e45f8d3e | BSD-3-Clause | (counted with Go) | `h1:zYnHsDmxfxKH/x9DjYNAdoIdMsP8enB1Ncb10b3pdHk=` |
 
 The license texts of all of them ship in the app (menu ⋯ → Open-source licenses) and are listed in
