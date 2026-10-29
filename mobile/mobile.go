@@ -67,7 +67,7 @@ func SetMemoryLimit(bytes int64) {
 // MemoryJSON reports the Go runtime's share of the process, so the iOS tunnel
 // can tell the core's memory from the rest of its budget:
 // {"total": bytes the runtime holds from the OS, "heap": live heap objects,
-// "stacks": goroutine stacks, "goroutines": n}.
+// "stacks": goroutine stacks, "goroutines": n, "valve": times the valve opened}.
 func MemoryJSON() string {
 	s := []metrics.Sample{
 		{Name: "/memory/classes/total:bytes"},
@@ -82,6 +82,7 @@ func MemoryJSON() string {
 		"heap":       s[2].Value.Uint64(),
 		"stacks":     s[3].Value.Uint64(),
 		"goroutines": s[4].Value.Uint64(),
+		"valve":      uint64(valveFired.Load()),
 	})
 }
 
