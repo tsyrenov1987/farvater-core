@@ -115,7 +115,7 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 	}
 	n := new(atomic.Int64)
 	c = &countConn{Conn: c, n: n}
-	cc, err := m.tr.NewClientConn(c)
+	cc, err := m.tr.NewClientConn(&h2FrameCap{Conn: c})
 	if err != nil {
 		c.Close()
 		return nil, nil, err
