@@ -67,13 +67,13 @@ func TestFetchWithProviderReturnsTheHeaders(t *testing.T) {
 
 func TestProviderReadsFarvatersAccountHeaders(t *testing.T) {
 	h := http.Header{}
-	h.Set("access-code", "ORDEN-MJM57-VZ1BW")
+	h.Set("access-code", "ORDEN-EXMPL-TEST0")
 	h.Set("month-traffic", "used=11; cap=322122547200; slow=1")
 	h.Set("white-traffic", "used=3; cap=5368709120")
 	h.Set("renew-url", "https://myorden.ru/cabinet")
 	h.Set("invite-bonus", "30")
 	p := ProviderFrom(h)
-	if p == nil || p.Code != "ORDEN-MJM57-VZ1BW" || p.RenewURL != "https://myorden.ru/cabinet" || p.InviteDays != 30 {
+	if p == nil || p.Code != "ORDEN-EXMPL-TEST0" || p.RenewURL != "https://myorden.ru/cabinet" || p.InviteDays != 30 {
 		t.Fatalf("got %+v", p)
 	}
 	if p.Month == nil || *p.Month != (Meter{Used: 11, Cap: 322122547200, Spent: true}) {
