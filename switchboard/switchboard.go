@@ -148,6 +148,10 @@ type Switchboard struct {
 	ln     net.Listener // the SOCKS listener the accept loop waits on
 	lnAddr string
 
+	handing atomic.Int32  // the accept loop's handover state (handover.go)
+	letGone chan struct{} // closed once the accept loop let the listener go
+	retired bool          // handed over: the memory file is the next switchboard's
+
 	saveMu  sync.Mutex // one memory write at a time, never an older snapshot over a newer one
 	written uint64
 
@@ -168,7 +172,7 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 	if labTune != nil {
 		labTune(&cfg)
 	}
-	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, carried: map[string]*carried{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}, wantTill: map[string]int64{}, ruFailed: map[string]int64{}}
+	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, carried: map[string]*carried{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}, wantTill: map[string]int64{}, ruFailed: map[string]int64{}, letGone: make(chan struct{})}
 	var infos []brain.PathInfo
 	for _, e := range cat.Paths {
 		if wire.IsHosted(e.Spec.Kind) && !slices.Contains(cfg.Hosted, e.Spec.Kind) {
@@ -237,8 +241,11 @@ func (s *Switchboard) loadMemory() *brain.Memory {
 
 // snapshot serialises the brain's memory for writing; called under s.mu.
 func (s *Switchboard) snapshot(now int64) ([]byte, uint64) {
+	if s.retired || s.cfg.MemoryFile == "" {
+		return nil, 0
+	}
 	m := s.b.Remember(now)
-	if m == nil || s.cfg.MemoryFile == "" {
+	if m == nil {
 		return nil, 0
 	}
 	data, err := json.Marshal(m)
@@ -428,7 +435,9 @@ func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error 
 	go func() {
 		<-ctx.Done()
 		s.lnMu.Lock()
-		s.ln.Close()
+		if s.ln != nil { // nil once handed over
+			s.ln.Close()
+		}
 		s.lnMu.Unlock()
 		for _, w := range s.wires {
 			w.Close()
@@ -438,6 +447,10 @@ func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error 
 	for {
 		c, err := ln.Accept()
 		if err != nil {
+			if s.handing.CompareAndSwap(letGo, detached) {
+				close(s.letGone) // Detach takes the listener, open
+				return nil
+			}
 			if ctx.Err() != nil {
 				return nil
 			}

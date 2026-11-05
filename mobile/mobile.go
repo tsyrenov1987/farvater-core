@@ -49,6 +49,12 @@ var (
 	memoryFile string
 	hosted     []wire.Kind
 	direct     []string
+
+	running   *catalogue.Catalogue     // the catalogue sb runs (Reload compares against it)
+	life      context.Context          // sb's serving context
+	blockedOn bool                     // SetBlocked(true) holds
+	endpoints map[string]wire.Endpoint // hosted doors the app handed over, for a reloaded sb
+	draining  []context.CancelFunc     // switchboards a Reload replaced, finishing their flows
 )
 
 // Version is the core version string.
@@ -147,7 +153,13 @@ func SetNetwork(networkCtx string) {
 // back the next flow over each path dials a fresh connection instead of
 // waiting on one that went quiet. A no-op when not running.
 func SetBlocked(blocked bool) {
-	if s := current(); s != nil {
+	mu.Lock()
+	s := sb
+	if s != nil {
+		blockedOn = blocked
+	}
+	mu.Unlock()
+	if s != nil {
 		s.SetBlocked(blocked)
 	}
 }
@@ -169,21 +181,7 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 	if err != nil {
 		return err
 	}
-	cfg := switchboard.DefaultConfig()
-	listen = net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort))
-	cfg.Listen = listen
-	cfg.User, cfg.Pass = rand.Text(), rand.Text()
-	if n := contextName(networkCtx); n != "" {
-		cfg.Ctx = n
-	}
-	cfg.MemoryFile = memoryFile
-	cfg.Hosted = hosted
-	cfg.Direct = withoutProbes(direct, append([]string{DefaultProbeURL}, cat.ProbeURLs...))
-	cfg.RuDirect = true
-	cfg.ProbeURL = DefaultProbeURL
-	if len(cat.ProbeURLs) > 0 {
-		cfg.ProbeURL = cat.ProbeURLs[0]
-	}
+	cfg := config(cat, net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort)), rand.Text(), rand.Text(), contextName(networkCtx))
 	s, err := switchboard.New(cfg, cat)
 	if err != nil {
 		return err
@@ -193,10 +191,30 @@ func Start(catalogueSrc string, socksPort int, networkCtx string) error {
 		c()
 		return err
 	}
-	sb, cancel = s, c
-	user, pass = cfg.User, cfg.Pass
+	sb, cancel, life, running = s, c, ctx, cat
+	listen, user, pass = cfg.Listen, cfg.User, cfg.Pass
 	probe = cfg.ProbeURL
+	blockedOn, endpoints = false, map[string]wire.Endpoint{}
 	return nil
+}
+
+// config is the switchboard's config for cat; mu held.
+func config(cat *catalogue.Catalogue, listenOn, u, p, network string) switchboard.Config {
+	cfg := switchboard.DefaultConfig()
+	cfg.Listen = listenOn
+	cfg.User, cfg.Pass = u, p
+	if network != "" {
+		cfg.Ctx = network
+	}
+	cfg.MemoryFile = memoryFile
+	cfg.Hosted = hosted
+	cfg.Direct = withoutProbes(direct, append([]string{DefaultProbeURL}, cat.ProbeURLs...))
+	cfg.RuDirect = true
+	cfg.ProbeURL = DefaultProbeURL
+	if len(cat.ProbeURLs) > 0 {
+		cfg.ProbeURL = cat.ProbeURLs[0]
+	}
+	return cfg
 }
 
 func loadCatalogue(src string) (*catalogue.Catalogue, error) {
@@ -221,7 +239,10 @@ func Stop() {
 	if cancel != nil {
 		cancel()
 	}
-	sb, cancel = nil, nil
+	for _, c := range draining {
+		c()
+	}
+	sb, cancel, life, running, draining = nil, nil, nil, nil, nil
 }
 
 // SetDirect names the sites that go straight to the network, around every
@@ -314,15 +335,23 @@ func HostedJSON() string {
 // SetHostedEndpoint tells the running core that the hosted path id is up
 // behind 127.0.0.1:port with these SOCKS5 credentials, or down (port 0).
 func SetHostedEndpoint(id string, port int, user, pass string) {
-	s := current()
-	if s == nil {
-		return
-	}
 	ep := wire.Endpoint{}
 	if port > 0 {
 		ep = wire.Endpoint{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), User: user, Pass: pass}
 	}
-	_ = s.SetEndpoint(id, ep)
+	mu.Lock()
+	s := sb
+	if s != nil {
+		if ep.Addr == "" {
+			delete(endpoints, id)
+		} else {
+			endpoints[id] = ep
+		}
+	}
+	mu.Unlock()
+	if s != nil {
+		_ = s.SetEndpoint(id, ep)
+	}
 }
 
 // SocksUser and SocksPass are the credentials of the running switchboard's
