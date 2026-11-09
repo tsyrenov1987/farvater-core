@@ -35,16 +35,25 @@ func usage() {
 	os.Exit(2)
 }
 
-// catalogueURL turns an access code into the catalogue's address.
-func catalogueURL(s string) (string, error) {
+// catalogueHosts serve the same /hsub catalogue. joinorden.com is cut off
+// inside Russia (TLS reset), the other two are reachable from there and from abroad.
+var catalogueHosts = []string{"viporden.online", "myorden.ru", "joinorden.com"}
+
+// catalogueURLs turns an access code into the catalogue's addresses, in the
+// order to try them; a URL the user gave is the only address.
+func catalogueURLs(s string) ([]string, error) {
 	s = strings.TrimSpace(s)
 	if u := strings.ToUpper(s); codeRE.MatchString(u) {
-		return "https://joinorden.com/hsub/" + u, nil
+		var out []string
+		for _, h := range catalogueHosts {
+			out = append(out, "https://"+h+"/hsub/"+u)
+		}
+		return out, nil
 	}
 	if strings.HasPrefix(s, "https://") {
-		return s, nil
+		return []string{s}, nil
 	}
-	return "", fmt.Errorf("not an access code or https URL: %q", s)
+	return nil, fmt.Errorf("not an access code or https URL: %q", s)
 }
 
 func main() {
@@ -80,7 +89,7 @@ func connect(args []string, logger *log.Logger) {
 			src = a
 		}
 	}
-	u, err := catalogueURL(src)
+	urls, err := catalogueURLs(src)
 	if err != nil {
 		logger.Fatal(err)
 	}
@@ -89,7 +98,15 @@ func connect(args []string, logger *log.Logger) {
 	}
 	// The catalogue comes before the tunnel: the computer catalogue (the
 	// worker knows it by the core's User-Agent, "farvater-core/... (darwin)").
-	cat, err := catalogue.Load(u)
+	var cat *catalogue.Catalogue
+	for _, u := range urls {
+		if cat, err = catalogue.Load(u); err == nil {
+			break
+		}
+		if verbose {
+			logger.Printf("catalogue %s: %v", u, err)
+		}
+	}
 	if err != nil {
 		logger.Fatal("catalogue: ", err)
 	}
