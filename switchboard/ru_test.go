@@ -219,3 +219,23 @@ func waitFor(t *testing.T, ok func() bool) {
 	}
 	t.Fatal("timed out")
 }
+
+// The phones keep the short limits; a computer sets its own.
+func TestRussianDirectLimits(t *testing.T) {
+	s, _ := ruBoard(t)
+	if s.ruDial() != min(s.cfg.DialTimeout, ruDialTimeout) || s.ruRetry() != ruDirectFor {
+		t.Fatalf("defaults: dial %v, retry %v", s.ruDial(), s.ruRetry())
+	}
+	s.cfg.RuDialTimeout, s.cfg.RuRetryAfter = 10*time.Second, 30*time.Second
+	if s.ruDial() != 10*time.Second || s.ruRetry() != 30*time.Second {
+		t.Fatalf("set: dial %v, retry %v", s.ruDial(), s.ruRetry())
+	}
+	start := nowMs()
+	s.ruFail("x.ru")
+	s.mu.Lock()
+	left := s.ruFailed["x.ru"] - start
+	s.mu.Unlock()
+	if left < 30_000 || left > 31_000 {
+		t.Fatalf("the site is over the paths for %d ms, want 30 s", left)
+	}
+}

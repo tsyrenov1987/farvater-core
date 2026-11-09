@@ -118,18 +118,32 @@ func (s *Switchboard) ruDirect(host string) bool {
 // the site goes over the paths for ruDirectFor and the caller carries this
 // flow there.
 func (s *Switchboard) serveRuDirect(ctx context.Context, c net.Conn, req socksRequest) bool {
-	d := wire.NewDialer(min(s.cfg.DialTimeout, ruDialTimeout))
+	d := wire.NewDialer(s.ruDial())
 	r, err := d.DialContext(ctx, "tcp", req.String())
 	if err != nil {
 		if ctx.Err() == nil {
 			s.ruFail(req.Host)
-			s.logf("ru direct %s: %v; over the paths for %s", req, err, ruDirectFor)
+			s.logf("ru direct %s: %v; over the paths for %s", req, err, s.ruRetry())
 		}
 		return false
 	}
 	defer c.Close()
 	s.pipeDirect(ctx, c, r)
 	return true
+}
+
+func (s *Switchboard) ruDial() time.Duration {
+	if s.cfg.RuDialTimeout > 0 {
+		return s.cfg.RuDialTimeout
+	}
+	return min(s.cfg.DialTimeout, ruDialTimeout)
+}
+
+func (s *Switchboard) ruRetry() time.Duration {
+	if s.cfg.RuRetryAfter > 0 {
+		return s.cfg.RuRetryAfter
+	}
+	return ruDirectFor
 }
 
 func (s *Switchboard) ruFail(host string) {
@@ -145,14 +159,14 @@ func (s *Switchboard) ruFail(host string) {
 			delete(s.ruFailed, h)
 		}
 	}
-	s.ruFailed[host] = now + ruDirectFor.Milliseconds()
+	s.ruFailed[host] = now + s.ruRetry().Milliseconds()
 }
 
 // openRuUDP opens the association's socket to a Russian destination over the
 // device's own network. False: it cannot (the name does not resolve, say),
 // and the association goes over the paths.
 func (s *Switchboard) openRuUDP(ctx context.Context, a *udpAssoc, d datagram) bool {
-	dctx, cancel := context.WithTimeout(ctx, ruDialTimeout)
+	dctx, cancel := context.WithTimeout(ctx, s.ruDial())
 	defer cancel()
 	dl := wire.NewDialer(0)
 	dc, err := dl.DialContext(dctx, "udp", d.to.String())

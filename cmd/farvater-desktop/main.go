@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tsyrenov1987/farvater-core/catalogue"
 	"github.com/tsyrenov1987/farvater-core/desktop"
@@ -33,6 +34,14 @@ import (
 var codeRE = regexp.MustCompile(`^ORDEN-[0-9A-Z]{5}-[0-9A-Z]{5}$`)
 
 const probeURL = "https://www.gstatic.com/generate_204"
+
+// A Russian site's direct dial, name lookup included (3 s was too short: on a
+// healthy Windows machine www.vtb.ru failed 2 dials of 3 with it, and none
+// with 10 s), and how soon a site that failed it is tried directly again.
+const (
+	ruDialTimeout = 10 * time.Second
+	ruRetryAfter  = 30 * time.Second
+)
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "farvater-desktop %s\n\nusage:\n  farvater-desktop connect <ORDEN-code | catalogue URL> [-v] [-no-killswitch]\n  farvater-desktop off\n", switchboard.Version)
@@ -166,6 +175,7 @@ func connect(args []string, logger *log.Logger) error {
 	cfg := switchboard.DefaultConfig()
 	cfg.User, cfg.Pass = rand.Text(), rand.Text()
 	cfg.RuDirect = true
+	cfg.RuDialTimeout, cfg.RuRetryAfter = ruDialTimeout, ruRetryAfter
 	cfg.ProbeURL = probeURL
 	if len(cat.ProbeURLs) > 0 {
 		cfg.ProbeURL = cat.ProbeURLs[0]

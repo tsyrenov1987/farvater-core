@@ -59,6 +59,13 @@ type Config struct {
 	// services by name, Russian addresses by address. A site whose direct
 	// dial fails goes over the paths for a while. The probes' hosts never go.
 	RuDirect bool
+	// RuDialTimeout bounds a Russian site's direct dial, the name lookup
+	// included, and RuRetryAfter is how long the site then goes over the paths
+	// (ru.go's values when zero, made for phones on allow-listed networks). A
+	// computer's paths are all foreign, and a bank refuses a foreign address:
+	// it waits longer and comes back sooner.
+	RuDialTimeout time.Duration
+	RuRetryAfter  time.Duration
 
 	// User and Pass, when set, make SOCKS5 clients authenticate (RFC 1929).
 	// The mobile apps set fresh random ones each session: every app on the
