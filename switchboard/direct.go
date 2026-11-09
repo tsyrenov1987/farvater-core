@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/net/idna"
+
+	"github.com/tsyrenov1987/farvater-core/wire"
 )
 
 // DirectNames reads the sites a person wants around the tunnel, one or many
@@ -80,7 +82,7 @@ func (s *Switchboard) isDirect(host string) bool {
 // such a flow says nothing about any path.
 func (s *Switchboard) serveDirect(ctx context.Context, c net.Conn, req socksRequest) {
 	defer c.Close()
-	d := net.Dialer{Timeout: s.cfg.DialTimeout}
+	d := wire.NewDialer(s.cfg.DialTimeout)
 	r, err := d.DialContext(ctx, "tcp", req.String())
 	if err != nil {
 		s.logf("direct %s: %v", req, err)

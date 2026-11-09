@@ -70,7 +70,7 @@ func (w *hostedWire) Dial(ctx context.Context) (Session, error) {
 	if ep.Addr == "" {
 		return nil, ErrNotUp
 	}
-	var d net.Dialer
+	d := NewDialer(0)
 	conn, err := d.DialContext(ctx, "tcp", ep.Addr)
 	if err != nil {
 		return nil, err

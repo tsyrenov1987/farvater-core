@@ -372,7 +372,8 @@ func probeWhite(ctx context.Context, hosts []string) bool {
 	res := make(chan bool, len(hosts))
 	for _, h := range hosts {
 		go func() {
-			d := tls.Dialer{Config: &tls.Config{ServerName: h}}
+			nd := wire.NewDialer(0)
+			d := tls.Dialer{NetDialer: &nd, Config: &tls.Config{ServerName: h}}
 			c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(h, "443"))
 			if err == nil {
 				c.Close()

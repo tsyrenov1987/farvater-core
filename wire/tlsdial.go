@@ -91,6 +91,7 @@ func clientHello(fp string) utls.ClientHelloID {
 // keepalive probes after 45 s of quiet.
 func dialTCP(ctx context.Context, host string, port int) (net.Conn, error) {
 	d := net.Dialer{
+		Control:         SocketControl,
 		Timeout:         16 * time.Second,
 		KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: 45 * time.Second, Interval: 45 * time.Second, Count: -1},
 	}

@@ -64,7 +64,7 @@ func (w *hyWire) Close() error {
 type salamanderFactory struct{ psk []byte }
 
 func (f salamanderFactory) New(net.Addr) (net.PacketConn, error) {
-	c, err := net.ListenUDP("udp", nil)
+	c, err := ListenUDP()
 	if err != nil {
 		return nil, err
 	}

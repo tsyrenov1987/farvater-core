@@ -118,7 +118,7 @@ func (s *Switchboard) ruDirect(host string) bool {
 // the site goes over the paths for ruDirectFor and the caller carries this
 // flow there.
 func (s *Switchboard) serveRuDirect(ctx context.Context, c net.Conn, req socksRequest) bool {
-	d := net.Dialer{Timeout: min(s.cfg.DialTimeout, ruDialTimeout)}
+	d := wire.NewDialer(min(s.cfg.DialTimeout, ruDialTimeout))
 	r, err := d.DialContext(ctx, "tcp", req.String())
 	if err != nil {
 		if ctx.Err() == nil {
@@ -154,7 +154,7 @@ func (s *Switchboard) ruFail(host string) {
 func (s *Switchboard) openRuUDP(ctx context.Context, a *udpAssoc, d datagram) bool {
 	dctx, cancel := context.WithTimeout(ctx, ruDialTimeout)
 	defer cancel()
-	var dl net.Dialer
+	dl := wire.NewDialer(0)
 	dc, err := dl.DialContext(dctx, "udp", d.to.String())
 	if err != nil {
 		if ctx.Err() == nil {
@@ -194,4 +194,28 @@ func (a *udpAssoc) pumpDirect(cancel context.CancelFunc, c net.Conn) {
 		a.answers.Add(1)
 		a.down.Add(int64(n))
 	}
+}
+
+// RuPrefixes4 lists the Russian IPv4 ranges as prefixes, for a firewall that
+// lets the direct dials of Russian sites out (the desktop kill switch).
+func RuPrefixes4() []netip.Prefix {
+	var out []netip.Prefix
+	for i := 0; i+8 <= len(ru4); i += 8 {
+		lo := uint64(binary.BigEndian.Uint32([]byte(ru4[i : i+4])))
+		hi := uint64(binary.BigEndian.Uint32([]byte(ru4[i+4 : i+8])))
+		for lo <= hi {
+			bits := 32
+			for bits > 0 {
+				size := uint64(1) << (33 - bits)
+				if lo%size != 0 || lo+size-1 > hi {
+					break
+				}
+				bits--
+			}
+			a := netip.AddrFrom4([4]byte{byte(lo >> 24), byte(lo >> 16), byte(lo >> 8), byte(lo)})
+			out = append(out, netip.PrefixFrom(a, bits))
+			lo += uint64(1) << (32 - bits)
+		}
+	}
+	return out
 }
