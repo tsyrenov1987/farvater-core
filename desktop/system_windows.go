@@ -1,16 +1,24 @@
 package desktop
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/tsyrenov1987/farvater-core/wire"
@@ -34,13 +42,46 @@ type saved struct {
 	LAN      [][]string `json:"lan,omitempty"` // netsh commands that undo the private-range routes
 }
 
+// pinned is the physical interface the core's sockets leave by, 0 while no
+// tunnel is up. A service outlives its tunnels, and the machine can move to
+// another interface under one (Follow), so the control function reads it for
+// each socket.
+var pinned atomic.Int32
+
+func init() {
+	wire.SocketControl = func(network, _ string, c syscall.RawConn) error {
+		idx := int(pinned.Load())
+		if idx == 0 {
+			return nil
+		}
+		var serr error
+		err := c.Control(func(fd uintptr) {
+			h := syscall.Handle(fd)
+			if strings.HasSuffix(network, "6") {
+				serr = syscall.SetsockoptInt(h, syscall.IPPROTO_IPV6, v6Unicast, idx)
+				return
+			}
+			var be [4]byte // IP_UNICAST_IF takes the index in network order
+			binary.BigEndian.PutUint32(be[:], uint32(idx))
+			serr = syscall.SetsockoptInt(h, syscall.IPPROTO_IP, ipUnicast, int(binary.NativeEndian.Uint32(be[:])))
+		})
+		if err != nil {
+			return err
+		}
+		return serr
+	}
+}
+
 // System is the tunnel (Wintun; wintun.dll next to the program) and what was
 // changed on the machine to route into it.
 type System struct {
-	dev   tun.Device
-	state saved
-	logf  func(string, ...any)
+	dev  tun.Device
+	logf func(string, ...any)
 	*tunPackets
+
+	mu    sync.Mutex // state, down: Down and Follow's re-pinning
+	state saved
+	down  bool
 }
 
 // Up creates the tunnel, pins the core's sockets to the physical interface,
@@ -59,31 +100,8 @@ func Up(o Options) (*System, error) {
 	if err != nil {
 		return nil, fmt.Errorf("default route: %v", err)
 	}
-	wire.SocketControl = func(network, _ string, c syscall.RawConn) error {
-		var serr error
-		err := c.Control(func(fd uintptr) {
-			h := syscall.Handle(fd)
-			if strings.HasSuffix(network, "6") {
-				serr = syscall.SetsockoptInt(h, syscall.IPPROTO_IPV6, v6Unicast, idx)
-				return
-			}
-			var be [4]byte // IP_UNICAST_IF takes the index in network order
-			binary.BigEndian.PutUint32(be[:], uint32(idx))
-			serr = syscall.SetsockoptInt(h, syscall.IPPROTO_IP, ipUnicast, int(binary.NativeEndian.Uint32(be[:])))
-		})
-		if err != nil {
-			return err
-		}
-		return serr
-	}
-	dnsOut, _ := run("powershell", "-NoProfile", "-Command",
-		fmt.Sprintf("(Get-DnsClientServerAddress -AddressFamily IPv4 -InterfaceIndex %d).ServerAddresses", idx))
-	var upstream []netip.Addr
-	for _, l := range strings.Fields(dnsOut) {
-		if a, err := netip.ParseAddr(l); err == nil {
-			upstream = append(upstream, a)
-		}
-	}
+	pinned.Store(int32(idx))
+	upstream := interfaceDNS(idx)
 	pinResolver(upstream)
 
 	dev, err := tun.CreateTUN(tunName, MTU)
@@ -111,20 +129,114 @@ func Up(o Options) (*System, error) {
 	s.lanRoutes(idx, hop)
 	s.state.Firewall = true
 	s.save()
-	// DNS to anything but the tunnel's server and the network's own (the
-	// core's lookups for Russian sites) is blocked.
-	allow := append([]netip.Addr{netip.MustParseAddr(DNSAddr)}, upstream...)
-	for _, proto := range []string{"UDP", "TCP"} {
-		if out, err := run("netsh", "advfirewall", "firewall", "add", "rule", "name="+fwDNSRule, "dir=out", "action=block",
-			"protocol="+proto, "remoteport=53", "remoteip="+complement(allow)); err != nil {
-			return fail(fmt.Errorf("firewall: %v %s", err, out))
-		}
+	if err := blockOtherDNS(upstream); err != nil {
+		return fail(err)
 	}
 	if o.KillSwitch {
 		logf("kill switch on Windows: routing only (no firewall allow-list yet)")
 	}
 	logf("tunnel %s up, core pinned to interface %d, dns %v", tunName, idx, upstream)
 	return s, nil
+}
+
+// interfaceDNS is what the interface resolves names with.
+func interfaceDNS(idx int) []netip.Addr {
+	out, _ := run("powershell", "-NoProfile", "-Command",
+		fmt.Sprintf("(Get-DnsClientServerAddress -AddressFamily IPv4 -InterfaceIndex %d).ServerAddresses", idx))
+	var upstream []netip.Addr
+	for _, l := range strings.Fields(out) {
+		if a, err := netip.ParseAddr(l); err == nil {
+			upstream = append(upstream, a)
+		}
+	}
+	return upstream
+}
+
+// blockOtherDNS blocks DNS to anything but the tunnel's server and the
+// network's own (the core's lookups for Russian sites).
+func blockOtherDNS(upstream []netip.Addr) error {
+	allow := append([]netip.Addr{netip.MustParseAddr(DNSAddr)}, upstream...)
+	for _, proto := range []string{"UDP", "TCP"} {
+		if out, err := run("netsh", "advfirewall", "firewall", "add", "rule", "name="+fwDNSRule, "dir=out", "action=block",
+			"protocol="+proto, "remoteport=53", "remoteip="+complement(allow)); err != nil {
+			return fmt.Errorf("firewall: %v %s", err, out)
+		}
+	}
+	return nil
+}
+
+// defaultRoutes says which IPv4 default routes the machine has now; "" when
+// it has none. The tunnel's own are /1, so they are not in it.
+func defaultRoutes() (string, error) {
+	var t *windows.MibIpForwardTable2
+	if err := windows.GetIpForwardTable2(windows.AF_INET, &t); err != nil {
+		return "", err
+	}
+	defer windows.FreeMibTable(unsafe.Pointer(t))
+	var out []string
+	for _, r := range t.Rows() {
+		if r.DestinationPrefix.PrefixLength == 0 {
+			out = append(out, fmt.Sprintf("%d %08x %d", r.InterfaceIndex, r.NextHop.Data[0], r.Metric))
+		}
+	}
+	slices.Sort(out)
+	return strings.Join(out, ","), nil
+}
+
+// Follow keeps the core on the machine's network as it changes (Wi-Fi to a
+// cable, a new Wi-Fi) until ctx ends, and reports each new network: the core's
+// sockets, the DNS it asks and the private-range routes all belong to one
+// network. With no default route at all it waits for the next one.
+func (s *System) Follow(ctx context.Context, changed func(network string)) {
+	last, _ := defaultRoutes()
+	t := time.NewTicker(3 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		now, err := defaultRoutes()
+		if err != nil || now == "" || now == last {
+			continue
+		}
+		out, err := run("powershell", "-NoProfile", "-Command", defaultRouteCmd)
+		if err != nil {
+			continue
+		}
+		idx, hop, err := parseDefaultRoute(out)
+		if err != nil {
+			continue
+		}
+		last = now
+		if s.move(ctx, idx, hop) {
+			changed(fmt.Sprintf("if%d/%s", idx, hop))
+		}
+	}
+}
+
+// move goes over to the interface; false when it is the one in use, or the
+// tunnel is going down.
+func (s *System) move(ctx context.Context, idx int, hop string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.down || ctx.Err() != nil || int(pinned.Load()) == idx {
+		return false
+	}
+	pinned.Store(int32(idx))
+	upstream := interfaceDNS(idx)
+	pinResolver(upstream)
+	_, _ = run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+fwDNSRule)
+	if err := blockOtherDNS(upstream); err != nil {
+		s.logf("%v", err)
+	}
+	undoLAN(s.state)
+	s.state.LAN = nil
+	s.lanRoutes(idx, hop)
+	s.save()
+	s.logf("moved to interface %d, dns %v", idx, upstream)
+	return true
 }
 
 // lanRoutes keeps the private ranges on the physical network (see
@@ -184,6 +296,14 @@ func complement(allow []netip.Addr) string {
 
 // Down puts the machine back; the tunnel's own routes and DNS go with it.
 func (s *System) Down() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.down {
+		return
+	}
+	s.down = true
+	pinned.Store(0)
+	net.DefaultResolver = &net.Resolver{}
 	if s.state.Firewall {
 		_, _ = run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+fwDNSRule)
 	}

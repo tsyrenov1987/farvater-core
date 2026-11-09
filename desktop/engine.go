@@ -300,8 +300,17 @@ var (
 // open runs the client side of a SOCKS5 conversation with the switchboard over
 // an in-memory pipe and returns the pipe once the switchboard has answered.
 func (e *Engine) open(cmd byte, host string, port uint16) (net.Conn, error) {
+	return socksOpen(e.ctx, e.serve, e.user, e.pass, cmd, host, port)
+}
+
+// Dial opens one connection to host:port through the switchboard.
+func Dial(ctx context.Context, serve Conns, user, pass, host string, port uint16) (net.Conn, error) {
+	return socksOpen(ctx, serve, user, pass, socksConnect, host, port)
+}
+
+func socksOpen(ctx context.Context, serve Conns, user, pass string, cmd byte, host string, port uint16) (net.Conn, error) {
 	a, b := net.Pipe()
-	go e.serve(e.ctx, b)
+	go serve(ctx, b)
 	_ = a.SetDeadline(time.Now().Add(20 * time.Second))
 	fail := func(err error) (net.Conn, error) { a.Close(); return nil, err }
 	if _, err := a.Write([]byte{5, 1, 2}); err != nil {
@@ -311,8 +320,8 @@ func (e *Engine) open(cmd byte, host string, port uint16) (net.Conn, error) {
 	if _, err := io.ReadFull(a, r[:]); err != nil || r[1] != 2 {
 		return fail(errors.New("socks: no auth"))
 	}
-	auth := append([]byte{1, byte(len(e.user))}, e.user...)
-	auth = append(append(auth, byte(len(e.pass))), e.pass...)
+	auth := append([]byte{1, byte(len(user))}, user...)
+	auth = append(append(auth, byte(len(pass))), pass...)
 	if _, err := a.Write(auth); err != nil {
 		return fail(err)
 	}

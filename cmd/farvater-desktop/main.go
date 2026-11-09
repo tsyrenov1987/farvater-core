@@ -16,15 +16,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
-	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/tsyrenov1987/farvater-core/catalogue"
 	"github.com/tsyrenov1987/farvater-core/desktop"
@@ -34,14 +31,6 @@ import (
 var codeRE = regexp.MustCompile(`^ORDEN-[0-9A-Z]{5}-[0-9A-Z]{5}$`)
 
 const probeURL = "https://www.gstatic.com/generate_204"
-
-// A Russian site's direct dial, name lookup included (3 s was too short: on a
-// healthy Windows machine www.vtb.ru failed 2 dials of 3 with it, and none
-// with 10 s), and how soon a site that failed it is tried directly again.
-const (
-	ruDialTimeout = 10 * time.Second
-	ruRetryAfter  = 30 * time.Second
-)
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "farvater-desktop %s\n\nusage:\n  farvater-desktop connect <ORDEN-code | catalogue URL> [-v] [-no-killswitch]\n  farvater-desktop off\n", switchboard.Version)
@@ -112,24 +101,6 @@ func connectAndExit(args []string, logger *log.Logger) {
 	}
 }
 
-// explain turns the worker's answers about a code (/hsub in orden-worker) into
-// what the code's owner can act on; nil means the error says nothing about the
-// code, a network failure for one.
-func explain(err error) error {
-	const cabinet = " Кабинет: myorden.ru/cabinet"
-	switch {
-	case errors.Is(err, catalogue.ErrNoPaths):
-		return errors.New("Для этого кода сервер не выдал подключений: компьютер работает в пробный период и на тарифах «Телефон + компьютер» и «+Компьютер»." + cabinet)
-	case strings.Contains(err.Error(), "HTTP 404"):
-		return errors.New("Такого кода нет или он отключён. Проверьте код." + cabinet)
-	case strings.Contains(err.Error(), "HTTP 403"):
-		return errors.New("Тариф по этому коду закончился или исчерпан лимит трафика." + cabinet)
-	case strings.Contains(err.Error(), "HTTP 409"):
-		return errors.New("На этом коде заняты все устройства." + cabinet)
-	}
-	return nil
-}
-
 func connect(args []string, logger *log.Logger) error {
 	var src string
 	verbose, kill := false, true
@@ -163,7 +134,7 @@ func connect(args []string, logger *log.Logger) error {
 			logger.Printf("catalogue %s: %v", u, err)
 		}
 		if answer == nil {
-			answer = explain(err)
+			answer = desktop.Explain(err)
 		}
 	}
 	if err != nil {
@@ -175,7 +146,7 @@ func connect(args []string, logger *log.Logger) error {
 	cfg := switchboard.DefaultConfig()
 	cfg.User, cfg.Pass = rand.Text(), rand.Text()
 	cfg.RuDirect = true
-	cfg.RuDialTimeout, cfg.RuRetryAfter = ruDialTimeout, ruRetryAfter
+	cfg.RuDialTimeout, cfg.RuRetryAfter = desktop.RuDialTimeout, desktop.RuRetryAfter
 	cfg.ProbeURL = probeURL
 	if len(cat.ProbeURLs) > 0 {
 		cfg.ProbeURL = cat.ProbeURLs[0]
@@ -192,7 +163,7 @@ func connect(args []string, logger *log.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	sys, err := desktop.Up(desktop.Options{Nodes: nodeAddrs(cat), KillSwitch: kill, Logf: logger.Printf})
+	sys, err := desktop.Up(desktop.Options{Nodes: desktop.NodeAddrs(cat), KillSwitch: kill, Logf: logger.Printf})
 	if err != nil {
 		return err
 	}
@@ -215,31 +186,4 @@ func connect(args []string, logger *log.Logger) error {
 	_ = sb.SaveMemory()
 	logger.Print("disconnected")
 	return nil
-}
-
-// nodeAddrs lists the catalogue's server addresses, names resolved now,
-// before the tunnel takes the system's DNS.
-func nodeAddrs(cat *catalogue.Catalogue) []netip.Addr {
-	seen := map[netip.Addr]bool{}
-	var out []netip.Addr
-	add := func(a netip.Addr) {
-		if a = a.Unmap(); a.IsValid() && !seen[a] {
-			seen[a] = true
-			out = append(out, a)
-		}
-	}
-	for _, e := range cat.Paths {
-		if a, err := netip.ParseAddr(e.Spec.Host); err == nil {
-			add(a)
-			continue
-		}
-		if as, err := net.LookupHost(e.Spec.Host); err == nil {
-			for _, s := range as {
-				if a, err := netip.ParseAddr(s); err == nil {
-					add(a)
-				}
-			}
-		}
-	}
-	return out
 }

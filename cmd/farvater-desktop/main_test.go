@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/tsyrenov1987/farvater-core/catalogue"
+	"github.com/tsyrenov1987/farvater-core/desktop"
 )
 
 func TestCatalogueURLs(t *testing.T) {
@@ -38,13 +39,13 @@ func TestExplain(t *testing.T) {
 		{errors.New("catalogue: HTTP 403"), "закончился"},
 		{errors.New("catalogue: HTTP 409"), "устройства"},
 	} {
-		got := explain(c.err)
+		got := desktop.Explain(c.err)
 		if got == nil || !strings.Contains(got.Error(), c.want) {
 			t.Errorf("%v: %v", c.err, got)
 		}
 	}
 	for _, e := range []error{errors.New("catalogue: HTTP 503"), errors.New("read: connection reset by peer")} {
-		if got := explain(e); got != nil {
+		if got := desktop.Explain(e); got != nil {
 			t.Errorf("%v must say nothing about the code: %v", e, got)
 		}
 	}
