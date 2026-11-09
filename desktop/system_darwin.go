@@ -31,6 +31,7 @@ const (
 type saved struct {
 	DNS     map[string][]string `json:"dns"` // network service → servers ("Empty" = DHCP)
 	PfToken string              `json:"pf_token,omitempty"`
+	Scoped  [][]string          `json:"scoped,omitempty"` // route commands that undo the interface-scoped defaults
 }
 
 // System is the tunnel and what was changed on the machine to route into it.
@@ -60,6 +61,19 @@ func Up(o Options) (*System, error) {
 		return nil, errors.New("no physical default route (another VPN running?)")
 	}
 	phys := m[1]
+	if rt, _ := run("netstat", "-rn", "-f", "inet"); rt != "" {
+		for _, l := range strings.Split(rt, "\n") {
+			f := strings.Fields(l)
+			if len(f) < 4 || (f[0] != "0/1" && f[0] != "128.0/1" && f[0] != "default") {
+				continue
+			}
+			for _, c := range f[3:] {
+				if strings.HasPrefix(c, "utun") {
+					return nil, fmt.Errorf("another VPN already routes all traffic (%s): turn it off first", c)
+				}
+			}
+		}
+	}
 	ifc, err := net.InterfaceByName(phys)
 	if err != nil {
 		return nil, err
@@ -92,6 +106,11 @@ func Up(o Options) (*System, error) {
 	name, _ := dev.Name()
 	s := &System{dev: dev, name: name, phys: phys, logf: logf, tunPackets: newTunPackets(dev)}
 	fail := func(err error) (*System, error) { s.Down(); return nil, err }
+	// The core's sockets are bound to the physical interface (IP_BOUND_IF). With
+	// the tunnel's 0/1 and 128/1 in the table, such a socket finds no route
+	// ("network is unreachable") unless the physical interface has a default
+	// route of its own, scoped to it.
+	s.scopedDefaults(phys, out)
 	steps := [][]string{
 		{"ifconfig", name, "inet", TunAddr, TunAddr, "netmask", "255.255.255.255", "mtu", fmt.Sprint(MTU), "up"},
 		{"ifconfig", name, "inet6", TunAddr6, "prefixlen", "128"},
@@ -190,6 +209,7 @@ block drop out quick all
 // Down puts the machine back: DNS, kill switch, the tunnel (its routes go
 // with it).
 func (s *System) Down() {
+	delScoped(s.state)
 	if s.state.DNS != nil {
 		restore(s.state)
 	}
@@ -211,7 +231,46 @@ func Off() error {
 	return os.Remove(filepath.Join(StateDir, "state.json"))
 }
 
+// scopedDefaults gives phys its own default routes, IPv4 from the route
+// table's reply (v4out) and IPv6 when the network has a router.
+func (s *System) scopedDefaults(phys, v4out string) {
+	add := func(fam, gw string) {
+		args := []string{"-q", "-n", "add", fam, "default"}
+		if gw != "" {
+			args = append(args, gw)
+		} else {
+			args = append(args, "-interface", phys)
+		}
+		args = append(args, "-ifscope", phys)
+		if _, err := run("route", args...); err == nil {
+			del := append([]string{"-q", "-n", "delete", fam, "default"}, args[5:]...)
+			s.state.Scoped = append(s.state.Scoped, del)
+		}
+	}
+	gw := ""
+	if m := regexp.MustCompile(`gateway: (\S+)`).FindStringSubmatch(v4out); m != nil {
+		gw = m[1]
+	}
+	add("-inet", gw)
+	if out, err := run("route", "-n", "get", "-inet6", "default"); err == nil {
+		if m := regexp.MustCompile(`gateway: (\S+)`).FindStringSubmatch(out); m != nil {
+			g := m[1]
+			if !strings.Contains(g, "%") && strings.HasPrefix(g, "fe80") {
+				g += "%" + phys
+			}
+			add("-inet6", g)
+		}
+	}
+}
+
+func delScoped(st saved) {
+	for _, a := range st.Scoped {
+		_, _ = run("route", a...)
+	}
+}
+
 func restore(st saved) {
+	delScoped(st)
 	for svc, list := range st.DNS {
 		_, _ = run("networksetup", append([]string{"-setdnsservers", svc}, list...)...)
 	}

@@ -176,6 +176,7 @@ func (e *Engine) onTCP(r *tcp.ForwarderRequest) {
 func (e *Engine) serveTCP(c net.Conn, host string, port uint16) {
 	s, err := e.open(socksConnect, host, port)
 	if err != nil {
+		e.logf("tcp %s:%d: %v", host, port, err)
 		c.Close()
 		return
 	}
