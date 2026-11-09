@@ -157,6 +157,33 @@ func TestRussianDirectSparesTheProbesAndCanBeOff(t *testing.T) {
 	}
 }
 
+func TestDirectNameGoesOnRussianTerms(t *testing.T) {
+	s, _ := ruBoard(t)
+	if s.ruDirect("cdn.example.net") {
+		t.Fatal("no DirectName (the phones), yet a foreign name went direct")
+	}
+	s.cfg.DirectName = func(h string) bool { return h == "cdn.example.net" || h == "probe.example.net" }
+	s.probeHosts = []string{"probe.example.net"}
+	if !s.ruDirect("CDN.example.net.") || s.ruDirect("other.example.net") {
+		t.Fatal("DirectName's answer was not used")
+	}
+	if s.ruDirect("probe.example.net") {
+		t.Fatal("a probe's host went direct")
+	}
+	s.cfg.DirectName = func(string) bool { return true }
+	if s.ruDirect("8.8.8.8") {
+		t.Fatal("DirectName was asked about an address")
+	}
+	s.ruFail("cdn.example.net")
+	if s.ruDirect("cdn.example.net") {
+		t.Fatal("a name whose direct dial failed still goes direct")
+	}
+	s.cfg.RuDirect = false
+	if s.ruDirect("other.example.net") {
+		t.Fatal("RuDirect off, yet a name went direct")
+	}
+}
+
 // A UDP association to a Russian address goes over the device's own network
 // and dials no path; replies come back from the destination.
 func TestRussianUDPGoesAroundThePaths(t *testing.T) {

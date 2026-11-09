@@ -391,7 +391,7 @@ func (s *Session) config(cat *catalogue.Catalogue, user, pass, network string) s
 	if network != "" {
 		cfg.Ctx = network
 	}
-	cfg.RuDirect = true
+	cfg.RuDirect, cfg.DirectName = true, desktop.DirectName
 	cfg.RuDialTimeout, cfg.RuRetryAfter = desktop.RuDialTimeout, desktop.RuRetryAfter
 	cfg.ProbeURL = defaultProbe
 	if len(cat.ProbeURLs) > 0 {

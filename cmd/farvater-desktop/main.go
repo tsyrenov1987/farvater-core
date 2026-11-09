@@ -145,7 +145,7 @@ func connect(args []string, logger *log.Logger) error {
 	}
 	cfg := switchboard.DefaultConfig()
 	cfg.User, cfg.Pass = rand.Text(), rand.Text()
-	cfg.RuDirect = true
+	cfg.RuDirect, cfg.DirectName = true, desktop.DirectName
 	cfg.RuDialTimeout, cfg.RuRetryAfter = desktop.RuDialTimeout, desktop.RuRetryAfter
 	cfg.ProbeURL = probeURL
 	if len(cat.ProbeURLs) > 0 {

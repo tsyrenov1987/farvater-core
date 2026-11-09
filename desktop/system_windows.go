@@ -34,6 +34,10 @@ const (
 	fwDNSRule = "Farvater DNS"
 
 	// defaultRouteCmd prints "<interface index> <next hop>" of the default route.
+	// machineSuffixesCmd prints the DNS suffixes set on the machine itself: its
+	// search list and the domain it has joined.
+	machineSuffixesCmd = "(Get-DnsClientGlobalSetting).SuffixSearchList; $c = Get-CimInstance Win32_ComputerSystem; if ($c.PartOfDomain) { $c.Domain }"
+
 	defaultRouteCmd = "$r = Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1; [string]$r.InterfaceIndex + ' ' + $r.NextHop"
 )
 
@@ -103,6 +107,7 @@ func Up(o Options) (*System, error) {
 	pinned.Store(int32(idx))
 	upstream := interfaceDNS(idx)
 	pinResolver(upstream)
+	loadMachineSuffixes(logf)
 
 	dev, err := tun.CreateTUN(tunName, MTU)
 	if err != nil {
@@ -137,6 +142,15 @@ func Up(o Options) (*System, error) {
 	}
 	logf("tunnel %s up, core pinned to interface %d, dns %v", tunName, idx, upstream)
 	return s, nil
+}
+
+func loadMachineSuffixes(logf func(string, ...any)) {
+	out, err := run("powershell", "-NoProfile", "-Command", machineSuffixesCmd)
+	if err != nil {
+		logf("dns suffixes: %v %s", err, out)
+		return
+	}
+	setNetworkSuffixes(strings.Fields(out))
 }
 
 // interfaceDNS is what the interface resolves names with.

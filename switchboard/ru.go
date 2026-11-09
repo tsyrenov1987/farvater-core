@@ -98,7 +98,7 @@ func (s *Switchboard) ruDirect(host string) bool {
 		host = a.Unmap().String()
 		ru = isRuIP(a)
 	} else {
-		ru = isRuName(host)
+		ru = isRuName(host) || s.cfg.DirectName != nil && s.cfg.DirectName(host)
 	}
 	if !ru {
 		return false

@@ -59,6 +59,10 @@ type Config struct {
 	// services by name, Russian addresses by address. A site whose direct
 	// dial fails goes over the paths for a while. The probes' hosts never go.
 	RuDirect bool
+	// DirectName, when set, adds names to RuDirect's on the same terms: it is
+	// asked with RuDirect on and for names only, and a site whose direct dial
+	// fails goes over the paths for a while (desktop.DirectName; nil on phones).
+	DirectName func(host string) bool
 	// RuDialTimeout bounds a Russian site's direct dial, the name lookup
 	// included, and RuRetryAfter is how long the site then goes over the paths
 	// (ru.go's values when zero, made for phones on allow-listed networks). A

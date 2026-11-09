@@ -60,6 +60,7 @@ func (t *tunPackets) WritePacket(b []byte) error {
 // direct) ask the network's DNS servers on the physical interface: the
 // system's DNS is the tunnel's own now, which answers stand-in addresses.
 func pinResolver(servers []netip.Addr) {
+	networkDNS.Store(&servers)
 	if len(servers) == 0 {
 		return
 	}

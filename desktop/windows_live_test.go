@@ -85,3 +85,33 @@ func TestLiveUpDownOff(t *testing.T) {
 	s.state = saved{}
 	s.Down()
 }
+
+// The machine's own search list counts, read the way Up reads it.
+func TestLiveMachineSuffixes(t *testing.T) {
+	const get = "(Get-DnsClientGlobalSetting).SuffixSearchList -join ','"
+	was, err := run("powershell", "-NoProfile", "-Command", get)
+	if err != nil {
+		t.Fatalf("%v %s", err, was)
+	}
+	set := func(list string) {
+		if out, err := run("powershell", "-NoProfile", "-Command", "Set-DnsClientGlobalSetting -SuffixSearchList @("+list+")"); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+	}
+	t.Cleanup(func() {
+		var quoted []string
+		for _, s := range strings.Split(was, ",") {
+			if s != "" {
+				quoted = append(quoted, "'"+s+"'")
+			}
+		}
+		set(strings.Join(quoted, ","))
+		networkSuffixes.Store(nil)
+	})
+	set("'Office.Example.TEST','corp2.example.test'")
+	loadMachineSuffixes(t.Logf)
+	t.Logf("suffixes: %v", *networkSuffixes.Load())
+	if !DirectName("app.office.example.test") || !DirectName("dc.corp2.example.test") || DirectName("example.test") {
+		t.Fatalf("suffixes read as %v", *networkSuffixes.Load())
+	}
+}
