@@ -120,6 +120,10 @@ func FetchWithProvider(u string) ([]byte, *Provider, error) {
 	return body, ProviderFrom(resp.Header), nil
 }
 
+// ErrNoPaths says the body parsed but held no path a client can use. A
+// provider's placeholder line (security=none, 127.0.0.1) ends up here.
+var ErrNoPaths = errors.New("catalogue: no supported paths")
+
 // Parse accepts the JSON catalogue, a base64 subscription, plain share links,
 // or another client's subscription (see foreign).
 func Parse(body []byte) (*Catalogue, error) {
@@ -193,7 +197,7 @@ func Parse(body []byte) (*Catalogue, error) {
 		c.Paths = append(c.Paths, Entry{ID: s.ID, URI: line, Labels: Labels{Rail: s.Rail(), Net: lineNet, White: lineWhite, UDP: s.Kind == wire.KindHysteria2}, Spec: s})
 	}
 	if len(c.Paths) == 0 {
-		return nil, errors.New("catalogue: no supported paths")
+		return nil, ErrNoPaths
 	}
 	return c, nil
 }

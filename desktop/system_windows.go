@@ -8,7 +8,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 
@@ -25,10 +24,14 @@ const (
 	ipUnicast = 31 // IP_UNICAST_IF
 	v6Unicast = 31 // IPV6_UNICAST_IF
 	fwDNSRule = "Farvater DNS"
+
+	// defaultRouteCmd prints "<interface index> <next hop>" of the default route.
+	defaultRouteCmd = "$r = Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1; [string]$r.InterfaceIndex + ' ' + $r.NextHop"
 )
 
 type saved struct {
-	Firewall bool `json:"firewall"`
+	Firewall bool       `json:"firewall"`
+	LAN      [][]string `json:"lan,omitempty"` // netsh commands that undo the private-range routes
 }
 
 // System is the tunnel (Wintun; wintun.dll next to the program) and what was
@@ -48,11 +51,13 @@ func Up(o Options) (*System, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	out, err := run("powershell", "-NoProfile", "-Command",
-		"(Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1).InterfaceIndex")
-	idx, perr := strconv.Atoi(strings.TrimSpace(out))
-	if err != nil || perr != nil || idx <= 0 {
+	out, err := run("powershell", "-NoProfile", "-Command", defaultRouteCmd)
+	if err != nil {
 		return nil, fmt.Errorf("default route: %v %s", err, out)
+	}
+	idx, hop, err := parseDefaultRoute(out)
+	if err != nil {
+		return nil, fmt.Errorf("default route: %v", err)
 	}
 	wire.SocketControl = func(network, _ string, c syscall.RawConn) error {
 		var serr error
@@ -103,6 +108,7 @@ func Up(o Options) (*System, error) {
 			return fail(fmt.Errorf("%s: %v %s", strings.Join(st, " "), err, out))
 		}
 	}
+	s.lanRoutes(idx, hop)
 	s.state.Firewall = true
 	s.save()
 	// DNS to anything but the tunnel's server and the network's own (the
@@ -119,6 +125,28 @@ func Up(o Options) (*System, error) {
 	}
 	logf("tunnel %s up, core pinned to interface %d, dns %v", tunName, idx, upstream)
 	return s, nil
+}
+
+// lanRoutes keeps the private ranges on the physical network (see
+// privateRanges). A failure costs only those addresses, so it does not stop
+// the connection.
+func (s *System) lanRoutes(idx int, hop string) {
+	if hop == "" {
+		return
+	}
+	for _, p := range privateRanges {
+		if _, err := run("netsh", netshLANRoute("add", p, idx, hop)...); err != nil {
+			s.logf("private range %s stays in the tunnel: %v", p, err)
+			continue
+		}
+		s.state.LAN = append(s.state.LAN, netshLANRoute("delete", p, idx, hop))
+	}
+}
+
+func undoLAN(st saved) {
+	for _, a := range st.LAN {
+		_, _ = run("netsh", a...)
+	}
 }
 
 // complement writes the IPv4 space less the given addresses as netsh ranges.
@@ -154,7 +182,7 @@ func complement(allow []netip.Addr) string {
 	return strings.Join(parts, ",")
 }
 
-// Down puts the machine back; the tunnel's routes and DNS go with it.
+// Down puts the machine back; the tunnel's own routes and DNS go with it.
 func (s *System) Down() {
 	if s.state.Firewall {
 		_, _ = run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+fwDNSRule)
@@ -162,12 +190,18 @@ func (s *System) Down() {
 	if s.dev != nil {
 		s.dev.Close()
 	}
+	undoLAN(s.state)
 	_ = os.Remove(filepath.Join(StateDir, "state.json"))
 }
 
 // Off undoes what a run that did not clean up left.
 func Off() error {
 	_, _ = run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+fwDNSRule)
+	if b, err := os.ReadFile(filepath.Join(StateDir, "state.json")); err == nil {
+		var st saved
+		_ = json.Unmarshal(b, &st)
+		undoLAN(st)
+	}
 	err := os.Remove(filepath.Join(StateDir, "state.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil

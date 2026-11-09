@@ -31,7 +31,7 @@ const (
 type saved struct {
 	DNS     map[string][]string `json:"dns"` // network service → servers ("Empty" = DHCP)
 	PfToken string              `json:"pf_token,omitempty"`
-	Scoped  [][]string          `json:"scoped,omitempty"` // route commands that undo the interface-scoped defaults
+	Scoped  [][]string          `json:"scoped,omitempty"` // route commands that undo the interface-scoped defaults and the private-range routes
 }
 
 // System is the tunnel and what was changed on the machine to route into it.
@@ -111,6 +111,7 @@ func Up(o Options) (*System, error) {
 	// ("network is unreachable") unless the physical interface has a default
 	// route of its own, scoped to it.
 	s.scopedDefaults(phys, out)
+	s.lanRoutes(phys, out)
 	steps := [][]string{
 		{"ifconfig", name, "inet", TunAddr, TunAddr, "netmask", "255.255.255.255", "mtu", fmt.Sprint(MTU), "up"},
 		{"ifconfig", name, "inet6", TunAddr6, "prefixlen", "128"},
@@ -260,6 +261,20 @@ func (s *System) scopedDefaults(phys, v4out string) {
 			}
 			add("-inet6", g)
 		}
+	}
+}
+
+// lanRoutes keeps the private ranges on the physical network (see
+// privateRanges). A failure costs only those addresses, so it does not stop
+// the connection.
+func (s *System) lanRoutes(phys, v4out string) {
+	target := routeTarget(v4out, phys)
+	for _, p := range privateRanges {
+		if _, err := run("route", append([]string{"-q", "-n", "add", "-inet", p}, target...)...); err != nil {
+			s.logf("private range %s stays in the tunnel: %v", p, err)
+			continue
+		}
+		s.state.Scoped = append(s.state.Scoped, []string{"-q", "-n", "delete", "-inet", p})
 	}
 }
 
