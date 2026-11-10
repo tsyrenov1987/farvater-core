@@ -32,6 +32,7 @@ Media type: `application/farvater-catalogue+json`. A plain base64 subscription (
 | `labels.rail` | informational: `reality`, `xhttp`, `ws`, `hy2`, … |
 | `labels.net` | `any` / `cell` / `wifi` — a hint about where the path is intended; never a restriction. On the other kind of network (Wi-Fi or wired for `cell`, mobile for `wifi`) the path starts behind and gets its exploration floor six times less often; it stays in the fan and its own receipts move it like any other. A plain or base64 list carries it as a `#net=<value>` line before the link (other clients skip `#` lines) |
 | `labels.white` | the path goes through an allow-listed entry; the client avoids spending probes on it. In a restricted network (only allow-listed addresses pass) it starts ahead of unlabelled paths until the client has its own memory of that network |
+| `labels.exit` | informational: the ISO country where the path comes out (`SE`, `FI`, `NL`, …), so the app can show the country of the path that carries the traffic instead of the path's name. Never used to choose a path. Status reports it as `paths[].exit`. A plain or base64 list carries it as a `#exit=<country>` line before the link |
 | `labels.budget_bytes` | remaining traffic budget on a metered path; shown to the user, nothing is sold |
 | `labels.udp` | informational: the path is meant to carry UDP. The client tries UDP on every path and moves one that refuses it to the back |
 | `probe_urls` | large objects for the 256 KB volume check right after connect (HTTP Range is used) |

@@ -201,8 +201,9 @@ func (b *Brain) networkUp(now int64) bool { return b.upSeen && now-b.upAt <= Net
 // caller saw an allow-listed site answer directly while no path connects: the
 // network is up and shuts the paths out, so their failures count again (see
 // NetworkUp). Its memory puts first the paths that delivered there before. The
-// paths silent now are noted: when two of them connect again, the restriction
-// is over and the brain returns to the plain network.
+// paths silent now are noted: when two of them connect again, or two paths
+// meant for the open internet answer (see noteBack), the restriction is over
+// and the brain returns to the plain network.
 func (b *Brain) EnterRestricted(now int64) {
 	b.NetworkUp(now)
 	if b.Restricted() {
@@ -226,14 +227,51 @@ func (b *Brain) AnsweredSince(since int64) bool {
 	return false
 }
 
-// noteBack counts the silent paths of a restricted network that connect again.
-func (b *Brain) noteBack(path string, now int64) {
-	if !b.silent[path] {
+// noteBack counts the paths of a restricted network that get through again: a
+// path silent when the restriction began once its wire connects, and any path
+// the catalogue does not mark as entering through an allow-listed address once
+// an answer comes back over it (a restricted network shuts those out, so one
+// answering is the network letting it through). Two of them, or every silent
+// path when fewer were silent, end the restriction. Counting only the silent
+// ones kept a restriction for good when it began with no path silent, or when
+// the silent ones stayed down: the allow-listed paths stayed first all evening
+// on a home Wi-Fi where the plain paths delivered, and the catalogue was
+// refused meanwhile (Farvater Android, 10.11.2026).
+func (b *Brain) noteBack(path string, answered bool, now int64) {
+	if !b.Restricted() || (!b.silent[path] && (b.info(path).White || !answered)) {
 		return
 	}
+	if b.back == nil {
+		b.back = map[string]bool{}
+	}
 	b.back[path] = true
-	if len(b.back) >= min(2, len(b.silent)) {
-		b.enter(strings.TrimSuffix(b.ctx, RestrictedSuffix), now, "restricted_off", fmt.Sprintf("%d silent paths connect again", len(b.back)))
+	need := 2
+	if n := len(b.silent); n > 0 && n < need {
+		need = n
+	}
+	if len(b.back) >= need {
+		// The plain network's state is the one from before the restriction. A
+		// path tripped meanwhile that did not get through is broken there too
+		// (an SNI reset after the hello passed for a restriction, chaos
+		// tspu_hello_rst): its trip comes along, so the old leader is not
+		// picked again on it.
+		wl, back := b.Breaker, b.back
+		b.enter(strings.TrimSuffix(b.ctx, RestrictedSuffix), now, "restricted_off", fmt.Sprintf("%d paths get through again", len(back)))
+		b.Breaker.Carry(wl, back, now)
+		// An old leader tripped that way gives way now, not at the next flow,
+		// and to a path that just got through: the plain network's memory of
+		// the others is older than the restriction (kil_tspu_hello_rst).
+		if avail := b.available(now); !contains(avail, b.leader) {
+			var got []string
+			for _, p := range avail {
+				if back[p] {
+					got = append(got, p)
+				}
+			}
+			if l, _ := b.bestBy(got, "", false, now); l != "" {
+				b.setLeader(l, now, "lead_init", "restriction over: the old leader is tripped, "+l+" got through")
+			}
+		}
 	}
 }
 

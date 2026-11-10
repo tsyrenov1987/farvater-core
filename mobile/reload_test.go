@@ -150,3 +150,25 @@ func waitActive(t *testing.T, n int64) {
 	}
 	t.Fatalf("active never reached %d", n)
 }
+
+// TestReloadOnRestrictedNetwork: a catalogue fetched while the network is
+// restricted (allow-listed sites only) is taken, not refused; the new
+// switchboard starts in the restricted variant of the same network. Refused,
+// the apps retried every five minutes all evening (Farvater Android 0.1.0 (40)).
+func TestReloadOnRestrictedNetwork(t *testing.T) {
+	const a = "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:9?security=tls&sni=example.com&type=tcp#a"
+	const b = "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:10?security=tls&sni=example.com&type=tcp#b"
+	if err := Start(a, freePort(t), "cell"); err != nil {
+		t.Fatal(err)
+	}
+	defer Stop()
+	mu.Lock()
+	sb.EnterRestricted()
+	mu.Unlock()
+	if got := Reload(a + "\n" + b); got != `{"changed":true,"ok":true,"paths":2}` {
+		t.Fatalf("reload on a restricted network: %s", got)
+	}
+	if s := status(t); s.Ctx != "cell:wl" {
+		t.Fatalf("ctx after the reload %q, want cell:wl", s.Ctx)
+	}
+}

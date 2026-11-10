@@ -124,6 +124,17 @@ func (s *Switchboard) Restricted() bool {
 	return s.b.Restricted()
 }
 
+// EnterRestricted puts a new switchboard's brain in the restricted variant of
+// its network straight away, where the switchboard it replaces stood (a
+// catalogue reload on a restricted network): the allow-listed paths stay
+// first, and the plain paths answering again end it as usual. Call it before
+// StartOn.
+func (s *Switchboard) EnterRestricted() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.EnterRestricted(nowMs())
+}
+
 // Discard closes the wires of a switchboard that never served (a reload that
 // lost its race with Stop).
 func (s *Switchboard) Discard() {

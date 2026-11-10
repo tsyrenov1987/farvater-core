@@ -34,9 +34,9 @@ var reloadMu sync.Mutex // one Reload at a time
 // address is reached at the new one with no reconnect. When the paths are the
 // same nothing changes. Otherwise a new switchboard takes over the SOCKS port
 // with the same credentials and what the session has counted; flows open on
-// the old one finish there. Not on a restricted network (allow-listed sites
-// only): a fresh brain would have to find that out again, so the apps try
-// later. Returns {"ok":true,"changed":bool,"paths":n} or {"ok":false,"error"}.
+// the old one finish there. On a restricted network (allow-listed sites only)
+// the new one starts restricted too, so it need not find that out again.
+// Returns {"ok":true,"changed":bool,"paths":n} or {"ok":false,"error"}.
 func Reload(catalogueText string) string {
 	reloadMu.Lock()
 	defer reloadMu.Unlock()
@@ -58,9 +58,7 @@ func Reload(catalogueText string) string {
 	if samePaths(was, cat) {
 		return toJSON(map[string]any{"ok": true, "changed": false, "paths": runnable(was)})
 	}
-	if old.Restricted() {
-		return fail(errors.New("restricted network: try later"))
-	}
+	restricted := old.Restricted()
 	_ = old.SaveMemory() // the new brain starts from what the old one learned
 	mu.Lock()
 	cfg := config(cat, listen, user, pass, strings.TrimSuffix(old.Ctx(), brain.RestrictedSuffix))
@@ -68,6 +66,9 @@ func Reload(catalogueText string) string {
 	next, err := switchboard.New(cfg, cat)
 	if err != nil {
 		return fail(err)
+	}
+	if restricted { // the new one starts where the old one stood
+		next.EnterRestricted()
 	}
 
 	mu.Lock()

@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/netip"
 	"os"
@@ -601,13 +600,14 @@ func (s *Session) reload(ctx context.Context, l *live, cat *catalogue.Catalogue)
 	if samePaths(had, cat) {
 		return false, nil
 	}
-	if old.Restricted() {
-		return false, errors.New("restricted network: try later")
-	}
+	restricted := old.Restricted()
 	_ = old.SaveMemory()
 	next, err := switchboard.New(s.config(cat, l.user, l.pass, strings.TrimSuffix(old.Ctx(), brain.RestrictedSuffix)), cat)
 	if err != nil {
 		return false, err
+	}
+	if restricted { // the new one starts where the old one stood
+		next.EnterRestricted()
 	}
 	if ctx.Err() != nil {
 		next.Discard()

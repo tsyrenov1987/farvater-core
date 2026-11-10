@@ -23,6 +23,7 @@ type Labels struct {
 	Rail        string `json:"rail,omitempty"`
 	Net         string `json:"net,omitempty"`
 	White       bool   `json:"white,omitempty"`
+	Exit        string `json:"exit,omitempty"` // ISO country of the path's exit, for the app to show
 	BudgetBytes int64  `json:"budget_bytes,omitempty"`
 	UDP         bool   `json:"udp,omitempty"`
 }
@@ -171,10 +172,15 @@ func Parse(body []byte) (*Catalogue, error) {
 	seen := map[string]int{}
 	net := ""      // a "#net=<any|cell|wifi>" line labels the link after it
 	white := false // so does a "#white" line: an entry allow-listed networks let through
+	exit := ""     // and a "#exit=<country>" line: where the path comes out, for the app to show
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if v, ok := strings.CutPrefix(line, "#net="); ok {
 			net = strings.TrimSpace(v)
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "#exit="); ok {
+			exit = strings.ToUpper(strings.TrimSpace(v))
 			continue
 		}
 		if line == "#white" {
@@ -184,8 +190,8 @@ func Parse(body []byte) (*Catalogue, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		lineNet, lineWhite := net, white
-		net, white = "", false
+		lineNet, lineWhite, lineExit := net, white, exit
+		net, white, exit = "", false, ""
 		s, err := wire.ParseURI(line)
 		if err != nil {
 			continue // unsupported scheme or malformed: skip, never fail the whole list
@@ -194,7 +200,7 @@ func Parse(body []byte) (*Catalogue, error) {
 		if seen[s.ID] > 1 {
 			s.ID = fmt.Sprintf("%s#%d", s.ID, seen[s.ID])
 		}
-		c.Paths = append(c.Paths, Entry{ID: s.ID, URI: line, Labels: Labels{Rail: s.Rail(), Net: lineNet, White: lineWhite, UDP: s.Kind == wire.KindHysteria2}, Spec: s})
+		c.Paths = append(c.Paths, Entry{ID: s.ID, URI: line, Labels: Labels{Rail: s.Rail(), Net: lineNet, White: lineWhite, Exit: lineExit, UDP: s.Kind == wire.KindHysteria2}, Spec: s})
 	}
 	if len(c.Paths) == 0 {
 		return nil, ErrNoPaths

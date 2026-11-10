@@ -811,6 +811,7 @@ func (s *Switchboard) logf(format string, args ...any) {
 type PathStatus struct {
 	ID             string  `json:"id"`
 	Rail           string  `json:"rail"`
+	Exit           string  `json:"exit,omitempty"` // the catalogue's country of the exit, when it names one
 	Server         string  `json:"server"`
 	Leader         bool    `json:"leader"`
 	DelivMean      float64 `json:"deliv_mean"`
@@ -894,6 +895,12 @@ func (s *Switchboard) Status() Status {
 		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Dropped: s.b.Dropped,
 		Skipped: s.Skipped, Journal: len(s.b.J.Entries()), Served: s.served, Blocked: s.blocked, Slept: s.slept, Drops: s.b.Drops,
 	}
+	exits := map[string]string{}
+	for _, e := range s.cat.Paths {
+		if e.Labels.Exit != "" {
+			exits[e.ID] = e.Labels.Exit
+		}
+	}
 	for _, id := range s.order {
 		ps := s.b.State(id)
 		sp := s.wires[id].Spec()
@@ -903,7 +910,7 @@ func (s *Switchboard) Status() Status {
 			server = sp.Provider // a hosted call has no address of its own
 		}
 		st.Paths = append(st.Paths, PathStatus{
-			ID: id, Rail: sp.Rail(), Server: server, Leader: id == s.b.Leader(),
+			ID: id, Rail: sp.Rail(), Exit: exits[id], Server: server, Leader: id == s.b.Leader(),
 			DelivMean: ps.DelivMean(), FbMean: ps.FbMean(), Receipts: ps.Receipts,
 			Recent15m: ps.RecentReceipts(now, 15*60*1000), P90FirstByteMs: ps.P90FirstByteMs(),
 			Cut16: ps.Cut16, Parked: s.b.Diag.Parked(id, now), Tripped: tripName(s.b.Breaker.TrippedSig(id, now)),

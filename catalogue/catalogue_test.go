@@ -90,3 +90,23 @@ func TestWhiteHintLabelsTheNextLinkOnly(t *testing.T) {
 		t.Fatalf("paths %d, labels %+v: want white+cell then plain", len(c.Paths), c.Paths)
 	}
 }
+
+// A "#exit=" line names the country of the link after it only, upper-cased,
+// and stacks with "#net=" and "#white"; a JSON catalogue carries it as labels.exit.
+func TestExitHintLabelsTheNextLinkOnly(t *testing.T) {
+	body := base64.StdEncoding.EncodeToString([]byte("#exit=se\n#net=cell\n#white\n" + l1 + "\n#exit=FI\nss://unsupported@x:1#c\n" + l2 + "\n"))
+	c, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Paths) != 2 || c.Paths[0].Labels.Exit != "SE" || !c.Paths[0].Labels.White || c.Paths[0].Labels.Net != "cell" || c.Paths[1].Labels.Exit != "" {
+		t.Fatalf("paths %d, labels %+v: want SE+white+cell then none", len(c.Paths), c.Paths)
+	}
+	j, err := Parse([]byte(`{"v":1,"title":"t","paths":[{"id":"a","uri":"` + l1 + `","labels":{"exit":"NL"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Paths[0].Labels.Exit != "NL" {
+		t.Fatalf("JSON labels %+v: want exit NL", j.Paths[0].Labels)
+	}
+}

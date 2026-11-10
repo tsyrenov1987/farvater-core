@@ -813,7 +813,7 @@ func (b *Brain) Observe(r Receipt) {
 	}
 	wireOK := r.WireReadyMs >= 0
 	if wireOK {
-		b.noteBack(r.Path, now) // may leave a restricted network: fetch the state after it
+		b.noteBack(r.Path, r.FirstByteMs >= 0, now) // may leave a restricted network: fetch the state after it
 	}
 	s := b.st[r.Path]
 	b.Diag.NoteWire(r.Path, wireOK, now)

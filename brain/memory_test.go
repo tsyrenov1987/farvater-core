@@ -287,3 +287,90 @@ func TestFailuresCountOnceTheNetworkIsKnownUp(t *testing.T) {
 		t.Fatalf("the trust must lapse: dropped %d, want 2", b.Dropped)
 	}
 }
+
+// A restriction entered with no path silent (a home Wi-Fi that stalled for a
+// moment while ya.ru answered), or whose silent paths stay down, ends once two
+// paths meant for the open internet answer again. An allow-listed path
+// answering, or a plain path whose wire connects but brings nothing back, is
+// not that evidence (Farvater Android 0.1.0 (40): restricted all evening on a
+// Wi-Fi where hy2 and kilvater delivered, the catalogue refused 146 times).
+func TestRestrictedEndsWhenPlainPathsAnswer(t *testing.T) {
+	now := int64(1_000_000)
+	paths := []PathInfo{{ID: "A", SNI: "a", IP: "1", Rail: "hy2"}, {ID: "B", SNI: "b", IP: "2", Rail: "kilvater"},
+		{ID: "C", SNI: "c", IP: "4", Rail: "reality"}, {ID: "W", SNI: "w", IP: "3", Rail: "xhttp", White: true}}
+	b := New(DefaultConfig(), "wifi:home", paths, 1)
+	b.EnterRestricted(now)
+	if !b.Restricted() || len(b.silent) != 0 {
+		t.Fatalf("setup: restricted with no silent path, ctx %q silent %v", b.Ctx(), b.silent)
+	}
+	b.Observe(deliv("W", now+1000))
+	b.Observe(deliv("W", now+1500))
+	b.Observe(blackhole("A", now+2000))
+	b.Observe(deliv("A", now+3000))
+	if !b.Restricted() {
+		t.Fatal("the white path, a wire with no answer and one plain path answering must not end the restriction")
+	}
+	b.Observe(deliv("B", now+4000))
+	if b.Restricted() || b.Ctx() != "wifi:home" || b.J.Count("restricted_off") != 1 {
+		t.Fatalf("two plain paths answer: ctx %q, restricted_off %d", b.Ctx(), b.J.Count("restricted_off"))
+	}
+
+	// Silent paths that stay down do not hold the restriction either.
+	b2 := New(DefaultConfig(), "cell", paths, 2)
+	b2.Observe(wirefail("A", now))
+	b2.Observe(wirefail("B", now+500))
+	b2.EnterRestricted(now + 1000)
+	b2.Observe(deliv("C", now+2000))
+	if !b2.Restricted() {
+		t.Fatal("one plain path answering is not yet the end")
+	}
+	b2.Observe(deliv("W", now+2500))
+	b2.Observe(deliv("C", now+3000))
+	if !b2.Restricted() {
+		t.Fatal("the same plain path twice and the white path must not end it")
+	}
+	b2.Observe(deliv("B", now+3500))
+	if b2.Restricted() || b2.Ctx() != "cell" {
+		t.Fatalf("a plain path and a silent one answer: ctx %q, want cell", b2.Ctx())
+	}
+}
+
+// The plain network's state is restored as it stood when the restriction
+// began. A path the breaker tripped meanwhile and that did not get through is
+// not made leader again there: its trip comes along. A path tripped meanwhile
+// that got through comes back clean (chaos tspu_hello_rst: 4 of 6 paths reset
+// after the hello, the restriction ended on the 2 live ones, and the old
+// leader, untripped in the saved state, led again).
+func TestRestrictedOffKeepsTheTripsOfPathsThatStayedDown(t *testing.T) {
+	now := int64(1_000_000)
+	paths := []PathInfo{{ID: "A", SNI: "a", IP: "1", Rail: "reality"}, {ID: "B", SNI: "b", IP: "2", Rail: "trojan"},
+		{ID: "C", SNI: "c", IP: "3", Rail: "hy2"}}
+	b := New(DefaultConfig(), "cell", paths, 1)
+	b.setLeader("A", now, "lead_init", "test")
+	b.EnterRestricted(now + 1000)
+	for i, p := range []string{"A", "A", "B", "B"} {
+		b.Observe(wirefail(p, now+2000+int64(i)*100))
+	}
+	if !b.Restricted() || !b.Breaker.Tripped("A", now+2500) || !b.Breaker.Tripped("B", now+2500) {
+		t.Fatalf("setup: A and B trip on the restricted network (ctx %q)", b.Ctx())
+	}
+	b.Observe(deliv("B", now+3000))
+	b.Observe(deliv("C", now+3500))
+	if b.Restricted() {
+		t.Fatalf("two plain paths answer: still %q", b.Ctx())
+	}
+	if !b.Breaker.Tripped("A", now+3600) {
+		t.Fatal("A tripped and stayed down: its trip must come along to the plain network")
+	}
+	if b.Breaker.Tripped("B", now+3600) {
+		t.Fatal("B got through: it comes back clean")
+	}
+	// The leader changes right away, not at the next flow: until then the
+	// status shows a broken path leading (chaos kil_tspu_hello_rst).
+	if l := b.Leader(); l != "B" && l != "C" {
+		t.Fatalf("restriction over, A tripped: the leader is one of the paths that got through, not %q", l)
+	}
+	if d := b.Pick(now+3700, "h", DstOther); d.Primary == "A" || b.Leader() == "A" {
+		t.Fatalf("the tripped old leader leads again: primary %q leader %q", d.Primary, b.Leader())
+	}
+}

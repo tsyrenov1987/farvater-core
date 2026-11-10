@@ -227,6 +227,19 @@ func (b *Breaker) pruneTrips(now int64) {
 	b.trips = b.trips[i:]
 }
 
+// Carry takes over the trips another breaker holds now on rails this one does
+// not hold, except the rails in keep. A trip is copied with its own time and
+// signature; the fleet-wide count for storms is left as it is.
+func (b *Breaker) Carry(from *Breaker, keep map[string]bool, now int64) {
+	for id, r := range from.rails {
+		if keep[id] || now >= r.trippedUntil || b.Tripped(id, now) {
+			continue
+		}
+		rb := b.rail(id)
+		rb.trippedAt, rb.trippedUntil, rb.sig = r.trippedAt, r.trippedUntil, r.sig
+	}
+}
+
 // Tripped reports whether a rail is currently avoided as a primary.
 func (b *Breaker) Tripped(path string, now int64) bool {
 	if !b.cfg.Enabled {
