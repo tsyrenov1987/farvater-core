@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/tsyrenov1987/farvater-core/brain"
@@ -37,9 +38,15 @@ func (s *Switchboard) sweep(paths []string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	for _, p := range paths {
+	// A sweep the brain calls off (brain.SweepEven) closes its probes at once:
+	// they leave the channel to the app's flows and file no receipt.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	off := &atomic.Bool{}
+	got := make([]atomic.Int64, len(paths))
+	for i, p := range paths {
 		go func() {
-			bytes, ms, whole := s.probeOver(ctx, p)
+			bytes, ms, whole := s.probeOver(ctx, p, &got[i], off)
 			s.mu.Lock()
 			s.b.Swept(p, bytes, ms, whole, nowMs())
 			s.mu.Unlock()
@@ -55,8 +62,15 @@ func (s *Switchboard) sweep(paths []string) {
 			return
 		}
 		s.mu.Lock()
+		for i, p := range paths {
+			s.b.SweepProgress(p, got[i].Load())
+		}
 		out := s.b.SweepCheck(nowMs())
+		even := s.b.SweepEven()
 		s.mu.Unlock()
+		if even && !off.Swap(true) {
+			cancel()
+		}
 		if !out {
 			return
 		}
@@ -70,8 +84,9 @@ var probeRoots *x509.CertPool
 // probeOver fetches s.cfg.ProbeURL over path, as an app's flow that only
 // path may carry: its receipt goes to the brain as any flow's does. It
 // returns the body bytes read, the time from the dial (its pacing waited out)
-// to the end, and whether the body came in whole.
-func (s *Switchboard) probeOver(ctx context.Context, path string) (int64, int64, bool) {
+// to the end, and whether the body came in whole. got follows the body bytes
+// as they come; once off is set the flow files no receipt.
+func (s *Switchboard) probeOver(ctx context.Context, path string, got *atomic.Int64, off *atomic.Bool) (int64, int64, bool) {
 	u, err := url.Parse(s.cfg.ProbeURL)
 	if err != nil || u.Scheme != "https" {
 		return 0, 0, false
@@ -84,7 +99,7 @@ func (s *Switchboard) probeOver(ctx context.Context, path string) (int64, int64,
 	defer cancel()
 	app, door := net.Pipe()
 	f := &flow{s: s, client: door, target: wire.Target{Host: u.Hostname(), Port: port}, class: classify(port),
-		up: make(chan []byte, 8), done: make(chan struct{}), pin: path}
+		up: make(chan []byte, 8), done: make(chan struct{}), pin: path, off: off}
 	go func() {
 		// The first payload rides with the proxy request, as handle does it.
 		_ = door.SetReadDeadline(time.Now().Add(s.cfg.FirstPayloadWait))
@@ -117,7 +132,15 @@ func (s *Switchboard) probeOver(ctx context.Context, path string) (int64, int64,
 		return 0, time.Since(start).Milliseconds(), false
 	}
 	defer resp.Body.Close()
-	n, err := io.Copy(io.Discard, resp.Body)
+	n, err := io.Copy(counter{got}, resp.Body)
 	whole := err == nil && resp.StatusCode == http.StatusOK && (resp.ContentLength < 0 || n == resp.ContentLength)
 	return n, time.Since(start).Milliseconds(), whole
+}
+
+// counter counts the bytes written to it.
+type counter struct{ n *atomic.Int64 }
+
+func (c counter) Write(p []byte) (int, error) {
+	c.n.Add(int64(len(p)))
+	return len(p), nil
 }

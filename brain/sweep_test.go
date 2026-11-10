@@ -449,3 +449,95 @@ func TestSweepWhenNothingIsDelivered(t *testing.T) {
 		t.Fatalf("lead_quiet %d after a delivery and QuietMs more, want 3", br.J.Count("lead_quiet"))
 	}
 }
+
+// A weak cellular link: every flow is held back, the leader's as any path's
+// would be. The sweep's probes split the one narrow channel: after
+// SweepEvenMs none is in, the leader's delivers and no path is far ahead. The
+// sweep is called off, the leader keeps the lead, and the next sweep for
+// flows held back waits; a leader that trips is swept at once all the same.
+func TestSweepCalledOffWhenTheNetworkIsSlow(t *testing.T) {
+	held := func(br *Brain, lead string, now int64) int64 {
+		for i := 0; i < 2; i++ {
+			now += 3000
+			br.NoteSlow(lead, 20<<10, 2000, now-2500, now)
+		}
+		return now
+	}
+	paths := sweepPaths()
+	br := New(DefaultConfig(), "t", paths, 7)
+	now := warm(br, paths, 1000)
+	br.Pick(now, "x", DstTLS443)
+	lead := br.Leader()
+	now = held(br, lead, now)
+	probed := br.SweepDue(now)
+	if len(probed) != len(paths) {
+		t.Fatalf("swept %v on two flows held back", probed)
+	}
+	for _, p := range probed {
+		br.SweepProgress(p, 6<<10)
+	}
+	if br.SweepCheck(now + SweepEvenMs - 1); br.SweepEven() {
+		t.Fatal("called off before SweepEvenMs")
+	}
+	if br.SweepCheck(now + SweepEvenMs); !br.SweepEven() {
+		t.Fatal("not called off: no probe in, the leader delivers as the others do")
+	}
+	for _, p := range probed {
+		br.Swept(p, 6<<10, SweepEvenMs, false, now+SweepEvenMs)
+	}
+	if br.Leader() != lead {
+		t.Fatalf("leader %s, want %s kept", br.Leader(), lead)
+	}
+	for _, p := range probed {
+		if br.Breaker.Tripped(p, now+SweepEvenMs) {
+			t.Fatalf("%s tripped by a sweep called off", p)
+		}
+	}
+	now = held(br, lead, now+20_000)
+	if p := br.SweepDue(now); p != nil {
+		t.Fatalf("swept %v %d ms after a sweep called off", p, SweepEvenWaitMs/2)
+	}
+	trip(br, lead, now)
+	if p := br.SweepDue(now); p == nil {
+		t.Fatal("no sweep for a leader that tripped")
+	}
+
+	// The wait is the network's: it ends with it.
+	br = New(DefaultConfig(), "t", paths, 7)
+	now = warm(br, paths, 1000)
+	br.Pick(now, "x", DstTLS443)
+	lead = br.Leader()
+	now = held(br, lead, now)
+	probed = br.SweepDue(now)
+	for _, p := range probed {
+		br.SweepProgress(p, 6<<10)
+	}
+	br.SweepCheck(now + SweepEvenMs)
+	for _, p := range probed {
+		br.Swept(p, 6<<10, SweepEvenMs, false, now+SweepEvenMs)
+	}
+	now = held(br, br.Leader(), now+SweepEvenWaitMs)
+	if p := br.SweepDue(now); p == nil {
+		t.Fatal("no sweep once SweepEvenWaitMs has passed")
+	}
+
+	// A path far ahead of the leader, or a leader that delivers nothing, is
+	// what a sweep is for: it runs on.
+	for _, got := range [][2]int64{{2 << 10, 60 << 10}, {0, 6 << 10}} {
+		br = New(DefaultConfig(), "t", paths, 7)
+		now = warm(br, paths, 1000)
+		br.Pick(now, "x", DstTLS443)
+		lead = br.Leader()
+		now = held(br, lead, now)
+		for _, p := range br.SweepDue(now) {
+			if p == lead {
+				br.SweepProgress(p, got[0])
+			} else {
+				br.SweepProgress(p, got[1])
+			}
+		}
+		if br.SweepCheck(now + 2*SweepEvenMs); br.SweepEven() {
+			t.Fatalf("called off with %d bytes on the leader and %d on the others", got[0], got[1])
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tsyrenov1987/farvater-core/brain"
@@ -20,7 +21,8 @@ type flow struct {
 	up           chan []byte
 	done         chan struct{}
 	fbDeadlineMs int64
-	pin          string // the only path that may carry the flow (a sweep's probe)
+	pin          string       // the only path that may carry the flow (a sweep's probe)
+	off          *atomic.Bool // a probe's: set once its sweep is called off, the flow then files no receipt
 
 	pmu      sync.Mutex
 	prelude  []byte
@@ -193,6 +195,9 @@ func (f *flow) serve(ctx context.Context) {
 		prelude, retryable := f.preludeCopy()
 		out, rerr, fbTimeout, sawBytes := f.run(ctx, sess, a, prelude)
 		r := a.runReceipt(f, len(prelude), out, rerr, fbTimeout)
+		if f.off != nil && f.off.Load() {
+			return // closed with its sweep: says nothing of the path
+		}
 		s.observe(r)
 		if fbTimeout {
 			// Ready yet unanswered: a connection the path shares across flows

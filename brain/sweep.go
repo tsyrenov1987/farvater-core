@@ -30,6 +30,69 @@ type sweepRun struct {
 	failed  map[string]bool
 	left    int
 	decided bool
+	got     map[string]int64 // path → body bytes its probe has in so far
+	even    bool             // called off: the network is slow, not the leader
+	evens   int              // sweeps called off in a row on this network, this one counted
+}
+
+// SweepEvenMs and SweepEvenWaitMs: a sweep SweepEvenMs old with no probe in
+// whole, the leader's delivering and no other path's FasterFactor times and
+// EvidenceBytes ahead of it, is called off: the network is slow, not the
+// leader. On a weak cellular link the probes split one narrow channel
+// with the app's flows: run to ProbeCapMs they take most of it, no probe
+// comes in, the next sweep starts as the last ends, and probes left hanging
+// trip healthy paths. The probes of a sweep called off are closed and are no
+// evidence; the next sweep for a slow or unanswering leader waits
+// SweepEvenWaitMs, twice that after each one called off in a row (up to four
+// times), until the network changes or a sweep ends otherwise. An acute doubt
+// (a trip, a stall-out, lost races) sweeps at once as before.
+const (
+	SweepEvenMs     = 3000
+	SweepEvenWaitMs = 60_000
+)
+
+// SweepProgress takes the body bytes path's probe has in so far.
+func (b *Brain) SweepProgress(path string, bytes int64) {
+	if w := b.sw; w != nil && !w.decided {
+		if _, ok := w.start[path]; ok {
+			w.got[path] = bytes
+		}
+	}
+}
+
+// SweepEven reports whether the last sweep was called off: its probes still
+// out are to be closed, and none of them is evidence.
+func (b *Brain) SweepEven() bool { return b.sw != nil && b.sw.even }
+
+// evenWait reports whether a sweep called off on this network holds the next
+// one back still.
+func (b *Brain) evenWait(now int64) bool {
+	w := b.sw
+	return w != nil && w.even && w.at >= b.switchedAt && now-w.at < SweepEvenWaitMs<<min(w.evens-1, 2)
+}
+
+// callEven calls the sweep off if the network, not the leader, is slow.
+func (b *Brain) callEven(now int64) {
+	w := b.sw
+	lead := b.leader
+	if now-w.at < SweepEvenMs || len(w.done) > 0 || lead == "" || w.failed[lead] {
+		return
+	}
+	mine := w.got[lead]
+	if s := b.st[lead]; mine <= 0 && (now-w.at < 2*SweepEvenMs || s == nil || s.AnsweredAt < w.at) {
+		// Nothing of the probe on the leader. It runs on, unless the leader
+		// has answered the app's flows since the sweep began: then, twice
+		// the wait gone, its probe is only starved on a thin channel.
+		return
+	}
+	for p, n := range w.got {
+		if p != lead && n > max(int64(b.cfg.FasterFactor*float64(mine)), EvidenceBytes) {
+			return
+		}
+	}
+	w.decided, w.even = true, true
+	w.evens++
+	b.J.Add(now, "sweep_even", fmt.Sprintf("no probe in after %d ms, %d bytes on the leader and no path %.0f times ahead: the network is slow, not the leader", now-w.at, mine, b.cfg.FasterFactor), lead)
 }
 
 // SweepGapMs is the least a sweep's winner must deliver its probe sooner
@@ -220,6 +283,9 @@ func (b *Brain) SweepDue(now int64) []string {
 	// A doubt the leader has answered since (the next leader delivers) is over.
 	acute := b.doubtAt > b.sweptAt && (b.leader == "" || !b.leaderAnswers(now)) || b.raceDoubt > b.sweptAt
 	unheard := b.unheardSince(max(b.sweptAt, now-LeadFreshMs)) >= 2
+	if !acute && !b.cfg.SweepAlways && b.evenWait(now) {
+		return nil
+	}
 	var cands []string
 	why := ""
 	switch {
@@ -290,8 +356,12 @@ func (b *Brain) SweepDue(now int64) []string {
 	if b.leader != "" && contains(avail, b.leader) {
 		out = append([]string{b.leader}, cands...)
 	}
+	evens := 0
+	if w := b.sw; w != nil && w.even && w.at >= b.switchedAt {
+		evens = w.evens
+	}
 	b.sweptAt = now
-	b.sw = &sweepRun{at: now, why: why, start: map[string]int64{}, done: map[string]int64{}, failed: map[string]bool{}, left: len(out)}
+	b.sw = &sweepRun{at: now, why: why, start: map[string]int64{}, done: map[string]int64{}, failed: map[string]bool{}, left: len(out), got: map[string]int64{}, evens: evens}
 	for _, p := range out {
 		b.sw.start[p] = now
 	}
@@ -370,6 +440,7 @@ func (b *Brain) sweepVerdict(now int64) {
 		}
 	}
 	if best == "" {
+		b.callEven(now)
 		return
 	}
 	lead := b.leader
