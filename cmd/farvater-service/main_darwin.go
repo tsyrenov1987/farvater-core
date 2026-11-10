@@ -28,11 +28,16 @@ import (
 )
 
 const (
-	label      = "app.farvater.service"
-	bundleID   = "app.farvater.desktop"
-	helperPath = "/Library/PrivilegedHelperTools/" + label
-	plistPath  = "/Library/LaunchDaemons/" + label + ".plist"
-	sockPath   = "/var/run/farvater.sock"
+	label    = "app.farvater.service"
+	bundleID = "app.farvater.desktop"
+	// helperPath must not end in ".service": macOS 27 takes such a path for
+	// a Services bundle and Gatekeeper kills every start of the plain
+	// program there (OS_REASON_EXEC, "Failed to register app bundle for
+	// protection: 45"). The first macOS builds put it at oldHelperPath.
+	helperPath    = "/Library/PrivilegedHelperTools/app.farvater.daemon"
+	oldHelperPath = "/Library/PrivilegedHelperTools/" + label
+	plistPath     = "/Library/LaunchDaemons/" + label + ".plist"
+	sockPath      = "/var/run/farvater.sock"
 )
 
 var (
@@ -221,6 +226,7 @@ func install() error {
 			return err
 		}
 	}
+	_ = os.Remove(oldHelperPath)
 	if app := appBundle(exe); installedApp(app) {
 		if err := os.WriteFile(appFile, []byte(app+"\n"), 0o600); err != nil {
 			return err
@@ -263,6 +269,7 @@ func removeAll() {
 	_ = desktop.Off()
 	_ = os.Remove(plistPath)
 	_ = os.Remove(helperPath)
+	_ = os.Remove(oldHelperPath)
 	_ = os.Remove(sockPath)
 	_ = os.RemoveAll(desktop.StateDir)
 }

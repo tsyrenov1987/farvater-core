@@ -12,7 +12,7 @@ func TestAppBundle(t *testing.T) {
 	for exe, want := range map[string]string{
 		"/Applications/Farvater.app/Contents/MacOS/farvater-service":     "/Applications/Farvater.app",
 		"/Volumes/Farvater/Farvater.app/Contents/MacOS/farvater-service": "/Volumes/Farvater/Farvater.app",
-		"/Library/PrivilegedHelperTools/app.farvater.service":            "",
+		"/Library/PrivilegedHelperTools/app.farvater.daemon":             "",
 	} {
 		if got := appBundle(exe); got != want {
 			t.Errorf("%s: %q", exe, got)
@@ -49,5 +49,18 @@ func TestPlistIsValid(t *testing.T) {
 	cmd.Stdin = strings.NewReader(plist())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
+	}
+}
+
+// macOS 27 refuses to start a plain program whose path ends in a bundle
+// extension such as ".service".
+func TestHelperPathIsNoBundle(t *testing.T) {
+	for _, ext := range []string{".service", ".app", ".bundle", ".plugin", ".framework", ".kext", ".appex", ".xpc"} {
+		if strings.HasSuffix(helperPath, ext) {
+			t.Fatalf("%s ends in %s", helperPath, ext)
+		}
+	}
+	if !strings.Contains(plist(), "<string>"+helperPath+"</string>") {
+		t.Fatal("the plist does not start helperPath")
 	}
 }
