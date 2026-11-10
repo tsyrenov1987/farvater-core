@@ -207,3 +207,31 @@ func TestMeterFindsAFlowHeldBack(t *testing.T) {
 		}
 	}
 }
+
+// A flow the path stopped inside a record shows for how long (cutQuiet): the
+// flow's watchdog closes it on a path that lost its probe without waiting for
+// the stall. A flow quiet between records shows nothing, and the missing
+// bytes clear it.
+func TestMeterTellsHowLongARecordHasBeenCut(t *testing.T) {
+	m := newMeter()
+	m.Up(record(300))
+	m.Down(record(4000))
+	m.tick(nowMs()+3000, 4000)
+	if q := m.snap().cutQuiet; q != 0 {
+		t.Fatalf("quiet between records: cutQuiet %d, want 0", q)
+	}
+	r := record(16384)
+	m.Down(r[:9000])
+	m.tick(nowMs()+2500, 4000)
+	if q := m.snap().cutQuiet; q < 2400 || q > 2700 {
+		t.Fatalf("2.5 s inside a record: cutQuiet %d", q)
+	}
+	m.tick(nowMs()+6000, 4000) // stalled by now: still cut, still counted
+	if s := m.snap(); !s.inStall || s.cutQuiet < 5900 {
+		t.Fatalf("a stalled flow is still cut: %+v", s)
+	}
+	m.Down(r[9000:])
+	if q := m.snap().cutQuiet; q != 0 {
+		t.Fatalf("the missing bytes came: cutQuiet %d, want 0", q)
+	}
+}

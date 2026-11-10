@@ -84,6 +84,14 @@ type attempt struct {
 	condemned bool
 }
 
+// cutFineMs: a flow quiet this long inside a record, or waiting this long for
+// an answer, is watched four times a second (see the flow's watchdog).
+const cutFineMs = 500
+
+// askFineMs: how long a request left unanswered keeps its flow on the fine
+// clock: two flows' AskMs, a sweep and its verdict, with room.
+const askFineMs = 8000
+
 func (f *flow) newAttempt(path string, explore bool) *attempt {
 	start := time.Now()
 	return &attempt{path: path, explore: explore, start: start, startMs: start.UnixMilli(), m: &meter{f: f, c: f.s.carried[path]}}
@@ -362,7 +370,7 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 	// flow (a messenger's) then wakes the phone once a second, not four times.
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
-	coarse := false
+	coarse, fine := false, false
 	fbMs := f.fbDeadlineMs
 	if fbMs <= 0 {
 		fbMs = f.s.cfg.FirstByteTimeout.Milliseconds()
@@ -424,6 +432,21 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 				continue
 			}
 			a.m.tick(now, f.s.cfg.StallMs)
+			// A flow the path stopped inside a record goes back on the fine
+			// clock while it stays so: what waits on it (held back, a lost
+			// probe, a stall) is the app waiting, and a second's tick adds up
+			// to a second to each. So does a flow whose request has waited
+			// for its answer, for askFineMs: the time in which a frozen
+			// leader is found and its flows closed; a long poll then waits on
+			// the coarse clock again. An idle flow never leaves it.
+			sq := a.m.snap()
+			if q := sq.cutQuiet >= cutFineMs || sq.asked >= brain.AskBytes && now-sq.askedAt >= cutFineMs && now-sq.askedAt < askFineMs; q != fine {
+				if fine = q; fine {
+					tick.Reset(250 * time.Millisecond)
+				} else {
+					tick.Reset(time.Second)
+				}
+			}
 			// a phone that slept stalls every flow it had open: not the path
 			if sleptMs(a.start) < brain.SleepGraceMs && (a.m.stallOnce() || a.m.unansweredOnce(now, f.s.cfg.StallMs)) {
 				f.s.noteStall(a.path, a.startMs)
@@ -442,11 +465,15 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 			// the requests sent on them: two left unanswered put the leader
 			// in doubt, and once a sweep finds it does not deliver either,
 			// the flows on it that have waited AskMs are closed. The app
-			// reconnects, and the new flow goes to the new leader.
+			// reconnects, and the new flow goes to the new leader. So is a
+			// flow the path stopped inside a record HeldMs ago: the bytes the
+			// server wrote whole are not coming on a path that lost its probe,
+			// and the app otherwise waits for the stall watchdog (StallMs) and
+			// the breaker's trip after it.
 			if f.pin == "" && sleptMs(a.start) < brain.SleepGraceMs && a.m.askOnce(now) {
 				f.s.noteUnanswered(a.path, a.startMs)
 			}
-			if sn.asked > 0 && now-sn.askedAt >= brain.AskMs && f.s.probeLost(a.path) >= a.startMs {
+			if (sn.asked > 0 && now-sn.askedAt >= brain.AskMs || sn.cutQuiet >= brain.HeldMs) && f.s.probeLost(a.path) >= a.startMs {
 				a.condemned = true
 				cancel()
 				continue

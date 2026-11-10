@@ -48,6 +48,7 @@ type meter struct {
 	tickAt      int64 // the last tick after the first byte
 	tickDown    int64 // down at it
 	slowNoted   bool  // the flow went to the brain as held back (brain.NoteSlow)
+	cutQuiet    int64 // at the last tick: how long nothing has come inside a record, 0 between records
 	stalls      int
 	inStall     bool
 	stallNoted  bool // the first stall went to the brain while the flow ran
@@ -106,6 +107,7 @@ func (m *meter) Down(p []byte) {
 	m.down += int64(len(p))
 	m.lastDownAt = now
 	m.inStall = false
+	m.cutQuiet = 0
 	m.asked, m.askedAt, m.askNoted = 0, 0, false
 }
 
@@ -123,10 +125,17 @@ const maxBusyGapMs = 5000
 func (m *meter) tick(now, stallMs int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.firstDownAt == 0 || m.inStall {
+	if m.firstDownAt == 0 {
 		return
 	}
 	cut := m.tls.midRecord() || m.held != nil && m.held()
+	m.cutQuiet = 0
+	if cut {
+		m.cutQuiet = now - m.lastDownAt
+	}
+	if m.inStall {
+		return
+	}
 	if now-m.lastDownAt > stallMs && cut {
 		m.inStall = true
 		m.stalls++
@@ -224,12 +233,13 @@ type snapshot struct {
 	inStall                                  bool
 	asked, askedAt, lastUpAt, lastDownAt     int64
 	heldMs, heldDown                         int64
+	cutQuiet                                 int64
 }
 
 func (m *meter) snap() snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return snapshot{m.up, m.down, m.firstUpAt, m.firstDownAt, m.maxGap, m.busyMs, m.busyDown, m.noted, m.stallNoted, m.stalls, m.inStall, m.asked, m.askedAt, m.lastUpAt, m.lastDownAt, m.heldMs, m.heldDown}
+	return snapshot{m.up, m.down, m.firstUpAt, m.firstDownAt, m.maxGap, m.busyMs, m.busyDown, m.noted, m.stallNoted, m.stalls, m.inStall, m.asked, m.askedAt, m.lastUpAt, m.lastDownAt, m.heldMs, m.heldDown, m.cutQuiet}
 }
 
 // tlsTrack follows TLS record framing in a downstream byte stream. The
