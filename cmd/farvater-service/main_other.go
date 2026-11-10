@@ -1,6 +1,6 @@
-//go:build !windows
+//go:build !windows && !darwin
 
-// Command farvater-service holds the tunnel on Windows; elsewhere there is
+// Command farvater-service holds the tunnel on Windows and macOS; elsewhere there is
 // nothing for it to do.
 package main
 
@@ -10,6 +10,6 @@ import (
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "farvater-service runs on Windows only")
+	fmt.Fprintln(os.Stderr, "farvater-service runs on Windows and macOS only")
 	os.Exit(1)
 }

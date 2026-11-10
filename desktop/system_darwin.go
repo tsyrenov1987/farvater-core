@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
 
@@ -34,14 +38,48 @@ type saved struct {
 	Scoped  [][]string          `json:"scoped,omitempty"` // route commands that undo the interface-scoped defaults and the private-range routes
 }
 
+// pinned is the physical interface the core's sockets leave by, 0 while no
+// tunnel is up. A service outlives its tunnels, and the machine can move to
+// another network under one (Follow), so the control function reads it for
+// each socket.
+var pinned atomic.Int32
+
+func init() {
+	wire.SocketControl = func(network, _ string, c syscall.RawConn) error {
+		idx := int(pinned.Load())
+		if idx == 0 {
+			return nil
+		}
+		var serr error
+		err := c.Control(func(fd uintptr) {
+			if strings.HasSuffix(network, "6") {
+				serr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, v6BoundIf, idx)
+			} else {
+				serr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, ipBoundIf, idx)
+				if serr != nil { // a dual-stack socket
+					serr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, v6BoundIf, idx)
+				}
+			}
+		})
+		if err != nil {
+			return err
+		}
+		return serr
+	}
+}
+
 // System is the tunnel and what was changed on the machine to route into it.
 type System struct {
-	dev   tun.Device
-	name  string
-	phys  string
-	state saved
-	logf  func(string, ...any)
+	dev  tun.Device
+	name string
+	logf func(string, ...any)
 	*tunPackets
+
+	mu    sync.Mutex // the fields below: Down and Follow's moves
+	phys  string
+	route string // physical interface and gateway, as defaultRoute reads them
+	state saved
+	down  bool
 }
 
 // Up creates the tunnel, pins the core's sockets to the physical interface,
@@ -56,11 +94,10 @@ func Up(o Options) (*System, error) {
 	if err != nil {
 		return nil, fmt.Errorf("default route: %v %s", err, out)
 	}
-	m := regexp.MustCompile(`interface: (\S+)`).FindStringSubmatch(out)
-	if m == nil || strings.HasPrefix(m[1], "utun") {
+	phys, gw := parseRouteGet(out)
+	if phys == "" || strings.HasPrefix(phys, "utun") {
 		return nil, errors.New("no physical default route (another VPN running?)")
 	}
-	phys := m[1]
 	if rt, _ := run("netstat", "-rn", "-f", "inet"); rt != "" {
 		for _, l := range strings.Split(rt, "\n") {
 			f := strings.Fields(l)
@@ -78,33 +115,17 @@ func Up(o Options) (*System, error) {
 	if err != nil {
 		return nil, err
 	}
-	idx := ifc.Index
-	wire.SocketControl = func(network, _ string, c syscall.RawConn) error {
-		var serr error
-		err := c.Control(func(fd uintptr) {
-			if strings.HasSuffix(network, "6") {
-				serr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, v6BoundIf, idx)
-			} else {
-				serr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, ipBoundIf, idx)
-				if serr != nil { // a dual-stack socket
-					serr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, v6BoundIf, idx)
-				}
-			}
-		})
-		if err != nil {
-			return err
-		}
-		return serr
-	}
+	pinned.Store(int32(ifc.Index))
 	upstream := systemDNS()
 	pinResolver(upstream)
+	loadMachineSuffixes(logf)
 
 	dev, err := tun.CreateTUN("utun", MTU)
 	if err != nil {
 		return nil, fmt.Errorf("utun: %v", err)
 	}
 	name, _ := dev.Name()
-	s := &System{dev: dev, name: name, phys: phys, logf: logf, tunPackets: newTunPackets(dev)}
+	s := &System{dev: dev, name: name, phys: phys, route: phys + " " + gw, logf: logf, tunPackets: newTunPackets(dev)}
 	fail := func(err error) (*System, error) { s.Down(); return nil, err }
 	// The core's sockets are bound to the physical interface (IP_BOUND_IF). With
 	// the tunnel's 0/1 and 128/1 in the table, such a socket finds no route
@@ -127,25 +148,7 @@ func Up(o Options) (*System, error) {
 		}
 	}
 	s.state.DNS = map[string][]string{}
-	for _, svc := range services() {
-		cur, _ := run("networksetup", "-getdnsservers", svc)
-		var list []string
-		for _, l := range strings.Split(cur, "\n") {
-			if _, err := netip.ParseAddr(strings.TrimSpace(l)); err == nil {
-				list = append(list, strings.TrimSpace(l))
-			}
-		}
-		if len(list) == 0 {
-			list = []string{"Empty"}
-		}
-		s.state.DNS[svc] = list
-	}
-	s.save() // before changing anything: a crash leaves what `off` restores
-	for svc := range s.state.DNS {
-		_, _ = run("networksetup", "-setdnsservers", svc, DNSAddr)
-	}
-	_, _ = run("dscacheutil", "-flushcache")
-	_, _ = run("killall", "-HUP", "mDNSResponder")
+	s.takeDNS()
 	if o.KillSwitch {
 		if err := s.killSwitch(o.Nodes, upstream); err != nil {
 			return fail(fmt.Errorf("kill switch: %v", err))
@@ -207,12 +210,60 @@ block drop out quick all
 	return nil
 }
 
+// takeDNS points the network services the machine has now at the tunnel,
+// each one's own servers saved first: a crash leaves what `off` restores. A
+// service that appears later (a cable plugged in) is taken by Follow.
+func (s *System) takeDNS() {
+	var fresh []string
+	for _, svc := range services() {
+		if _, ok := s.state.DNS[svc]; ok {
+			continue
+		}
+		cur, _ := run("networksetup", "-getdnsservers", svc)
+		s.state.DNS[svc] = parseDNSServers(cur)
+		fresh = append(fresh, svc)
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	s.save()
+	for _, svc := range fresh {
+		_, _ = run("networksetup", "-setdnsservers", svc, DNSAddr)
+	}
+	_, _ = run("dscacheutil", "-flushcache")
+	_, _ = run("killall", "-HUP", "mDNSResponder")
+}
+
+// parseDNSServers reads `networksetup -getdnsservers`: the servers set on
+// the service, or "Empty" when it takes the network's (DHCP).
+func parseDNSServers(out string) []string {
+	var list []string
+	for _, l := range strings.Split(out, "\n") {
+		if _, err := netip.ParseAddr(strings.TrimSpace(l)); err == nil {
+			list = append(list, strings.TrimSpace(l))
+		}
+	}
+	if len(list) == 0 {
+		list = []string{"Empty"}
+	}
+	return list
+}
+
 // Down puts the machine back: DNS, kill switch, the tunnel (its routes go
 // with it).
 func (s *System) Down() {
-	delScoped(s.state)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.down {
+		return
+	}
+	s.down = true
+	pinned.Store(0)
+	net.DefaultResolver = &net.Resolver{}
 	if s.state.DNS != nil {
 		restore(s.state)
+	} else {
+		delScoped(s.state)
 	}
 	if s.dev != nil {
 		s.dev.Close()
@@ -223,13 +274,210 @@ func (s *System) Down() {
 // Off undoes what a run that did not clean up left (DNS, kill switch).
 func Off() error {
 	b, err := os.ReadFile(filepath.Join(StateDir, "state.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		_, _ = run("pfctl", "-a", pfAnchor, "-F", "all")
+		return nil
+	}
 	var st saved
 	if err == nil {
 		_ = json.Unmarshal(b, &st)
 	}
 	restore(st)
-	_, _ = run("pfctl", "-a", pfAnchor, "-F", "all")
 	return os.Remove(filepath.Join(StateDir, "state.json"))
+}
+
+// defaultRoute reads the machine's default route: "<interface> <gateway>",
+// "" when it has none. The tunnel's own routes are /1, so they are not it.
+func defaultRoute() string {
+	out, err := run("route", "-n", "get", "default")
+	if err != nil {
+		return ""
+	}
+	phys, gw := parseRouteGet(out)
+	if phys == "" || strings.HasPrefix(phys, "utun") {
+		return ""
+	}
+	return phys + " " + gw
+}
+
+// parseRouteGet takes the interface and the gateway ("" on a point-to-point
+// network) from `route -n get default`.
+func parseRouteGet(out string) (phys, gw string) {
+	if m := regexp.MustCompile(`interface: (\S+)`).FindStringSubmatch(out); m != nil {
+		phys = m[1]
+	}
+	if m := gatewayRE.FindStringSubmatch(out); m != nil {
+		gw = m[1]
+	}
+	return phys, gw
+}
+
+// Follow keeps the core on the machine's network as it changes (Wi-Fi to a
+// cable, another Wi-Fi, the same one after sleep) until ctx ends, and reports
+// each new network: the core's sockets, their interface-scoped defaults, the
+// DNS it asks and the private-range routes all belong to one network.
+func (s *System) Follow(ctx context.Context, changed func(network string)) {
+	t := time.NewTicker(3 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		now := defaultRoute()
+		s.mu.Lock()
+		same := now == s.route
+		if now == "" {
+			// No network: macOS takes the interface's routes away with its
+			// address, so the next one is new even when it is the same.
+			s.route = ""
+		}
+		s.mu.Unlock()
+		if now == "" || same {
+			continue
+		}
+		if s.move(ctx, now) {
+			changed(now)
+		}
+	}
+}
+
+// move goes over to the network; false when the tunnel is going down.
+func (s *System) move(ctx context.Context, route string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.down || ctx.Err() != nil {
+		return false
+	}
+	phys, gw, _ := strings.Cut(route, " ")
+	ifc, err := net.InterfaceByName(phys)
+	if err != nil {
+		return false
+	}
+	s.route = route
+	pinned.Store(int32(ifc.Index))
+	s.takeDNS()
+	upstream := s.serviceDNS(phys)
+	if len(upstream) > 0 {
+		pinResolver(upstream)
+	}
+	loadMachineSuffixes(s.logf)
+	delScoped(s.state)
+	s.state.Scoped = nil
+	v4 := "interface: " + phys + "\n"
+	if gw != "" {
+		v4 += "gateway: " + gw + "\n"
+	}
+	s.phys = phys
+	s.scopedDefaults(phys, v4)
+	s.lanRoutes(phys, v4)
+	s.save()
+	s.logf("moved to %s, dns %v", route, upstream)
+	return true
+}
+
+// serviceDNS is what the network on phys resolves names with: the servers
+// its service had set before the tunnel, else what DHCP gave.
+func (s *System) serviceDNS(phys string) []netip.Addr {
+	var v []netip.Addr
+	if svc := serviceOf(phys); svc != "" {
+		for _, a := range s.state.DNS[svc] {
+			if ip, err := netip.ParseAddr(a); err == nil && ip.Is4() {
+				v = append(v, ip)
+			}
+		}
+	}
+	if len(v) > 0 {
+		return v
+	}
+	out, _ := run("ipconfig", "getpacket", phys)
+	return parseDHCPDNS(out)
+}
+
+// serviceOf names the network service on a device ("Wi-Fi" for en0).
+func serviceOf(dev string) string {
+	out, _ := run("networksetup", "-listnetworkserviceorder")
+	return parseServiceOrder(out)[dev]
+}
+
+// parseServiceOrder maps devices to services from
+// `networksetup -listnetworkserviceorder`:
+//
+//	(1) Wi-Fi
+//	(Hardware Port: Wi-Fi, Device: en0)
+func parseServiceOrder(out string) map[string]string {
+	m := map[string]string{}
+	name := ""
+	re := regexp.MustCompile(`^\(\d+\) (.+)$`)
+	dev := regexp.MustCompile(`Device: ([^)\s]+)\)`)
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if x := re.FindStringSubmatch(l); x != nil {
+			name = x[1]
+		} else if x := dev.FindStringSubmatch(l); x != nil && name != "" {
+			m[x[1]] = name
+			name = ""
+		}
+	}
+	return m
+}
+
+// parseDHCPDNS reads the DNS servers from `ipconfig getpacket`:
+//
+//	domain_name_server (ip_mult): {192.168.1.1, 8.8.8.8}
+func parseDHCPDNS(out string) []netip.Addr {
+	m := regexp.MustCompile(`domain_name_server \(ip_mult\): \{([^}]*)\}`).FindStringSubmatch(out)
+	if m == nil {
+		return nil
+	}
+	var v []netip.Addr
+	for _, f := range strings.Split(m[1], ",") {
+		if a, err := netip.ParseAddr(strings.TrimSpace(f)); err == nil && a.Is4() {
+			v = append(v, a)
+		}
+	}
+	return v
+}
+
+// loadMachineSuffixes reads the DNS suffixes set on the Mac itself: the
+// search domains typed into a network service (what DHCP hands out is not in
+// that list) and the Active Directory domain it has joined.
+func loadMachineSuffixes(logf func(string, ...any)) {
+	var v []string
+	for _, svc := range services() {
+		out, _ := run("networksetup", "-getsearchdomains", svc)
+		v = append(v, parseSearchDomains(out)...)
+	}
+	if out, err := run("dsconfigad", "-show"); err == nil {
+		v = append(v, parseADDomain(out)...)
+	}
+	setNetworkSuffixes(v)
+	if len(v) > 0 {
+		logf("dns suffixes of this Mac: %v", v)
+	}
+}
+
+// parseSearchDomains reads `networksetup -getsearchdomains`: one domain a
+// line, or a sentence when none is set.
+func parseSearchDomains(out string) []string {
+	var v []string
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if l != "" && !strings.ContainsAny(l, " \t") {
+			v = append(v, l)
+		}
+	}
+	return v
+}
+
+// parseADDomain reads `dsconfigad -show`: "Active Directory Domain = corp.example.com".
+func parseADDomain(out string) []string {
+	m := regexp.MustCompile(`(?m)^\s*Active Directory Domain\s*=\s*(\S+)\s*$`).FindStringSubmatch(out)
+	if m == nil {
+		return nil
+	}
+	return []string{m[1]}
 }
 
 // scopedDefaults gives phys its own default routes, IPv4 from the route
