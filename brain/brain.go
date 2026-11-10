@@ -579,6 +579,7 @@ func (b *Brain) NoteAnswered(path string, startMs, now int64) {
 	if s, ok := b.st[path]; ok && startMs >= b.switchedAt {
 		s.AnsweredAt = max(s.AnsweredAt, now)
 	}
+	b.Diag.alive(now)
 }
 
 // leaderAnswers reports whether the leader got an answer since it took the
@@ -815,14 +816,34 @@ func (b *Brain) Observe(r Receipt) {
 	if wireOK {
 		b.noteBack(r.Path, r.FirstByteMs >= 0, now) // may leave a restricted network: fetch the state after it
 	}
-	s := b.st[r.Path]
 	b.Diag.NoteWire(r.Path, wireOK, now)
+	if wireOK {
+		for _, e := range b.settle(r, now) { // silent.go
+			b.count(e, now)
+		}
+	}
 	if !wireOK && b.NetDown(now) && !b.networkUp(now) {
 		b.Dropped++
 		b.Drops.NetDown++
 		b.J.Add(now, "drop_netdown", "no path connects: not evidence against the path", r.Path)
 		return
 	}
+	if !wireOK && r.End == EndTimeout && r.DurMs >= SilentFastMs && !b.networkUp(now) {
+		held, earlier := b.hold(r, now) // silent.go
+		if held {
+			return
+		}
+		for _, e := range earlier {
+			b.count(e, now)
+		}
+	}
+	b.count(r, now)
+}
+
+// count folds into the evidence a receipt the diagnosis has let through.
+func (b *Brain) count(r Receipt, now int64) {
+	wireOK := r.WireReadyMs >= 0
+	s := b.st[r.Path]
 	if wireOK && !r.FirstByte() && r.Dst != "" {
 		if b.Diag.DstQuarantined(r.Dst, now) {
 			b.Dropped++

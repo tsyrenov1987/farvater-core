@@ -8,6 +8,8 @@ type Diagnoser struct {
 	dstFails     map[string]map[string]bool
 	dstQ         map[string]int64
 	parkedUntil  map[string]int64
+	held         map[string]*heldDials // dials timed out in silence, see silent.go
+	aliveAt      int64                 // when a path last connected or answered, see silent.go
 
 	NetWindowMs   int64 // window for "everything fails" (10 s)
 	DstQuarantine int64 // how long a destination is quarantined (5 min)
@@ -18,7 +20,7 @@ type Diagnoser struct {
 // NewDiagnoser returns a diagnoser for the given paths.
 func NewDiagnoser(paths []PathInfo) *Diagnoser {
 	return &Diagnoser{paths: paths, lastWireFail: map[string]int64{}, lastWireOK: map[string]int64{}, dstFails: map[string]map[string]bool{},
-		dstQ: map[string]int64{}, parkedUntil: map[string]int64{}, NetWindowMs: 10_000, DstQuarantine: 5 * 60_000, FreezeParkMs: 30_000, FreezePairMs: 5_000}
+		dstQ: map[string]int64{}, parkedUntil: map[string]int64{}, held: map[string]*heldDials{}, NetWindowMs: 10_000, DstQuarantine: 5 * 60_000, FreezeParkMs: 30_000, FreezePairMs: 5_000}
 }
 
 // NoteWire records whether a path's wire connected.
@@ -26,6 +28,7 @@ func (d *Diagnoser) NoteWire(path string, ok bool, now int64) {
 	if ok {
 		d.lastWireOK[path] = now
 		delete(d.parkedUntil, path)
+		delete(d.held, path)
 		return
 	}
 	d.lastWireFail[path] = now
