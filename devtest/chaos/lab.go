@@ -105,6 +105,7 @@ type lab struct {
 	pass   string
 	kilKey kilvater.Key
 	kilHex string
+	link   link
 	wg     sync.WaitGroup
 	closed atomic.Bool
 }
@@ -432,10 +433,15 @@ func (l *lab) relayOne(p *path, c net.Conn, f Fault) {
 	last := time.Time{}
 	for {
 		k := len(buf)
-		if f == Throttle || f == ThrottleRst {
+		if f == Throttle || f == ThrottleRst || l.link.on() {
 			k = 2 << 10
 		}
 		n, err := s.Read(buf[:k])
+		if n > 0 {
+			if d := l.link.delay(n, last); d > 0 {
+				time.Sleep(d)
+			}
+		}
 		if n > 0 && f != Freeze16K && p.get() == FreezeLive {
 			hold(c) // the path froze under this live connection
 			return

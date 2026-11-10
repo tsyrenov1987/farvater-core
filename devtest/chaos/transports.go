@@ -227,6 +227,7 @@ func (l *lab) udpDown(p *path, s *udpSess) {
 					wait = time.Duration(mrand.IntN(jitterMs)) * time.Millisecond
 				}
 			}
+			wait += l.link.delay(n, s.last)
 			s.last = time.Now()
 		}
 		s.mu.Unlock()

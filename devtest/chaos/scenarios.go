@@ -91,6 +91,42 @@ var scenarios = []scenario{
 		ph := r.load("смесь", 80, 4, mixed, 20*sec)
 		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
 	}},
+	{name: "weak_cell", manual: true, about: "прогрев, потом 60 с слабой сотовой сети: все пути делят один узкий канал (CHAOS_LINK_KBPS КБ/с, CHAOS_LINK_RTT мс), потом сеть возвращается", run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		trips, sweeps, probe := r.count("trip")+r.count("lead_trip"), r.count("sweep"), probeBytes.Load()
+		r.l.link.set(int64(envInt("CHAOS_LINK_KBPS", 12))<<10, time.Duration(envInt("CHAOS_LINK_RTT", 600))*time.Millisecond)
+		weak := r.loadFor("слабая сеть", 60*sec, 2, page, 15*sec, nil)
+		r.check(true, "за слабую сеть: срывов %d, разведок %d, пробы запросили %d КБ; доставлено %d/%d, с первой попытки %d",
+			r.count("trip")+r.count("lead_trip")-trips, r.count("sweep")-sweeps, (probeBytes.Load()-probe)>>10, weak.Served, weak.Requests, weak.FirstTry)
+		trips = r.count("trip") + r.count("lead_trip")
+		r.l.link.set(0, 0)
+		back := r.loadFor("сеть вернулась", 30*sec, 2, page, 15*sec, nil)
+		r.check(true, "после возврата: срывов %d; доставлено %d/%d, с первой попытки %d, три подряд через %d мс",
+			r.count("trip")+r.count("lead_trip")-trips, back.Served, back.Requests, back.FirstTry, back.RecoverMs)
+	}},
+	{name: "radio_gaps", manual: true, about: "прогрев, потом 90 с рваной сотовой сети: радио молча пропадает на CHAOS_GAP_S с и возвращается на CHAOS_UP_S с, без RST; потом сеть ровная", run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		trips := r.count("trip") + r.count("lead_trip")
+		gap, up := time.Duration(envInt("CHAOS_GAP_S", 12))*sec, time.Duration(envInt("CHAOS_UP_S", 10))*sec
+		if envInt("CHAOS_OTHERS_SLOW", 0) > 0 {
+			r.fault(Throttle, 1, 2, 3, 4, 5) // only the leader is a good path here
+		}
+		ph := r.loadFor("рваная сеть", 90*sec, 2, page, 15*sec, func() {
+			for t := time.Duration(0); t < 90*sec; t += gap + up {
+				r.l.link.out(true)
+				time.Sleep(gap)
+				r.l.link.out(false)
+				time.Sleep(up)
+			}
+		})
+		r.check(true, "за рваную сеть: срывов %d; доставлено %d/%d, с первой попытки %d",
+			r.count("trip")+r.count("lead_trip")-trips, ph.Served, ph.Requests, ph.FirstTry)
+		trips = r.count("trip") + r.count("lead_trip")
+		r.l.link.out(false)
+		back := r.loadFor("сеть ровная", 30*sec, 2, page, 15*sec, nil)
+		r.check(true, "после: срывов %d; доставлено %d/%d, с первой попытки %d, три подряд через %d мс",
+			r.count("trip")+r.count("lead_trip")-trips, back.Served, back.Requests, back.FirstTry, back.RecoverMs)
+	}},
 	{name: "flapping", about: "60 с: каждые 4 с случайные 4 из 6 путей падают (RST на hello), остальные живы", run: func(r *runner) {
 		ph := r.loadFor("мигание", 60*sec, 4, page, 15*sec, func() {
 			for t := 0; t < 15; t++ {
