@@ -3,9 +3,14 @@
 package main
 
 import (
+	"fmt"
+	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAppBundle(t *testing.T) {
@@ -63,4 +68,54 @@ func TestHelperPathIsNoBundle(t *testing.T) {
 	if !strings.Contains(plist(), "<string>"+helperPath+"</string>") {
 		t.Fatal("the plist does not start helperPath")
 	}
+}
+
+// The kernel names the other end of the socket; a program that is not the
+// signed window (this test is not) gets nothing.
+func TestPeerIsCheckedBySignature(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "fvpeer") // a socket path has to be short
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	l, err := net.Listen("unix", filepath.Join(dir, "s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		if c, err := net.Dial("unix", filepath.Join(dir, "s")); err == nil {
+			time.Sleep(2 * time.Second)
+			c.Close()
+		}
+	}()
+	c, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	p, err := peerOf(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int(p.pid) != os.Getpid() || int(p.uid) != os.Geteuid() {
+		t.Fatalf("peer pid %d uid %d, want %d %d", p.pid, p.uid, os.Getpid(), os.Geteuid())
+	}
+	if st := p.signedAs(windowReq); st == 0 {
+		t.Fatal("the test binary passed for the window")
+	}
+	if st := p.signedAs("never"); st == 0 {
+		t.Fatal("never passed")
+	}
+	var lines []string
+	ps := newPeers(func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) })
+	if os.Geteuid() != 0 {
+		if ps.admit(c) || ps.admit(c) {
+			t.Fatal("a program that is not the window was let in")
+		}
+		if len(lines) != 1 || !strings.Contains(lines[0], "refused") {
+			t.Fatalf("log: %q", lines)
+		}
+	}
+	t.Logf("%s", pidPath(p.pid))
 }

@@ -585,3 +585,6 @@ func systemDNS() []netip.Addr {
 	}
 	return v
 }
+
+// toolPath: launchd starts the service with the system's own PATH.
+func toolPath(name string) string { return name }

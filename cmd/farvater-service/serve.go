@@ -22,7 +22,10 @@ const (
 	logLimit   = 2 << 20
 )
 
-func serve(l net.Listener, s *service.Session, logf func(string, ...any)) {
+// serve answers the window and no other program: admit says who is on the
+// other end (see peers in main_windows.go and peer_darwin.go). The replies
+// hold the access code and the servers' addresses.
+func serve(l net.Listener, s *service.Session, admit func(net.Conn) bool, logf func(string, ...any)) {
 	for {
 		c, err := l.Accept()
 		if errors.Is(err, net.ErrClosed) {
@@ -33,7 +36,13 @@ func serve(l net.Listener, s *service.Session, logf func(string, ...any)) {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		go answer(c, s)
+		go func() {
+			if !admit(c) {
+				c.Close()
+				return
+			}
+			answer(c, s)
+		}()
 	}
 }
 

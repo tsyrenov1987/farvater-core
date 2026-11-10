@@ -24,6 +24,19 @@ import (
 	"github.com/tsyrenov1987/farvater-core/wire"
 )
 
+// toolPath: the system's own copy of a tool. The service runs as SYSTEM, and
+// a folder in PATH that users can write to must not decide what it starts.
+func toolPath(name string) string {
+	dir, err := windows.GetSystemDirectory()
+	if err != nil || filepath.IsAbs(name) {
+		return name
+	}
+	if name == "powershell" {
+		return filepath.Join(dir, "WindowsPowerShell", "v1.0", "powershell.exe")
+	}
+	return filepath.Join(dir, name+".exe")
+}
+
 // StateDir keeps what Down (or `off` after a crash) puts back.
 var StateDir = filepath.Join(os.Getenv("ProgramData"), "Farvater")
 

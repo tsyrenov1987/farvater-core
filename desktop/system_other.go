@@ -23,3 +23,5 @@ func (s *System) Down() {}
 func Off() error { return nil }
 
 var _ = netip.Addr{}
+
+func toolPath(name string) string { return name }

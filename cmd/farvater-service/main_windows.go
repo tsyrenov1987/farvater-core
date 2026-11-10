@@ -32,7 +32,8 @@ const (
 	// The machine owns the pipe; whoever sits at this computer, on its screen
 	// or over Remote Desktop, may talk to it. Other computers cannot
 	// (namedpipe refuses remote clients), nor can programs of other sessions'
-	// services or the network account.
+	// services or the network account. Of those who connect, only the window
+	// and administrators get answers (peers, peer_windows.go).
 	pipeSDDL = "O:SYG:SYD:(A;;GA;;;SY)(A;;GRGW;;;IU)"
 
 	// The folder holds the access code: the machine and administrators only.
@@ -180,7 +181,7 @@ func (handler) Execute(_ []string, r <-chan svc.ChangeRequest, st chan<- svc.Sta
 		logf("pipe: %v", err)
 		return true, 2
 	}
-	go serve(l, s, logf)
+	go serve(l, s, newPeers(logf).admit, logf)
 	logf("started, version %s", service.Version)
 	s.Resume()
 	st <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}

@@ -21,8 +21,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/tsyrenov1987/farvater-core/desktop"
 	"github.com/tsyrenov1987/farvater-core/service"
 )
@@ -89,7 +87,7 @@ func runDaemon() error {
 		logf("socket: %v", err)
 		return err
 	}
-	go serve(l, s, logf)
+	go serve(l, s, newPeers(logf).admit, logf)
 	logf("started, version %s", service.Version)
 	s.Resume()
 
@@ -110,7 +108,7 @@ func runDaemon() error {
 		removeAll()
 		// launchd would start the program again (KeepAlive); bootout stops
 		// it for good, with a SIGTERM to this process.
-		_ = exec.Command("launchctl", "bootout", "system/"+label).Start()
+		_ = exec.Command("/bin/launchctl", "bootout", "system/"+label).Start()
 		select {
 		case <-sig:
 		case <-time.After(10 * time.Second):
@@ -140,43 +138,13 @@ func listen() (net.Listener, error) {
 		l.Close()
 		return nil, err
 	}
-	return peerListener{l}, nil
+	return l, nil
 }
 
-// peerListener lets in the people of this Mac, root and the user accounts,
-// not the accounts the system's own daemons run as (uid 1-500, nobody).
-type peerListener struct{ *net.UnixListener }
-
-func (p peerListener) Accept() (net.Conn, error) {
-	for {
-		c, err := p.AcceptUnix()
-		if err != nil {
-			return nil, err
-		}
-		if uid, ok := peerUID(c); ok && allowedUID(uid) {
-			return c, nil
-		}
-		c.Close()
-	}
-}
-
+// allowedUID: the people of this Mac, root and the user accounts, not the
+// accounts the system's own daemons run as (uid 1-500, nobody).
 func allowedUID(uid uint32) bool {
 	return uid == 0 || (uid >= 501 && uid < 1<<31)
-}
-
-func peerUID(c *net.UnixConn) (uint32, bool) {
-	raw, err := c.SyscallConn()
-	if err != nil {
-		return 0, false
-	}
-	var cred *unix.Xucred
-	var cerr error
-	if err := raw.Control(func(fd uintptr) {
-		cred, cerr = unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
-	}); err != nil || cerr != nil {
-		return 0, false
-	}
-	return cred.Uid, true
 }
 
 // watchApp closes gone when the app the service came from has been missing
@@ -239,7 +207,7 @@ func install() error {
 	if err := os.WriteFile(plistPath, []byte(plist()), 0o644); err != nil {
 		return err
 	}
-	if out, err := exec.Command("launchctl", "bootstrap", "system", plistPath).CombinedOutput(); err != nil {
+	if out, err := exec.Command("/bin/launchctl", "bootstrap", "system", plistPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %v %s", err, strings.TrimSpace(string(out)))
 	}
 	for end := time.Now().Add(15 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
@@ -275,13 +243,13 @@ func removeAll() {
 }
 
 func loaded() bool {
-	return exec.Command("launchctl", "print", "system/"+label).Run() == nil
+	return exec.Command("/bin/launchctl", "print", "system/"+label).Run() == nil
 }
 
 // stop takes the service out of launchd and waits for it to end: it puts
 // the machine's network back as it goes.
 func stop() error {
-	out, err := exec.Command("launchctl", "bootout", "system/"+label).CombinedOutput()
+	out, err := exec.Command("/bin/launchctl", "bootout", "system/"+label).CombinedOutput()
 	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
 		if !loaded() {
 			return nil

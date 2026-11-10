@@ -73,6 +73,6 @@ func pinResolver(servers []netip.Addr) {
 }
 
 func run(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	out, err := exec.Command(toolPath(name), args...).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
