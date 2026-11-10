@@ -73,9 +73,16 @@ func checkDarwinUp(t *testing.T, s *System, phys string) {
 	if pinned.Load() == 0 {
 		t.Error("sockets are not pinned")
 	}
-	scoped, _ := run("netstat", "-rn", "-f", "inet", "-I", phys)
-	if !strings.Contains(scoped, "default") {
-		t.Errorf("no default route scoped to %s:\n%s", phys, scoped)
+	// netstat's -I prints the interface's counters, not its routes: the
+	// scoped default is the "default" line with the I flag on phys.
+	scoped := false
+	for _, l := range strings.Split(table, "\n") {
+		if f := strings.Fields(l); len(f) >= 4 && f[0] == "default" && strings.Contains(f[2], "I") && f[3] == phys {
+			scoped = true
+		}
+	}
+	if !scoped {
+		t.Errorf("no default route scoped to %s", phys)
 	}
 	for svc, d := range dnsOf(t) {
 		if d != DNSAddr {
