@@ -12,8 +12,11 @@ import (
 // says the path is meant for ("cell", "wifi"; "" or "any": every network).
 type PathInfo struct {
 	ID, SNI, IP, Rail string
-	White             bool
-	Net               string
+	// Group names the paths that come out at one address ("" = on its own):
+	// a site sees flows over any of them as the same visitor (spread.go).
+	Group string
+	White bool
+	Net   string
 	// NotHTTP: the path's traffic looks like no HTTP (Hysteria 2 under
 	// Salamander noise). Such a path stays in the fan and takes flows on proven
 	// delivery, but never stands in for a failing one: a flow that fails is
@@ -35,6 +38,11 @@ type Config struct {
 	StaggerPadMs           int64         // added to p90 first-byte for the connect-stage retry
 	FirstByteDeadlineCapMs int64         // hard cap on the per-flow abandon-and-migrate deadline
 	Breaker                BreakerConfig // anti-TSPU circuit breaker
+
+	// Spread, when 2 or more, shares the flows the leader would take between
+	// it and up to Spread-1 proven paths of its Group, in turn (spread.go).
+	// 0: every such flow goes to the leader.
+	Spread int
 
 	// A leader that delivers, but slowly (shaped), is caught by goodput: its
 	// fresh goodput under SlowBps sends up to SpeedProbeShare of flows to the
@@ -109,6 +117,8 @@ type Brain struct {
 	leaderSince int64
 	lastPick    map[string]int64
 	picks       []pickRec
+	spreadN     int              // flows shared out by spread, for taking turns
+	trialAt     map[string]int64 // when a path on trial as a mate got its last flow
 	started     bool
 	Gov         *Governor
 	Diag        *Diagnoser
@@ -687,6 +697,11 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 			if storm {
 				reason = "storm_probe"
 			}
+		}
+	}
+	if !explore && !storm {
+		if p, why := b.spread(avail, now); p != "" {
+			primary, reason = p, why
 		}
 	}
 	from := b.info(primary)

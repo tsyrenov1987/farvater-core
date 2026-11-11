@@ -54,11 +54,12 @@ const (
 	ThrottleRst       // throttled, and reset after rstMidBytes downstream
 	FreezeLive        // live connections stop downstream at once; new ones freeze after freezeBytes
 	RstLive           // live connections are reset at once; new ones are reset after the hello
+	VolCap            // the path passes volCapBytes downstream per volCapWindow, all its connections together; over that it freezes for volCapFreeze
 )
 
 var faultNames = map[Fault]string{OK: "ok", Refuse: "refuse", RstHello: "rst_hello", Blackhole: "blackhole",
 	RstMid: "rst_mid", Freeze16K: "freeze16k", Throttle: "throttle", Latency: "latency", Flaky: "flaky",
-	UpRst: "up_rst", UpFreeze: "up_freeze", Jitter: "jitter", ThrottleRst: "throttle_rst", FreezeLive: "freeze_live", RstLive: "rst_live"}
+	UpRst: "up_rst", UpFreeze: "up_freeze", Jitter: "jitter", ThrottleRst: "throttle_rst", FreezeLive: "freeze_live", RstLive: "rst_live", VolCap: "vol_cap"}
 
 func (f Fault) String() string { return faultNames[f] }
 
@@ -71,6 +72,12 @@ const (
 	upRstBytes  = 64 << 10
 	jitterMs    = 600
 	jitterShare = 0.3
+	// VolCap is a model, not a measurement of any filter: a count of volume
+	// per address, with the numbers picked so that one path carrying a
+	// stream runs over it and three sharing the stream stay under.
+	volCapBytes  = 2 << 20
+	volCapWindow = 10 * time.Second
+	volCapFreeze = 30 * time.Second
 )
 
 // path is one in-process server (VLESS or Trojan over TLS) and its proxy.
@@ -80,11 +87,37 @@ type path struct {
 	host   string // the proxy's address: paths on two addresses, as nodes are
 	fault  atomic.Int32
 	conns  atomic.Int64 // connections the proxy accepted
+	down   atomic.Int64 // bytes the proxy passed downstream
 	epoch  atomic.Int64 // bumped when the network drops every live connection silently
 	server net.Listener
 	proxy  net.Listener
 	// a Hysteria 2 path: its server and the UDP relay in front
 	udpServer, udpProxy net.PacketConn
+
+	capMu       sync.Mutex // VolCap: the window's count and the freeze it earned
+	capStart    time.Time
+	capBytes    int64
+	frozenUntil time.Time
+}
+
+// overCap counts n more bytes against the path's volume and says whether the
+// path is frozen: it was already, or these bytes ran it over.
+func (p *path) overCap(n int) bool {
+	p.capMu.Lock()
+	defer p.capMu.Unlock()
+	now := time.Now()
+	if now.Before(p.frozenUntil) {
+		return true
+	}
+	if now.Sub(p.capStart) > volCapWindow {
+		p.capStart, p.capBytes = now, 0
+	}
+	p.capBytes += int64(n)
+	if p.capBytes > volCapBytes {
+		p.frozenUntil, p.capStart, p.capBytes = now.Add(volCapFreeze), time.Time{}, 0
+		return true
+	}
+	return false
 }
 
 func (p *path) port() int {
@@ -181,10 +214,12 @@ func (l *lab) close() {
 }
 
 // catalogue lists the paths as share links; net, if set, labels path i, and
-// so does white, as the plain list a worker serves.
+// so does white, as the plain list a worker serves. The paths are in two
+// groups of three, as two nodes' paths are.
 func (l *lab) catalogue(labels map[int]string, white map[int]bool) string {
 	var s string
 	for i, p := range l.paths {
+		s += fmt.Sprintf("#group=g%d\n", i/3)
 		if n := labels[i]; n != "" {
 			s += "#net=" + n + "\n"
 		}
@@ -217,8 +252,12 @@ func (l *lab) catalogueJSON(white map[int]bool) string {
 		Labels map[string]any `json:"labels"`
 	}
 	var paths []entry
-	for i, line := range strings.Split(strings.TrimSpace(l.catalogue(nil, nil)), "\n") {
-		e := entry{ID: l.paths[i].id, URI: line, Labels: map[string]any{}}
+	for _, line := range strings.Split(strings.TrimSpace(l.catalogue(nil, nil)), "\n") {
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		i := len(paths)
+		e := entry{ID: l.paths[i].id, URI: line, Labels: map[string]any{"group": fmt.Sprintf("g%d", i/3)}}
 		if white[i] {
 			e.Labels["white"] = true
 		}
@@ -482,6 +521,11 @@ func (l *lab) relayOne(p *path, c net.Conn, f Fault) {
 				}
 			case Throttle:
 				time.Sleep(time.Duration(n) * time.Second / throttleBps)
+			case VolCap:
+				if p.overCap(n) {
+					hold(c)
+					return
+				}
 			case Latency:
 				// a burst after a pause is an answer to a request: delay it by a round trip
 				if time.Since(last) > 100*time.Millisecond {
@@ -493,6 +537,7 @@ func (l *lab) relayOne(p *path, c net.Conn, f Fault) {
 				return
 			}
 			sent += n
+			p.down.Add(int64(n))
 		}
 		if err != nil {
 			return

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,6 +54,7 @@ type Result struct {
 	HeapMB   float64  `json:"heap_peak_mb"`
 	ProbeKB  int64    `json:"probe_kb"` // the origin sent for sweeps' probes
 	Sweep    string   `json:"sweep"`    // CHAOS_SWEEP: off, doubt (the default) or every10
+	Spread   int      `json:"spread"`   // CHAOS_SPREAD: how many paths of the leader's group share its flows (0 = the leader alone)
 	Pass     bool     `json:"pass"`
 	Checks   []string `json:"checks"`
 	Error    string   `json:"error,omitempty"`
@@ -278,6 +280,88 @@ func (r *runner) loadFor(name string, d time.Duration, conc int, sizes []int, ti
 	return ph
 }
 
+// paced asks for one answer of size bytes every gap for d, each on its own
+// connection whether the one before is done or not, as a player fetching a
+// stream's chunks does. late counts the answers that took longer than slow
+// or never came.
+func (r *runner) paced(name string, d, gap time.Duration, size int, timeout, slow time.Duration) (ph Phase, late int) {
+	ph = Phase{Name: name, RecoverMs: -1}
+	var mu sync.Mutex
+	var times []int64
+	var bytes int64
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; time.Since(start) < d; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ok, first, att, ms, got := r.get(i%7, size, timeout)
+			mu.Lock()
+			ph.Requests++
+			ph.Attempts += att
+			bytes += got
+			times = append(times, ms)
+			if ok {
+				ph.Served++
+			}
+			if first {
+				ph.FirstTry++
+			}
+			if !ok || ms > slow.Milliseconds() {
+				late++
+			}
+			mu.Unlock()
+		}(i)
+		time.Sleep(time.Until(start.Add(time.Duration(i+1) * gap)))
+	}
+	wg.Wait()
+	slices.Sort(times)
+	if len(times) > 0 {
+		ph.P50Ms = times[len(times)/2]
+		ph.P95Ms = times[len(times)*95/100]
+		ph.MaxMs = times[len(times)-1]
+	}
+	if s := time.Since(start).Seconds(); s > 0 {
+		ph.MBps = float64(int64(float64(bytes)/s/1e4)) / 100
+	}
+	r.res.Phases = append(r.res.Phases, ph)
+	return ph, late
+}
+
+// shares says what share of the downstream bytes since before each path's
+// proxy passed, largest first: "p0 62 %, p1 20 %, …", and the largest share.
+func (r *runner) shares(before []int64) (string, float64) {
+	type ps struct {
+		id string
+		n  int64
+	}
+	var all []ps
+	var sum int64
+	for i, p := range r.l.paths {
+		n := p.down.Load() - before[i]
+		all = append(all, ps{p.id, n})
+		sum += n
+	}
+	if sum == 0 {
+		return "", 0
+	}
+	slices.SortStableFunc(all, func(a, b ps) int { return int(b.n - a.n) })
+	var out []string
+	for _, p := range all {
+		out = append(out, fmt.Sprintf("%s %d %%", p.id, p.n*100/sum))
+	}
+	return strings.Join(out, ", "), float64(all[0].n) / float64(sum)
+}
+
+// downNow is each path's downstream byte count, for shares.
+func (r *runner) downNow() []int64 {
+	var out []int64
+	for _, p := range r.l.paths {
+		out = append(out, p.down.Load())
+	}
+	return out
+}
+
 func (r *runner) finish() {
 	close(r.stop)
 	r.samples.Wait()
@@ -331,7 +415,7 @@ func (r *runner) finish() {
 			slices.Sort(t)
 			med = t[len(t)/2]
 		}
-		r.res.Conns = append(r.res.Conns, fmt.Sprintf("%s %s: %d (%s) %d KB/s, answer p50 %d ms of %d", p.id, p.kind, p.conns.Load(), p.get(), speed[p.id]>>10, med, len(fb[p.id])))
+		r.res.Conns = append(r.res.Conns, fmt.Sprintf("%s %s: %d (%s) %d KB/s, answer p50 %d ms of %d, %d KB down", p.id, p.kind, p.conns.Load(), p.get(), speed[p.id]>>10, med, len(fb[p.id]), p.down.Load()>>10))
 	}
 	r.res.HeapMB = r.heapMB()
 }

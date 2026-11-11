@@ -23,7 +23,8 @@ type Labels struct {
 	Rail        string `json:"rail,omitempty"`
 	Net         string `json:"net,omitempty"`
 	White       bool   `json:"white,omitempty"`
-	Exit        string `json:"exit,omitempty"` // ISO country of the path's exit, for the app to show
+	Exit        string `json:"exit,omitempty"`  // ISO country of the path's exit, for the app to show
+	Group       string `json:"group,omitempty"` // paths that come out at one address share a group
 	BudgetBytes int64  `json:"budget_bytes,omitempty"`
 	UDP         bool   `json:"udp,omitempty"`
 }
@@ -173,6 +174,7 @@ func Parse(body []byte) (*Catalogue, error) {
 	net := ""      // a "#net=<any|cell|wifi>" line labels the link after it
 	white := false // so does a "#white" line: an entry allow-listed networks let through
 	exit := ""     // and a "#exit=<country>" line: where the path comes out, for the app to show
+	group := ""    // and a "#group=<name>" line: the paths that come out at one address
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if v, ok := strings.CutPrefix(line, "#net="); ok {
@@ -183,6 +185,10 @@ func Parse(body []byte) (*Catalogue, error) {
 			exit = strings.ToUpper(strings.TrimSpace(v))
 			continue
 		}
+		if v, ok := strings.CutPrefix(line, "#group="); ok {
+			group = strings.TrimSpace(v)
+			continue
+		}
 		if line == "#white" {
 			white = true
 			continue
@@ -190,8 +196,8 @@ func Parse(body []byte) (*Catalogue, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		lineNet, lineWhite, lineExit := net, white, exit
-		net, white, exit = "", false, ""
+		lineNet, lineWhite, lineExit, lineGroup := net, white, exit, group
+		net, white, exit, group = "", false, "", ""
 		s, err := wire.ParseURI(line)
 		if err != nil {
 			continue // unsupported scheme or malformed: skip, never fail the whole list
@@ -200,7 +206,7 @@ func Parse(body []byte) (*Catalogue, error) {
 		if seen[s.ID] > 1 {
 			s.ID = fmt.Sprintf("%s#%d", s.ID, seen[s.ID])
 		}
-		c.Paths = append(c.Paths, Entry{ID: s.ID, URI: line, Labels: Labels{Rail: s.Rail(), Net: lineNet, White: lineWhite, Exit: lineExit, UDP: s.Kind == wire.KindHysteria2}, Spec: s})
+		c.Paths = append(c.Paths, Entry{ID: s.ID, URI: line, Labels: Labels{Rail: s.Rail(), Net: lineNet, White: lineWhite, Exit: lineExit, Group: lineGroup, UDP: s.Kind == wire.KindHysteria2}, Spec: s})
 	}
 	if len(c.Paths) == 0 {
 		return nil, ErrNoPaths

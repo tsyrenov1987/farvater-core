@@ -110,3 +110,23 @@ func TestExitHintLabelsTheNextLinkOnly(t *testing.T) {
 		t.Fatalf("JSON labels %+v: want exit NL", j.Paths[0].Labels)
 	}
 }
+
+// A "#group=" line names the group of the link after it only: the paths that
+// come out at one address; a JSON catalogue carries it as labels.group.
+func TestGroupLabelsTheNextLinkOnly(t *testing.T) {
+	body := base64.StdEncoding.EncodeToString([]byte("#group=ams1-a\n#exit=nl\n" + l1 + "\n" + l2 + "\n"))
+	c, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Paths) != 2 || c.Paths[0].Labels.Group != "ams1-a" || c.Paths[0].Labels.Exit != "NL" || c.Paths[1].Labels.Group != "" {
+		t.Fatalf("paths %d, labels %+v: want group ams1-a then none", len(c.Paths), c.Paths)
+	}
+	j, err := Parse([]byte(`{"v":1,"title":"t","paths":[{"id":"a","uri":"` + l1 + `","labels":{"group":"g"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Paths[0].Labels.Group != "g" {
+		t.Fatalf("JSON labels %+v: want group g", j.Paths[0].Labels)
+	}
+}
