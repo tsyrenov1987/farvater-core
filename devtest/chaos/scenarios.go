@@ -91,6 +91,29 @@ var scenarios = []scenario{
 		ph := r.load("смесь", 80, 4, mixed, 20*sec)
 		r.check(share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
 	}},
+	{name: "spread_share", about: "все 6 путей здоровы, две группы по 3 пути: как байты делятся между путями (CHAOS_SPREAD=N делит потоки ведущего на N путей его группы)", run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		before := r.downNow()
+		ph := r.load("смесь 4 КБ–1 МБ", 150, 4, mixed, 20*sec)
+		txt, top := r.shares(before)
+		r.check(ph.Served == ph.Requests, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(share(ph.FirstTry, ph.Requests) >= 0.98, "с первой попытки %d/%d", ph.FirstTry, ph.Requests)
+		r.check(r.res.Spread < 2 || top <= 0.6, "доля байт по путям: %s", txt)
+	}},
+	{name: "spread_vol_cap", about: "модель фильтра по объёму (не замер): каждый путь пропускает 2 МБ за 10 с на все свои соединения, сверх этого замерзает на 30 с; 60 с идёт видео кусками по 256 КБ раз в секунду", run: func(r *runner) {
+		r.load("прогрев", 30, 3, page, 15*sec)
+		time.Sleep(11 * sec) // the warm-up's bytes leave the window
+		trips := r.count("trip") + r.count("lead_trip")
+		before := r.downNow()
+		r.all(VolCap)
+		ph, late := r.paced("видео 256 КБ/с", 60*sec, sec, 256<<10, 20*sec, 3*sec)
+		txt, _ := r.shares(before)
+		trips = r.count("trip") + r.count("lead_trip") - trips
+		// with the leader alone the model is run for the record: the checks bind the spread
+		r.check(r.res.Spread < 2 || share(ph.Served, ph.Requests) >= 0.95, "доставлено %d/%d", ph.Served, ph.Requests)
+		r.check(r.res.Spread < 2 || late == 0, "кусков дольше 3 с: %d из %d; срывов путей %d; с первой попытки %d", late, ph.Requests, trips, ph.FirstTry)
+		r.check(true, "доля байт по путям: %s", txt)
+	}},
 	{name: "weak_cell", manual: true, about: "прогрев, потом 60 с слабой сотовой сети: все пути делят один узкий канал (CHAOS_LINK_KBPS КБ/с, CHAOS_LINK_RTT мс), потом сеть возвращается", run: func(r *runner) {
 		r.load("прогрев", 30, 3, page, 15*sec)
 		trips, sweeps, probe := r.count("trip")+r.count("lead_trip"), r.count("sweep"), probeBytes.Load()
@@ -483,7 +506,7 @@ func Run(name string) string {
 			sc = &scenarios[i]
 		}
 	}
-	res := &Result{Scenario: name, Pass: true, Sweep: os.Getenv("CHAOS_SWEEP")}
+	res := &Result{Scenario: name, Pass: true, Sweep: os.Getenv("CHAOS_SWEEP"), Spread: envInt("CHAOS_SPREAD", 0)}
 	t0 := time.Now()
 	probeBytes.Store(0)
 	out := func() string {
@@ -538,9 +561,11 @@ var probeBytes atomic.Int64
 
 // labTune sets the core up for the lab: its probe is the lab's origin, and
 // CHAOS_SWEEP picks the sweep settings compared: off, doubt (the core's
-// default) or every10 (every path every 10 s, doubt or not).
+// default) or every10 (every path every 10 s, doubt or not). CHAOS_SPREAD
+// shares the leader's flows between that many paths of its group.
 func labTune(c *switchboard.Config) {
 	c.ProbeURL = "https://probe.chaos.test/bytes?n=262144"
+	c.Brain.Spread = envInt("CHAOS_SPREAD", 0)
 	switch os.Getenv("CHAOS_SWEEP") {
 	case "off":
 		c.Brain.SweepMs = 0
