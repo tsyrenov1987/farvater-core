@@ -833,6 +833,12 @@ func (s *Switchboard) logf(format string, args ...any) {
 	}
 }
 
+// answerStatusMs is how far back Status looks for a path's answer times: a
+// journal's half hour, so a path that only carries a flow now and then still
+// has a few. The brain decides on a shorter window of its own; no decision
+// reads this one.
+const answerStatusMs = 30 * 60_000
+
 // PathStatus is one row of Status.
 type PathStatus struct {
 	ID             string  `json:"id"`
@@ -855,6 +861,8 @@ type PathStatus struct {
 	UpBytes        int64   `json:"up_bytes"`                  // carried this session, running flows and UDP included
 	DownBytes      int64   `json:"down_bytes"`
 	GoodputBps     int64   `json:"goodput_bps,omitempty"` // download rate while bytes flowed, 0 until measured
+	AnswerMs       int64   `json:"answer_ms,omitempty"`   // median dial-to-first-byte of the last half hour's flows; absent until one answered
+	AnswerN        int     `json:"answer_n,omitempty"`    // how many flows AnswerMs is the median of
 	Vol            *Volume `json:"vol,omitempty"`         // bytes carried when flows and connections ended; absent until one has
 }
 
@@ -971,6 +979,7 @@ func (s *Switchboard) Status() Status {
 	}
 	for _, id := range s.order {
 		ps := s.b.State(id)
+		ansMs, ansN := ps.Answer(now, answerStatusMs)
 		sp := s.wires[id].Spec()
 		c := s.carried[id]
 		server := fmt.Sprintf("%s:%d", sp.Host, sp.Port)
@@ -984,7 +993,7 @@ func (s *Switchboard) Status() Status {
 			Cut16: ps.Cut16, Parked: s.b.Diag.Parked(id, now), Tripped: tripName(s.b.Breaker.TrippedSig(id, now)),
 			TrippedLeftMs: s.b.Breaker.TrippedLeftMs(id, now), Served: ps.Served, Blocked: ps.Blocked,
 			Asleep: s.b.Asleep(id), UpBytes: c.up.Load(), DownBytes: c.down.Load(), GoodputBps: int64(ps.GoodputBps),
-			Vol: volStatus(ps),
+			AnswerMs: ansMs, AnswerN: ansN, Vol: volStatus(ps),
 		})
 	}
 	n := len(s.receipts)
