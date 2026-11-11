@@ -37,6 +37,9 @@ func (w *trojanWire) Spec() PathSpec       { return w.spec }
 func (w *trojanWire) NeedsHandshake() bool { return w.tr.needsHandshake() }
 func (w *trojanWire) Close() error         { return w.tr.Close() }
 func (w *trojanWire) Refresh(t time.Time)  { w.tr.Refresh(t) }
+func (w *trojanWire) WatchConns(f func(end ConnEnd, bytes int64, made time.Time)) {
+	w.tr.WatchConns(f)
+}
 
 func (w *trojanWire) Dial(ctx context.Context) (Session, error) {
 	conn, err := w.tr.dial(ctx)

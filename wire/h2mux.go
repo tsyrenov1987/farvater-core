@@ -53,9 +53,16 @@ type h2Mux struct {
 	maxAge   time.Duration
 	maxBytes int64
 
+	// onEnd, when set, hears of each connection's end: how it ended, the bytes
+	// it had carried and when it was made (ConnWatcher). Set before the first
+	// stream. lostPing is when the Transport last gave a connection up for a
+	// PING left unanswered (unix nanoseconds).
+	onEnd    func(end ConnEnd, bytes int64, made time.Time)
+	lostPing atomic.Int64
+
 	mu   sync.Mutex
 	cc   *http2.ClientConn
-	conn net.Conn
+	conn *countConn
 	at   time.Time     // when cc was made
 	n    *atomic.Int64 // bytes read and written on cc, for maxBytes
 }
@@ -108,13 +115,22 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 	if m.cc != nil && !m.expiredLocked() && m.cc.ReserveNewRequest() {
 		return m.cc, m.conn, nil
 	}
-	old := m.cc
-	c, err := m.dial(ctx)
+	old, oldConn := m.cc, m.conn
+	raw, err := m.dial(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
+	if m.onEnd != nil && m.tr.CountError == nil {
+		// The Transport names the error just before it closes the connection
+		// (closeForLostPing), on the same goroutine: countConn.Close reads it.
+		m.tr.CountError = func(kind string) {
+			if kind == "conn_close_lost_ping" {
+				m.lostPing.Store(time.Now().UnixNano())
+			}
+		}
+	}
 	n := new(atomic.Int64)
-	c = &countConn{Conn: c, n: n}
+	c := &countConn{Conn: raw, n: n, m: m, made: time.Now()}
 	cc, err := m.tr.NewClientConn(&h2FrameCap{Conn: c})
 	if err != nil {
 		c.Close()
@@ -130,7 +146,7 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 	}
 	m.cc, m.conn, m.at, m.n = cc, c, time.Now(), n
 	if old != nil {
-		m.retire(old)
+		m.retire(old, oldConn)
 	}
 	return cc, c, nil
 }
@@ -166,13 +182,16 @@ func (m *h2Mux) needsDial() bool {
 // died in silence: a dead one is closed at once, so the flows stuck on it end
 // instead of hanging until the system gives up on the socket (minutes), and a
 // live one is never cut under the flows it carries.
-func (m *h2Mux) retire(cc *http2.ClientConn) {
+func (m *h2Mux) retire(cc *http2.ClientConn, conn *countConn) {
 	ping := m.retirePing
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), ping)
 		err := cc.Ping(ctx)
 		cancel()
 		if err != nil {
+			if conn != nil {
+				conn.ended(ConnEndDead)
+			}
 			cc.Close()
 			return
 		}
@@ -191,14 +210,14 @@ const defaultRetirePing = 10 * time.Second
 // that met the dead connection at once retire it once, not each new one.
 func (m *h2Mux) refresh(t time.Time) {
 	m.mu.Lock()
-	old := m.cc
+	old, oldConn := m.cc, m.conn
 	if old == nil || !m.at.Before(t) {
 		m.mu.Unlock()
 		return
 	}
 	m.cc, m.conn = nil, nil
 	m.mu.Unlock()
-	m.retire(old)
+	m.retire(old, oldConn)
 }
 
 // openStream starts one request/response stream on the shared connection. The
@@ -303,15 +322,51 @@ func (m *h2Mux) Close() error {
 // countConn sums the bytes read and written on a connection, for the mux's
 // volume-based rotation (maxBytes). The mux reads the count under m.mu while
 // the stream goroutines write it here off the lock, so it is atomic.
+//
+// It also tells the mux how the connection ended (h2Mux.onEnd), once, by what
+// came first: a read that failed (the far side closed it, or it broke), or a
+// Close of ours (the Transport giving it up for an unanswered PING, or the mux
+// letting it go).
 type countConn struct {
 	net.Conn
-	n *atomic.Int64
+	n    *atomic.Int64
+	m    *h2Mux
+	made time.Time
+	once sync.Once
 }
 
 func (c *countConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	c.n.Add(int64(n))
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			c.ended(ConnEndFin)
+		} else if !errors.Is(err, net.ErrClosed) {
+			c.ended(ConnEndReset)
+		}
+	}
 	return n, err
+}
+
+// lostPingSlack is how long after the Transport named a lost PING a Close is
+// still taken for that connection's: the two follow each other on one goroutine.
+const lostPingSlack = 200 * time.Millisecond
+
+func (c *countConn) Close() error {
+	end := ConnEndOurs
+	if c.m != nil && time.Since(time.Unix(0, c.m.lostPing.Load())) < lostPingSlack {
+		end = ConnEndDead
+	}
+	c.ended(end)
+	return c.Conn.Close()
+}
+
+// ended reports the connection's end to the mux's watcher, the first time only.
+func (c *countConn) ended(end ConnEnd) {
+	if c.m == nil || c.m.onEnd == nil {
+		return
+	}
+	c.once.Do(func() { c.m.onEnd(end, c.n.Load(), c.made) })
 }
 
 func (c *countConn) Write(p []byte) (int, error) {

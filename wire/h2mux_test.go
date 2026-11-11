@@ -542,3 +542,101 @@ func TestH2MuxStalledStreamsHoldAtMostTheConnectionWindow(t *testing.T) {
 		t.Fatalf("stalled streams let the server send %d bytes, want at most %d", got, limit)
 	}
 }
+
+// connEnds collects what a mux tells its watcher.
+type connEnds struct {
+	mu   sync.Mutex
+	ends []ConnEnd
+	n    []int64
+}
+
+func (c *connEnds) note(end ConnEnd, bytes int64, made time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ends, c.n = append(c.ends, end), append(c.n, bytes)
+}
+
+// wait returns the i-th end told, failing the test if it never comes.
+func (c *connEnds) wait(t *testing.T, i int) (ConnEnd, int64) {
+	t.Helper()
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		c.mu.Lock()
+		if len(c.ends) > i {
+			defer c.mu.Unlock()
+			return c.ends[i], c.n[i]
+		}
+		c.mu.Unlock()
+	}
+	t.Fatalf("the end of connection %d was never told", i)
+	return 0, 0
+}
+
+// The mux tells its watcher how each connection ended, once, with the bytes it
+// had carried: closed by the far side, or let go by us.
+func TestH2MuxTellsFarCloseFromOurs(t *testing.T) {
+	d := &h2EchoDialer{}
+	var got connEnds
+	m := newH2Mux(d.dial, 0, 0)
+	m.onEnd = got.note
+
+	a := openOrFail(t, m)
+	echo(t, a, "hello")
+	d.killLast()
+	end, n := got.wait(t, 0)
+	if end != ConnEndFin {
+		t.Fatalf("a connection the far side closed was told as %d", end)
+	}
+	if n < int64(len("hello")*2) {
+		t.Fatalf("told %d bytes, less than what the stream carried both ways", n)
+	}
+	a.Close()
+
+	b := openOrFail(t, m)
+	echo(t, b, "again")
+	b.Close()
+	m.Close()
+	if end, _ := got.wait(t, 1); end != ConnEndOurs {
+		t.Fatalf("a connection we closed was told as %d", end)
+	}
+	time.Sleep(50 * time.Millisecond)
+	got.mu.Lock()
+	defer got.mu.Unlock()
+	if len(got.ends) != 2 {
+		t.Fatalf("two connections ended, %d ends told: %v", len(got.ends), got.ends)
+	}
+}
+
+// A connection that went silent is told as dead, whether the Transport's own
+// PING found it out or the one sent when it was retired.
+func TestH2MuxTellsASilentConnectionDead(t *testing.T) {
+	t.Run("health check", func(t *testing.T) {
+		d := &freezeDialer{}
+		var got connEnds
+		m := newH2Mux(d.dial, 100*time.Millisecond, 100*time.Millisecond)
+		m.onEnd = got.note
+		defer m.Close()
+		a := openOrFail(t, m)
+		echo(t, a, "first")
+		d.freeze()
+		if end, _ := got.wait(t, 0); end != ConnEndDead {
+			t.Fatalf("a connection that lost its PING was told as %d", end)
+		}
+		a.Close()
+	})
+	t.Run("retired", func(t *testing.T) {
+		d := &freezeDialer{}
+		var got connEnds
+		m := newH2Mux(d.dial, 0, 0)
+		m.retirePing = 200 * time.Millisecond
+		m.onEnd = got.note
+		defer m.Close()
+		a := openOrFail(t, m)
+		echo(t, a, "first")
+		d.freeze()
+		m.refresh(time.Now())
+		if end, _ := got.wait(t, 0); end != ConnEndDead {
+			t.Fatalf("a retired connection that did not answer was told as %d", end)
+		}
+		a.Close()
+	})
+}

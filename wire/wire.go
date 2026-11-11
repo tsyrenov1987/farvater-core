@@ -84,6 +84,24 @@ type Refresher interface {
 	Refresh(t time.Time)
 }
 
+// ConnEnd says how a connection shared by a wire's flows ended.
+type ConnEnd int
+
+const (
+	ConnEndOurs  ConnEnd = iota // let go by us: rotated, left idle, closed with the wire
+	ConnEndFin                  // closed by the far side
+	ConnEndReset                // broken: a reset, a transport error
+	ConnEndDead                 // silent: a PING was never answered
+)
+
+// ConnWatcher is a wire that rides its flows on shared connections and can
+// tell how each of them ended: with how many bytes carried, both ways, and
+// when it was made. WatchConns is called once, before the wire's first flow;
+// f runs on the connection's own goroutines and must not block.
+type ConnWatcher interface {
+	WatchConns(f func(end ConnEnd, bytes int64, made time.Time))
+}
+
 // PacketSession carries the UDP datagrams of one app socket over a path.
 type PacketSession interface {
 	// WritePacket sends one datagram to target. One writer at a time.

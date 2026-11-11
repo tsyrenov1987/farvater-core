@@ -74,6 +74,9 @@ func (w *vmessWire) Spec() PathSpec       { return w.spec }
 func (w *vmessWire) NeedsHandshake() bool { return w.tr.needsHandshake() }
 func (w *vmessWire) Close() error         { return w.tr.Close() }
 func (w *vmessWire) Refresh(t time.Time)  { w.tr.Refresh(t) }
+func (w *vmessWire) WatchConns(f func(end ConnEnd, bytes int64, made time.Time)) {
+	w.tr.WatchConns(f)
+}
 
 func (w *vmessWire) Dial(ctx context.Context) (Session, error) {
 	conn, err := w.tr.dial(ctx)

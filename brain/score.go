@@ -29,6 +29,13 @@ type PathState struct {
 	Receipts           int
 	Served             int // receipts whose first byte came with no block signature
 	Blocked            int // receipts with a block signature; the rest closed before any answer
+
+	// Flows that had their first byte, by the bytes that had come down when
+	// they ended (volume.go): cut by a reset, cut by a stall, ended otherwise.
+	CutReset, CutStall, Ended VolHist
+	// Connections the path's flows shared, by the bytes they had carried when
+	// they ended, and how (ConnEnd).
+	ConnOurs, ConnFin, ConnReset, ConnDead VolHist
 }
 
 // MaxPriorWeight caps prior pseudo-counts so that five fresh receipts outweigh them.
@@ -85,6 +92,7 @@ func (s *PathState) Observe(r Receipt, now, halfLifeMs int64) {
 	case r.FirstByte():
 		s.Served++
 	}
+	s.noteFlowEnd(r)
 	dv := r.DelivEvidence()
 	switch dv {
 	case 1:

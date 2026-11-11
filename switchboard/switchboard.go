@@ -197,6 +197,11 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 		}
 		info := brain.PathInfo{ID: e.ID, SNI: e.Spec.ServerSNI(), IP: resolveIP(e.Spec.Host), Rail: e.Spec.Rail(), White: e.Labels.White, Net: e.Labels.Net, NotHTTP: !e.Spec.HTTPLike()}
 		s.wires[e.ID] = w
+		if cw, ok := w.(wire.ConnWatcher); ok {
+			id := e.ID
+			// Off the connection's goroutine: it may be closing under a lock of ours.
+			cw.WatchConns(func(end wire.ConnEnd, bytes int64, made time.Time) { go s.noteConnEnd(id, end, bytes, made) })
+		}
 		s.infos[e.ID] = info
 		s.carried[e.ID] = &carried{}
 		s.order = append(s.order, e.ID)
@@ -760,6 +765,27 @@ func (s *Switchboard) tripped(path string, now int64) bool {
 	return s.b.Breaker.Tripped(path, now)
 }
 
+// noteConnEnd tells the brain how a connection that path's flows shared ended,
+// and with how many bytes carried.
+func (s *Switchboard) noteConnEnd(path string, end wire.ConnEnd, bytes int64, made time.Time) {
+	slept := sleptMs(made)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.b == nil {
+		return // a bare test switchboard
+	}
+	how := brain.ConnOurs
+	switch end {
+	case wire.ConnEndFin:
+		how = brain.ConnFin
+	case wire.ConnEndReset:
+		how = brain.ConnReset
+	case wire.ConnEndDead:
+		how = brain.ConnDead
+	}
+	s.b.NoteConnEnd(path, how, bytes, made.UnixMilli(), slept, nowMs())
+}
+
 func (s *Switchboard) observe(r brain.Receipt) {
 	s.mu.Lock()
 	r.Ctx = s.b.Ctx()
@@ -829,6 +855,48 @@ type PathStatus struct {
 	UpBytes        int64   `json:"up_bytes"`                  // carried this session, running flows and UDP included
 	DownBytes      int64   `json:"down_bytes"`
 	GoodputBps     int64   `json:"goodput_bps,omitempty"` // download rate while bytes flowed, 0 until measured
+	Vol            *Volume `json:"vol,omitempty"`         // bytes carried when flows and connections ended; absent until one has
+}
+
+// Volume says at what volume things ended on a path in this network: each list
+// counts events by the step of brain's volume ladder (under 4 KB, 12 KB,
+// 28 KB, 256 KB, 4 MB, 32 MB, 128 MB, and beyond), cut short after its last
+// step that counted anything. A filter that freezes a connection past some
+// volume shows as cuts crowding on one step.
+type Volume struct {
+	// Flows that had their first byte, by the bytes that had come down: cut by
+	// a reset, cut by a stall or a timeout, ended any other way.
+	FlowReset []int `json:"flow_reset,omitempty"`
+	FlowStall []int `json:"flow_stall,omitempty"`
+	FlowEnded []int `json:"flow_ended,omitempty"`
+	// Connections the flows shared (kilvater, gRPC, XHTTP), by the bytes they
+	// had carried both ways: let go by us, closed by the far side, broken, or
+	// gone silent (a PING never answered).
+	ConnOurs  []int `json:"conn_ours,omitempty"`
+	ConnFin   []int `json:"conn_fin,omitempty"`
+	ConnReset []int `json:"conn_reset,omitempty"`
+	ConnDead  []int `json:"conn_dead,omitempty"`
+}
+
+func volStatus(ps brain.PathState) *Volume {
+	list := func(h brain.VolHist) []int {
+		n := len(h)
+		for n > 0 && h[n-1] == 0 {
+			n--
+		}
+		if n == 0 {
+			return nil
+		}
+		return append([]int(nil), h[:n]...)
+	}
+	v := Volume{
+		FlowReset: list(ps.CutReset), FlowStall: list(ps.CutStall), FlowEnded: list(ps.Ended),
+		ConnOurs: list(ps.ConnOurs), ConnFin: list(ps.ConnFin), ConnReset: list(ps.ConnReset), ConnDead: list(ps.ConnDead),
+	}
+	if v.FlowReset == nil && v.FlowStall == nil && v.FlowEnded == nil && v.ConnOurs == nil && v.ConnFin == nil && v.ConnReset == nil && v.ConnDead == nil {
+		return nil
+	}
+	return &v
 }
 
 func tripName(sig brain.BlockSig) string {
@@ -916,6 +984,7 @@ func (s *Switchboard) Status() Status {
 			Cut16: ps.Cut16, Parked: s.b.Diag.Parked(id, now), Tripped: tripName(s.b.Breaker.TrippedSig(id, now)),
 			TrippedLeftMs: s.b.Breaker.TrippedLeftMs(id, now), Served: ps.Served, Blocked: ps.Blocked,
 			Asleep: s.b.Asleep(id), UpBytes: c.up.Load(), DownBytes: c.down.Load(), GoodputBps: int64(ps.GoodputBps),
+			Vol: volStatus(ps),
 		})
 	}
 	n := len(s.receipts)

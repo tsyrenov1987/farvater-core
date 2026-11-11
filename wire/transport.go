@@ -16,9 +16,10 @@ import (
 // Vision is the exception: it needs the uTLS connection directly and dials with
 // dialSecure.
 type outerTransport struct {
-	spec PathSpec
-	mu   sync.Mutex
-	mux  *h2Mux
+	spec  PathSpec
+	mu    sync.Mutex
+	mux   *h2Mux
+	watch func(end ConnEnd, bytes int64, made time.Time) // of the shared connection's ends (ConnWatcher)
 }
 
 func newOuterTransport(s PathSpec) *outerTransport { return &outerTransport{spec: s} }
@@ -40,8 +41,17 @@ func (t *outerTransport) h2() *h2Mux {
 			return dialSecure(ctx, s, false)
 		}, 0, 0)
 		t.mux.tr.IdleConnTimeout = h2IdleClose
+		t.mux.onEnd = t.watch
 	}
 	return t.mux
+}
+
+// WatchConns hands the shared connection's ends to f (see ConnWatcher). The
+// transports that connect per flow (tcp, ws) have none to tell of.
+func (t *outerTransport) WatchConns(f func(end ConnEnd, bytes int64, made time.Time)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.watch = f
 }
 
 // h2IdleClose: a shared connection with no streams this long is closed.

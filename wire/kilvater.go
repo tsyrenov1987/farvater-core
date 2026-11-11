@@ -93,6 +93,9 @@ func (w *kilWire) NeedsHandshake() bool { return w.mux.needsDial() }
 func (w *kilWire) Close() error        { return w.mux.Close() }
 func (w *kilWire) Refresh(t time.Time) { w.mux.refresh(t) }
 
+// WatchConns hands the ends of the wire's connections to f (see ConnWatcher).
+func (w *kilWire) WatchConns(f func(end ConnEnd, bytes int64, made time.Time)) { w.mux.onEnd = f }
+
 // authority is the requests' :authority: the link's host parameter as given,
 // else the server name, with the port when it is not 443, as a browser
 // writes it.
