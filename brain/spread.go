@@ -24,13 +24,17 @@ const spreadTrialWaitMs = 10_000
 
 // fit reports whether path p may share the leader's flows at all: it is of
 // the leader's group and kind, on this network, free of the breaker, not
-// held back after a demotion, not under a sweep's probe, not known poor.
+// held back after a demotion, not under a sweep's probe, not known poor
+// beside a leader that is not. Through a relay the whole group answers over
+// LagMs, the leader too: there a mate is judged against the leader, by
+// muchSlower and muchLaggier, or the fan would close where it is needed.
 func (b *Brain) fit(p string, now int64) bool {
 	li, i := b.info(b.leader), b.info(p)
 	if p == b.leader || i.Group != li.Group || i.NotHTTP != li.NotHTTP || b.offNet(i) {
 		return false
 	}
-	return !b.Breaker.Tripped(p, now) && !b.held(p, now) && !b.probing(p) && !b.knownPoor(p, now)
+	poor := b.knownPoor(p, now) && !b.knownPoor(b.leader, now)
+	return !b.Breaker.Tripped(p, now) && !b.held(p, now) && !b.probing(p) && !poor
 }
 
 // mates lists up to Spread-1 paths fit to share the leader's flows, best

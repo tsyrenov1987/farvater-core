@@ -200,3 +200,54 @@ func TestSpreadWithoutGroupsChangesNothing(t *testing.T) {
 		b.Observe(r)
 	}
 }
+
+// Through a relay every path of the group answers late, the leader as well:
+// 450 ms, over LagMs. A mate is judged against the leader it would share
+// with, not against LagMs, so the fan works here as it does on a near
+// network (iPhone 12.11: leader 534 ms, mates 294–306 ms took 4–12 flows to
+// the leader's 222).
+func TestSpreadWorksWhenTheWholeGroupAnswersLate(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Spread = 3
+	b := New(cfg, "t", spreadPaths(), 1)
+	late := func(p string, at int64) Receipt {
+		r := served(p, at)
+		r.AnswerMs = 450
+		return r
+	}
+	_, _, at := drive(b, 1000, 600, late)
+	byPath, spreadTo, _ := drive(b, at, 900, late)
+	l := b.Leader()
+	if len(spreadTo) != 2 {
+		t.Fatalf("leader %s shared flows with %v, want two mates: %v", l, spreadTo, byPath)
+	}
+	if byPath[l] > 400 {
+		t.Fatalf("leader %s still took %d of 900 flows: %v", l, byPath[l], byPath)
+	}
+}
+
+// Beside a leader that answers in time a path answering over LagMs is still
+// no mate, though it is not LagFactor times later: 350 ms to 200.
+func TestSpreadKeepsALatePathFromATimelyLeader(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Spread = 3
+	b := New(cfg, "t", spreadPaths(), 1)
+	ans := func(p string, at int64) Receipt {
+		r := served(p, at)
+		if p == "B" {
+			r.AnswerMs = 350
+		}
+		return r
+	}
+	_, _, at := drive(b, 1000, 600, ans)
+	if b.Leader() == "B" {
+		t.Fatalf("the late path took the lead")
+	}
+	_, spreadTo, _ := drive(b, at, 900, ans)
+	if spreadTo["B"] > 0 {
+		t.Fatalf("late B shared %d flows of a timely leader %s: %v", spreadTo["B"], b.Leader(), spreadTo)
+	}
+	if len(spreadTo) != 2 {
+		t.Fatalf("leader %s shared with %v, want its two timely mates", b.Leader(), spreadTo)
+	}
+}
