@@ -866,6 +866,15 @@ func (b *Brain) count(r Receipt, now int64) {
 			return
 		}
 		b.Diag.NoteDst(r.Dst, r.Path, false, now)
+		if !b.Diag.DstAnswered(r.Dst, now) && s.AnsweredAt > 0 && s.AnsweredAt >= now-r.DurMs-DeadDstAnswerMs {
+			// The path answered other flows around this one and this
+			// destination never answered on any path: the destination is
+			// dead, not the path (see DeadDstAnswerMs).
+			b.Dropped++
+			b.Drops.Dst++
+			b.J.Add(now, "drop_dst", "a destination that never answered, on a path that answers: not evidence against the path", r.Path)
+			return
+		}
 	} else if r.FirstByte() {
 		b.Diag.NoteDst(r.Dst, r.Path, true, now)
 	}

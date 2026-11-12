@@ -7,6 +7,7 @@ type Diagnoser struct {
 	lastWireOK   map[string]int64
 	dstFails     map[string]map[string]bool
 	dstQ         map[string]int64
+	dstOK        map[string]int64 // when a destination last answered, on any path
 	parkedUntil  map[string]int64
 	held         map[string]*heldDials // dials timed out in silence, see silent.go
 	aliveAt      int64                 // when a path last connected or answered, see silent.go
@@ -20,7 +21,7 @@ type Diagnoser struct {
 // NewDiagnoser returns a diagnoser for the given paths.
 func NewDiagnoser(paths []PathInfo) *Diagnoser {
 	return &Diagnoser{paths: paths, lastWireFail: map[string]int64{}, lastWireOK: map[string]int64{}, dstFails: map[string]map[string]bool{},
-		dstQ: map[string]int64{}, parkedUntil: map[string]int64{}, held: map[string]*heldDials{}, NetWindowMs: 10_000, DstQuarantine: 5 * 60_000, FreezeParkMs: 30_000, FreezePairMs: 5_000}
+		dstQ: map[string]int64{}, dstOK: map[string]int64{}, parkedUntil: map[string]int64{}, held: map[string]*heldDials{}, NetWindowMs: 10_000, DstQuarantine: 5 * 60_000, FreezeParkMs: 30_000, FreezePairMs: 5_000}
 }
 
 // NoteWire records whether a path's wire connected.
@@ -87,6 +88,17 @@ func (d *Diagnoser) NoteDst(dst, path string, ok bool, now int64) {
 	}
 	if ok {
 		delete(d.dstFails, dst)
+		if len(d.dstOK) >= DstOKMax {
+			for k, t := range d.dstOK {
+				if now-t > DstOKMs {
+					delete(d.dstOK, k)
+				}
+			}
+			if len(d.dstOK) >= DstOKMax {
+				clear(d.dstOK)
+			}
+		}
+		d.dstOK[dst] = now
 		return
 	}
 	m := d.dstFails[dst]
@@ -99,6 +111,28 @@ func (d *Diagnoser) NoteDst(dst, path string, ok bool, now int64) {
 		d.dstQ[dst] = now + d.DstQuarantine
 		delete(d.dstFails, dst)
 	}
+}
+
+// A flow whose wire connected and that heard nothing back is a blackhole on
+// its path only if the path is silent: a path that answered other flows within
+// DeadDstAnswerMs of this one's start carries bytes, and a destination that
+// has not answered on any path for DstOKMs is the one that is dead (a proxy
+// shut down years ago, a peer gone, a server the node cannot reach). Without
+// this, an app dialling new dead addresses once a second tripped every path in
+// turn before the two-path quarantine could see each address (Galzud, Windows
+// 1.0.4, 12.11.2026: 13784 such flows in 3.7 h, the lead moved every 15 s). A
+// path the TSPU blackholes answers no flow, so it still trips.
+// DstOKMax bounds the memory of answered destinations (the iOS tunnel has 28 MB).
+const (
+	DeadDstAnswerMs = 30_000
+	DstOKMs         = 30 * 60_000
+	DstOKMax        = 4096
+)
+
+// DstAnswered reports whether the destination answered on some path within DstOKMs.
+func (d *Diagnoser) DstAnswered(dst string, now int64) bool {
+	t, ok := d.dstOK[dst]
+	return ok && now-t <= DstOKMs
 }
 
 // DstQuarantined reports whether failures on this destination are currently not evidence.
