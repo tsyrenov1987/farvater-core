@@ -174,3 +174,29 @@ func TestSpreadEndsATrialAtTheFirstFailure(t *testing.T) {
 		t.Fatal("C left the fan for good")
 	}
 }
+
+// Spread on, as the apps ship it, but a catalogue with no #group labels (every
+// catalogue the server sends while fv_spread_on is unset): every decision is
+// the one Spread 0 makes, flow for flow, through failures as well.
+func TestSpreadWithoutGroupsChangesNothing(t *testing.T) {
+	paths := spreadPaths()
+	for i := range paths {
+		paths[i].Group = ""
+	}
+	on := DefaultConfig()
+	on.Spread = 3
+	a, b := New(DefaultConfig(), "t", paths, 1), New(on, "t", paths, 1)
+	for i := 0; i < 2000; i++ {
+		now := 1000 + int64(i)*200
+		da, db := a.Pick(now, "h", DstTLS443), b.Pick(now, "h", DstTLS443)
+		if da != db {
+			t.Fatalf("flow %d: off %+v, on %+v", i, da, db)
+		}
+		r := served(da.Primary, now+100)
+		if (i/150)%3 == 1 && da.Primary == a.Leader() {
+			r = dialTimeout(da.Primary, now+100)
+		}
+		a.Observe(r)
+		b.Observe(r)
+	}
+}

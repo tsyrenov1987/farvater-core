@@ -210,6 +210,10 @@ func config(cat *catalogue.Catalogue, listenOn, u, p, network string) switchboar
 	cfg.Hosted = hosted
 	cfg.Direct = withoutProbes(direct, append([]string{DefaultProbeURL}, cat.ProbeURLs...))
 	cfg.RuDirect = true
+	// The leader's flows shared, in turn, with up to two proven paths of its
+	// group (brain/spread.go). Only paths the catalogue labels #group= take
+	// part, so the server decides: no labels, no spread.
+	cfg.Brain.Spread = 3
 	cfg.ProbeURL = DefaultProbeURL
 	if len(cat.ProbeURLs) > 0 {
 		cfg.ProbeURL = cat.ProbeURLs[0]
