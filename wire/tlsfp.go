@@ -63,7 +63,18 @@ func mustHexDecode(s string) []byte {
 // chromeAutoSpec is the Chrome 154 ClientHello: the Chrome 133 spec with the
 // two Chrome 154 additions. It is built fresh each call, so its GREASE values
 // and extension order are chosen per connection, as Chrome's are.
-func chromeAutoSpec() (utls.ClientHelloSpec, error) {
+func chromeAutoSpec() (utls.ClientHelloSpec, error) { return chromiumSpec(true) }
+
+// edgeAutoSpec is a current Edge's ClientHello, for fp=edge. uTLS's Edge
+// profile is Edge 106 (2022). Edge 157.0.4341.57, captured 2026-11-13, sends
+// Chrome 157's ClientHello field for field (same suites, groups, key shares,
+// ML-DSA signature lead, ALPS, GREASE ECH sizes, shuffle) except that it has no
+// trust_anchors extension.
+func edgeAutoSpec() (utls.ClientHelloSpec, error) { return chromiumSpec(false) }
+
+// chromiumSpec is the Chrome 133 spec with the current Chromium signature
+// lead, plus trust_anchors when the browser sends it (Chrome does, Edge not).
+func chromiumSpec(trustAnchors bool) (utls.ClientHelloSpec, error) {
 	spec, err := utls.UTLSIdToSpec(utls.HelloChrome_133)
 	if err != nil {
 		return spec, err
@@ -79,13 +90,16 @@ func chromeAutoSpec() (utls.ClientHelloSpec, error) {
 	// Chrome keeps GREASE last (uTLS HelloChrome_155 places it the same way), and
 	// the shuffle never moves GREASE, so an extension appended after it would sit
 	// in the last slot or swap another one there.
-	ta := &utls.GenericExtension{Id: extTrustAnchors, Data: trustAnchorsBody}
-	exts := make([]utls.TLSExtension, 0, len(spec.Extensions)+1)
-	at := len(spec.Extensions)
-	if _, ok := spec.Extensions[at-1].(*utls.UtlsGREASEExtension); ok {
-		at--
+	exts := spec.Extensions
+	if trustAnchors {
+		ta := &utls.GenericExtension{Id: extTrustAnchors, Data: trustAnchorsBody}
+		exts = make([]utls.TLSExtension, 0, len(spec.Extensions)+1)
+		at := len(spec.Extensions)
+		if _, ok := spec.Extensions[at-1].(*utls.UtlsGREASEExtension); ok {
+			at--
+		}
+		exts = append(append(append(exts, spec.Extensions[:at]...), ta), spec.Extensions[at:]...)
 	}
-	exts = append(append(append(exts, spec.Extensions[:at]...), ta), spec.Extensions[at:]...)
 	// Shuffle again so trust_anchors lands in a random spot too, the way Chrome
 	// places it (the shuffle leaves GREASE, padding and PSK where they are).
 	spec.Extensions = utls.ShuffleChromeTLSExtensions(exts)
@@ -168,9 +182,21 @@ func firefoxAutoSpec() utls.ClientHelloSpec {
 
 // uClient is a uTLS client over c whose ClientHello is the browser fp names.
 // For the auto Chrome request (fp=chrome or empty) it presents a current
-// Chrome via chromeAutoSpec, for fp=firefox a current Firefox via
-// firefoxAutoSpec; any other fp uses uTLS's own profile for it.
+// Chrome via chromeAutoSpec, for fp=edge a current Edge via edgeAutoSpec, for
+// fp=firefox a current Firefox via firefoxAutoSpec; any other fp uses uTLS's
+// own profile for it.
 func uClient(c net.Conn, cfg *utls.Config, fp string) (*utls.UConn, error) {
+	if strings.EqualFold(fp, "edge") {
+		spec, err := edgeAutoSpec()
+		if err != nil {
+			return nil, err
+		}
+		u := utls.UClient(c, cfg, utls.HelloCustom)
+		if err := u.ApplyPreset(&spec); err != nil {
+			return nil, err
+		}
+		return u, nil
+	}
 	if strings.EqualFold(fp, "firefox") {
 		spec := firefoxAutoSpec()
 		u := utls.UClient(c, cfg, utls.HelloCustom)
