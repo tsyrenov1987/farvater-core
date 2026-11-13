@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,14 @@ func TestRussianNamesAndAddresses(t *testing.T) {
 		"api.ipify.org":            true,
 		"ifconfig.me":              true,
 		"checkip.amazonaws.com":    true,
+		"sun9-1.userapi.com":       true,
+		"yastatic.net":             true,
+		"cdn1.ozonusercontent.com": true,
+		"Online.TBank-Online.com":  true,
+		"st.okko.tv":               true,
+		"notozon.com":              false,
+		"userapi.com.evil.io":      false,
+		"ozon.com.example":         false,
 		"amazonaws.com":            false,
 		"rutracker.org":            false,
 		"guru":                     false,
@@ -52,6 +61,18 @@ func TestRussianNamesAndAddresses(t *testing.T) {
 		if got := isRuIP(netip.MustParseAddr(ip)); got != want {
 			t.Errorf("isRuIP(%s) = %v, want %v", ip, got, want)
 		}
+	}
+}
+
+// Names are stored lower-case, without dots at the ends and once each: the
+// matcher lower-cases the host only, and a duplicate is a sign of a bad merge.
+func TestRussianNamesAreClean(t *testing.T) {
+	seen := map[string]bool{}
+	for _, n := range ruNames {
+		if n == "" || n != strings.ToLower(n) || strings.Trim(n, ".") != n || strings.ContainsAny(n, " /*") || seen[n] {
+			t.Errorf("ruNames entry %q", n)
+		}
+		seen[n] = true
 	}
 }
 

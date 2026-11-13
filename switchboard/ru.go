@@ -30,6 +30,44 @@ var ruNames = []string{
 	// checkip.amazonaws.com, Habr 1006666).
 	"ifconfig.me", "ifconfig.co", "ipify.org", "checkip.amazonaws.com", "icanhazip.com",
 	"ipinfo.io", "ip-api.com", "ipapi.co", "ident.me", "myexternalip.com", "ipecho.net", "2ip.io",
+	// The Russian services' own names outside the zones: their CDNs, apps and
+	// payment pages (the list support handed out on 09.11 for iOS's direct list).
+	// Yandex
+	"yastatic.net", "yastat.net", "yandexcloud.net", "yandex.cloud", "yandex.st", "yandex.market",
+	"yandex.taxi", "yandexgo.com", "yandex-bank.net", "yadi.sk", "ya.cc", "naydex.net", "yndx.net",
+	"clstorage.net", "static-storage.net", "yandexadexchange.net", "yandexmetrica.com",
+	"webvisor.com", "webvisor.org", "turbopages.org", "yandexwebcache.net", "yandexwebcache.org",
+	"shedevrum.ai", "shedevrum.com",
+	// VK and Mail.ru
+	"userapi.com", "vkuser.net", "vkuseraudio.net", "vkuseraudio.com", "vkuservideo.net",
+	"vkuservideo.com", "vkuserlive.net", "vkuserlive.com", "vk-cdn.net", "cdn-vk.net",
+	"vk-portal.net", "vkcdnservice.com", "vk.me", "vk.cc", "vk.link", "mvk.com", "vkontakte.com",
+	"vkmessenger.com", "vkmessenger.app", "vkpay.com", "vkpay.app", "vkpay.io", "vk.company",
+	"vk.team", "vkgo.app", "vkclips.app", "vklive.app", "vkplay.live", "vkcs.cloud", "vk-apps.com",
+	"mycdn.me", "ok.me", "mradx.net", "myadx.net", "smailru.net", "vmailru.net", "bizmrg.com",
+	"my.games", "my.com", "mytrk.link", "staticmy.com", "youla.io", "tamtam.chat",
+	// Banks and payments
+	"tbank-online.com", "tinkoffmobile.com", "tinkoff-group.com", "t.finance", "alfa.me",
+	"alfabank.st", "vtb.com", "tochka.com", "home.bank", "koronapay.com", "sber.pro", "sberauto.com",
+	"sberbank-tele.com", "spasibo.digital", "spasibo.market", "gazprombank.investments", "giga.chat",
+	"best2pay.net", "bank131.com", "rbsgate.com", "moex.com", "renins.com",
+	// Shops, marketplaces and delivery
+	"ozon.com", "ozon.app", "ozon.tech", "ozon.travel", "ozon.express", "ozon.market",
+	"ozonusercontent.com", "wbstatic.net", "wbcontent.net", "paywb.com", "wbwh.tech", "wibes.com",
+	"avito.com", "avito.st", "avito.tech", "megamarket.tech", "flowwow.com", "flowwow-images.com",
+	"funpay.com", "lenta.com", "magnit.com", "perekrestok.com", "fix-price.com", "5post.market",
+	"chizhik.club", "ostin.com", "cdek.shopping", "dodopizza.com", "dodois.com", "dodois.io",
+	"dodostatic.net",
+	// Video and streaming
+	"ivi.tv", "ivicdn.tv", "okko.tv", "okkoapi.tv", "okko.sport", "more.tv", "premier.one", "wink.am",
+	"restream-media.net", "smotreshka.tv", "24h.tv", "rutube.sport", "kinescopecdn.net",
+	"cdnvideohub.com", "boosty.to", "donationalerts.com", "memealerts.com",
+	// Other services
+	"2gis.com", "aviasales.com", "gismeteo.com", "gismeteo.net", "gismeteo.st", "meteofor.com",
+	"megafon.com", "beeline.tv", "mts-ws.net", "bitrix24.com", "bitrix24.net", "bitrixsoft.com",
+	"bitrix.info", "kaspersky.com", "kaspersky-labs.com", "drweb.com", "otzovik.com", "taxsee.com",
+	"medsi.com", "gorzdrav.org", "emias.info", "selcdn.net", "ngenix.net", "ktalk.host",
+	"kontur.host", "express.ms",
 }
 
 // RIPE NCC delegations to RU, merged: ru4 is big-endian uint32 pairs
