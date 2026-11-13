@@ -97,6 +97,20 @@ func containsSigAlg(list []utls.SignatureScheme, v utls.SignatureScheme) bool {
 	return false
 }
 
+// Chrome (BoringSSL) shuffles its extensions but keeps a GREASE extension last,
+// and uTLS's HelloChrome_155 does the same. An order-aware DPI that reads the
+// raw ClientHello sees a non-GREASE extension in the last slot as "not Chrome",
+// so trust_anchors must take part in the shuffle without ever ending up last.
+func TestChromeAutoLastExtensionIsGREASE(t *testing.T) {
+	for i := 0; i < 300; i++ {
+		u := buildUConn(t, "chrome")
+		last := u.Extensions[len(u.Extensions)-1]
+		if _, ok := last.(*utls.UtlsGREASEExtension); !ok {
+			t.Fatalf("try %d: last extension is %T, want GREASE (Chrome keeps GREASE last)", i, last)
+		}
+	}
+}
+
 // An explicit pinned profile is left as uTLS ships it: fp=hellochrome_131 asks
 // for exactly Chrome 131, which has no trust_anchors. Only the auto request is
 // moved forward to the current Chrome.
