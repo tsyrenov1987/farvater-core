@@ -16,6 +16,17 @@ jobs:
       - name: license gate (no GPL/AGPL modules)
         run: ./tools/licensegate.sh
 
+  # The Windows side of the desktop: the IP helper against PowerShell, and the
+  # time limit on the tools Up runs (a stripped Windows build hung there).
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - run: go test ./desktop -run "Native|RunTimeout" -count=1 -v
+
   # A second, independent implementation (Python, standard library only) of the
   # Kilvater wire format must agree with the Go reference on the golden vectors
   # in kilvater/testdata/vectors.json. The Go side checks the same file in

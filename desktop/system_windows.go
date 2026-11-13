@@ -19,6 +19,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/tsyrenov1987/farvater-core/wire"
@@ -47,10 +48,6 @@ const (
 	fwDNSRule = "Farvater DNS"
 
 	// defaultRouteCmd prints "<interface index> <next hop>" of the default route.
-	// machineSuffixesCmd prints the DNS suffixes set on the machine itself: its
-	// search list and the domain it has joined.
-	machineSuffixesCmd = "(Get-DnsClientGlobalSetting).SuffixSearchList; $c = Get-CimInstance Win32_ComputerSystem; if ($c.PartOfDomain) { $c.Domain }"
-
 	defaultRouteCmd = "$r = Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1; [string]$r.InterfaceIndex + ' ' + $r.NextHop"
 )
 
@@ -109,23 +106,22 @@ func Up(o Options) (*System, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	out, err := run("powershell", "-NoProfile", "-Command", defaultRouteCmd)
-	if err != nil {
-		return nil, fmt.Errorf("default route: %v %s", err, out)
-	}
-	idx, hop, err := parseDefaultRoute(out)
+	idx, hop, err := defaultRoute()
 	if err != nil {
 		return nil, fmt.Errorf("default route: %v", err)
 	}
+	logf("up: default route via interface %d, next hop %q", idx, hop)
 	pinned.Store(int32(idx))
 	upstream := interfaceDNS(idx)
 	pinResolver(upstream)
 	loadMachineSuffixes(logf)
+	logf("up: network dns %v; creating the Wintun adapter", upstream)
 
 	dev, err := tun.CreateTUN(tunName, MTU)
 	if err != nil {
 		return nil, fmt.Errorf("wintun: %v", err)
 	}
+	logf("up: Wintun adapter ready; routing")
 	s := &System{dev: dev, logf: logf, tunPackets: newTunPackets(dev)}
 	fail := func(err error) (*System, error) { s.Down(); return nil, err }
 	steps := [][]string{
@@ -157,17 +153,38 @@ func Up(o Options) (*System, error) {
 	return s, nil
 }
 
+// loadMachineSuffixes reads the machine's DNS suffixes from the registry,
+// where Get-DnsClientGlobalSetting and the domain join keep them: no
+// PowerShell or WMI, which stripped Windows builds break.
 func loadMachineSuffixes(logf func(string, ...any)) {
-	out, err := run("powershell", "-NoProfile", "-Command", machineSuffixesCmd)
-	if err != nil {
-		logf("dns suffixes: %v %s", err, out)
-		return
-	}
-	setNetworkSuffixes(strings.Fields(out))
+	setNetworkSuffixes(registrySuffixes())
 }
 
-// interfaceDNS is what the interface resolves names with.
+func registrySuffixes() []string {
+	var out []string
+	read := func(path string, names ...string) {
+		k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
+		if err != nil {
+			return
+		}
+		defer k.Close()
+		for _, n := range names {
+			if v, _, err := k.GetStringValue(n); err == nil {
+				out = append(out, strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == ';' })...)
+			}
+		}
+	}
+	read(`SOFTWARE\Policies\Microsoft\Windows NT\DNSClient`, "SearchList")
+	read(`SYSTEM\CurrentControlSet\Services\Tcpip\Parameters`, "SearchList", "Domain")
+	return out
+}
+
+// interfaceDNS is what the interface resolves names with: the adapter's own
+// list (GetAdaptersAddresses), PowerShell only when that has nothing.
 func interfaceDNS(idx int) []netip.Addr {
+	if up := adapterDNS(idx); len(up) > 0 {
+		return up
+	}
 	out, _ := run("powershell", "-NoProfile", "-Command",
 		fmt.Sprintf("(Get-DnsClientServerAddress -AddressFamily IPv4 -InterfaceIndex %d).ServerAddresses", idx))
 	var upstream []netip.Addr
@@ -177,6 +194,88 @@ func interfaceDNS(idx int) []netip.Addr {
 		}
 	}
 	return upstream
+}
+
+func adapterDNS(idx int) []netip.Addr {
+	size := uint32(16 << 10)
+	for range 3 {
+		buf := make([]byte, size)
+		first := (*windows.IpAdapterAddresses)(unsafe.Pointer(&buf[0]))
+		err := windows.GetAdaptersAddresses(windows.AF_INET, windows.GAA_FLAG_SKIP_ANYCAST|windows.GAA_FLAG_SKIP_MULTICAST, 0, first, &size)
+		if err == windows.ERROR_BUFFER_OVERFLOW {
+			continue
+		}
+		if err != nil {
+			return nil
+		}
+		var up []netip.Addr
+		for a := first; a != nil; a = a.Next {
+			if int(a.IfIndex) != idx {
+				continue
+			}
+			for d := a.FirstDnsServerAddress; d != nil; d = d.Next {
+				if ip, ok := netip.AddrFromSlice(d.Address.IP()); ok && ip.Unmap().Is4() {
+					up = append(up, ip.Unmap())
+				}
+			}
+		}
+		return up
+	}
+	return nil
+}
+
+// defaultRoute is the IPv4 default route Windows uses: the lowest route metric
+// plus interface metric (what Get-NetRoute sorted by), read from the IP
+// helper. PowerShell is the fallback only, under run's time limit.
+func defaultRoute() (int, string, error) {
+	if idx, hop, err := nativeDefaultRoute(); err == nil {
+		return idx, hop, nil
+	}
+	out, err := run("powershell", "-NoProfile", "-Command", defaultRouteCmd)
+	if err != nil {
+		return 0, "", fmt.Errorf("%v %s", err, out)
+	}
+	return parseDefaultRoute(out)
+}
+
+func nativeDefaultRoute() (int, string, error) {
+	var t *windows.MibIpForwardTable2
+	if err := windows.GetIpForwardTable2(windows.AF_INET, &t); err != nil {
+		return 0, "", err
+	}
+	defer windows.FreeMibTable(unsafe.Pointer(t))
+	type cand struct {
+		idx       int
+		hop       string
+		metric    uint64
+		connected bool
+	}
+	var cs []cand
+	for _, r := range t.Rows() {
+		if r.DestinationPrefix.PrefixLength != 0 || r.Loopback != 0 {
+			continue
+		}
+		row := windows.MibIpInterfaceRow{Family: windows.AF_INET, InterfaceLuid: r.InterfaceLuid, InterfaceIndex: r.InterfaceIndex}
+		ifMetric, connected := uint64(0), true
+		if windows.GetIpInterfaceEntry(&row) == nil {
+			ifMetric, connected = uint64(row.Metric), row.Connected != 0
+		}
+		b := *(*[4]byte)(unsafe.Pointer(&r.NextHop.Data[0]))
+		cs = append(cs, cand{int(r.InterfaceIndex), netip.AddrFrom4(b).String(), uint64(r.Metric) + ifMetric, connected})
+	}
+	slices.SortStableFunc(cs, func(a, b cand) int {
+		if a.connected != b.connected {
+			if a.connected {
+				return -1
+			}
+			return 1
+		}
+		return int(a.metric) - int(b.metric)
+	})
+	if len(cs) == 0 {
+		return 0, "", errors.New("no IPv4 default route")
+	}
+	return cs[0].idx, cs[0].hop, nil
 }
 
 // blockOtherDNS blocks DNS to anything but the tunnel's server and the
@@ -228,11 +327,7 @@ func (s *System) Follow(ctx context.Context, changed func(network string)) {
 		if err != nil || now == "" || now == last {
 			continue
 		}
-		out, err := run("powershell", "-NoProfile", "-Command", defaultRouteCmd)
-		if err != nil {
-			continue
-		}
-		idx, hop, err := parseDefaultRoute(out)
+		idx, hop, err := defaultRoute()
 		if err != nil {
 			continue
 		}

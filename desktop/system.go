@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"os/exec"
@@ -72,7 +73,19 @@ func pinResolver(servers []netip.Addr) {
 	}}
 }
 
+// runTimeout bounds each tool the machine is set up with. A tool that never
+// returns (PowerShell waiting on a broken WMI, as on stripped Windows builds)
+// would otherwise hold the connection on "proving" forever.
+var runTimeout = 30 * time.Second
+
 func run(name string, args ...string) (string, error) {
-	out, err := exec.Command(toolPath(name), args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, toolPath(name), args...)
+	cmd.WaitDelay = 2 * time.Second // a grandchild holding the pipes must not outlive the kill
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		err = fmt.Errorf("%s: no answer in %s", name, runTimeout)
+	}
 	return strings.TrimSpace(string(out)), err
 }
