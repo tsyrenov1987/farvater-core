@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"testing"
 	"time"
 
@@ -306,4 +307,85 @@ func TestFirefoxAutoTLSHandshake(t *testing.T) {
 		c.Close()
 		s.Close()
 	}
+}
+
+// fp=edge presents Edge 157.0.4341.57 as captured on 2026-11-13: Chrome 157's
+// ClientHello without trust_anchors. uTLS's Edge profile is Edge 106 (2022):
+// no post-quantum key share, no GREASE ECH, no ALPS.
+func TestEdgeAutoMatchesEdge157(t *testing.T) {
+	g0 := func(v []uint16) []uint16 {
+		r := make([]uint16, len(v))
+		for i, x := range v {
+			if x&0x0f0f != 0x0a0a || x>>8 != x&0xff {
+				r[i] = x
+			}
+		}
+		return r
+	}
+	eq := func(name string, got, want any) {
+		t.Helper()
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s = %v, want %v", name, got, want)
+		}
+	}
+	for i := 0; i < 50; i++ {
+		u := buildUConn(t, "edge")
+		h := parseHello(t, u.HandshakeState.Hello.Raw)
+		eq("ciphers", g0(h.ciphers), []uint16{0, 0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f, 0xc02c, 0xc030, 0xcca9, 0xcca8, 0xc013, 0xc014, 0x9c, 0x9d, 0x2f, 0x35})
+		eq("groups", g0(h.groups), []uint16{0, 0x11ec, 0x1d, 0x17, 0x18})
+		eq("key share lengths", h.keyShareLens, []int{1, 1216, 32})
+		eq("signature_algorithms", g0(h.sigalgs), []uint16{0, 0x904, 0x905, 0x906, 0x403, 0x804, 0x401, 0x503, 0x805, 0x501, 0x806, 0x601})
+		eq("compress_certificate", h.certComp, []uint16{2})
+		var mid []uint16
+		for _, e := range h.exts {
+			if e&0x0f0f != 0x0a0a || e>>8 != e&0xff {
+				mid = append(mid, e)
+			}
+		}
+		sort.Slice(mid, func(a, b int) bool { return mid[a] < mid[b] })
+		eq("extension set", mid, []uint16{0, 5, 10, 11, 13, 16, 18, 23, 27, 35, 43, 45, 51, 17613, 0xfe0d, 65281})
+		first, last := h.exts[0], h.exts[len(h.exts)-1]
+		if first&0x0f0f != 0x0a0a || last&0x0f0f != 0x0a0a {
+			t.Errorf("extensions %v: Edge has GREASE first and last", h.exts)
+		}
+		if t.Failed() {
+			return
+		}
+	}
+}
+
+// The Edge ClientHello completes a TLS 1.3 handshake.
+func TestEdgeAutoTLSHandshake(t *testing.T) {
+	cert := selfSignedCert(t, "example.test")
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"h2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		c.(*tls.Conn).Handshake()
+		io.Copy(io.Discard, c)
+	}()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := uClient(c, &utls.Config{ServerName: "example.test", InsecureSkipVerify: true}, "edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := u.HandshakeContext(ctx); err != nil {
+		t.Fatalf("client handshake: %v", err)
+	}
+	if st := u.ConnectionState(); st.Version != tls.VersionTLS13 || st.NegotiatedProtocol != "h2" {
+		t.Errorf("version %#x ALPN %q", st.Version, st.NegotiatedProtocol)
+	}
+	u.Close()
 }
