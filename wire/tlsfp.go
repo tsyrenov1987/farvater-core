@@ -3,8 +3,10 @@ package wire
 import (
 	"encoding/hex"
 	"net"
+	"strings"
 
 	utls "github.com/refraction-networking/utls"
+	"github.com/refraction-networking/utls/dicttls"
 )
 
 // The newest Chrome profile uTLS ships is Chrome 133. A current Chrome (154 at
@@ -90,10 +92,93 @@ func chromeAutoSpec() (utls.ClientHelloSpec, error) {
 	return spec, nil
 }
 
+// firefoxAutoSpec is the ClientHello of a current Firefox, for fp=firefox.
+// uTLS's newest Firefox profile (148) is not what Firefox sends today, in ways a
+// passive fingerprint reads: it has no session_ticket or psk_key_exchange_modes,
+// offers two CBC suites and two FFDHE groups Firefox dropped, and its GREASE
+// ECH is a byte short. This is Firefox 160.0 as captured 2026-11-13 (fresh
+// profile, first connection). Firefox keeps a fixed extension order (no
+// shuffle) and, like NSS, reuses its X25519 key inside the X25519MLKEM768 share.
+func firefoxAutoSpec() utls.ClientHelloSpec {
+	return utls.ClientHelloSpec{
+		TLSVersMin: utls.VersionTLS12,
+		TLSVersMax: utls.VersionTLS13,
+		CipherSuites: []uint16{
+			utls.TLS_AES_128_GCM_SHA256,
+			utls.TLS_CHACHA20_POLY1305_SHA256,
+			utls.TLS_AES_256_GCM_SHA384,
+			utls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			utls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			utls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+			utls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			utls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			utls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			utls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+			utls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			utls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+			utls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			utls.TLS_RSA_WITH_AES_128_CBC_SHA,
+			utls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		},
+		CompressionMethods: []uint8{0},
+		Extensions: []utls.TLSExtension{
+			&utls.SNIExtension{},
+			&utls.ExtendedMasterSecretExtension{},
+			&utls.RenegotiationInfoExtension{Renegotiation: utls.RenegotiateOnceAsClient},
+			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{
+				utls.X25519MLKEM768, utls.X25519, utls.CurveP256, utls.CurveP384, utls.CurveP521,
+			}},
+			&utls.SupportedPointsExtension{SupportedPoints: []uint8{0}},
+			&utls.SessionTicketExtension{},
+			&utls.ALPNExtension{AlpnProtocols: []string{"h2", "http/1.1"}},
+			&utls.StatusRequestExtension{},
+			&utls.FakeDelegatedCredentialsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
+				utls.ECDSAWithP256AndSHA256, utls.ECDSAWithP384AndSHA384, utls.ECDSAWithP521AndSHA512, utls.ECDSAWithSHA1,
+			}},
+			&utls.SCTExtension{},
+			&utls.KeyShareExtension{KeyShares: append(
+				utls.ReuseHybridAndClassicalKeyShares(
+					utls.KeyShare{Group: utls.X25519MLKEM768},
+					utls.KeyShare{Group: utls.X25519},
+				),
+				utls.KeyShare{Group: utls.CurveP256},
+			)},
+			&utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}},
+			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
+				utls.ECDSAWithP256AndSHA256, utls.ECDSAWithP384AndSHA384, utls.ECDSAWithP521AndSHA512,
+				utls.PSSWithSHA256, utls.PSSWithSHA384, utls.PSSWithSHA512,
+				utls.PKCS1WithSHA256, utls.PKCS1WithSHA384, utls.PKCS1WithSHA512,
+				utls.ECDSAWithSHA1, utls.PKCS1WithSHA1,
+			}},
+			&utls.PSKKeyExchangeModesExtension{Modes: []uint8{utls.PskModeDHE}},
+			&utls.FakeRecordSizeLimitExtension{Limit: 0x4001},
+			&utls.UtlsCompressCertExtension{Algorithms: []utls.CertCompressionAlgo{
+				utls.CertCompressionZlib, utls.CertCompressionBrotli, utls.CertCompressionZstd,
+			}},
+			&utls.GREASEEncryptedClientHelloExtension{
+				CandidateCipherSuites: []utls.HPKESymmetricCipherSuite{
+					{KdfId: dicttls.HKDF_SHA256, AeadId: dicttls.AEAD_AES_128_GCM},
+					{KdfId: dicttls.HKDF_SHA256, AeadId: dicttls.AEAD_CHACHA20_POLY1305},
+				},
+				CandidatePayloadLens: []uint16{224}, // +16 tag: the 282-byte extension Firefox 160 sends
+			},
+		},
+	}
+}
+
 // uClient is a uTLS client over c whose ClientHello is the browser fp names.
 // For the auto Chrome request (fp=chrome or empty) it presents a current
-// Chrome via chromeAutoSpec; any other fp uses uTLS's own profile for it.
+// Chrome via chromeAutoSpec, for fp=firefox a current Firefox via
+// firefoxAutoSpec; any other fp uses uTLS's own profile for it.
 func uClient(c net.Conn, cfg *utls.Config, fp string) (*utls.UConn, error) {
+	if strings.EqualFold(fp, "firefox") {
+		spec := firefoxAutoSpec()
+		u := utls.UClient(c, cfg, utls.HelloCustom)
+		if err := u.ApplyPreset(&spec); err != nil {
+			return nil, err
+		}
+		return u, nil
+	}
 	if !isChromeAuto(fp) {
 		return utls.UClient(c, cfg, clientHello(fp)), nil
 	}
