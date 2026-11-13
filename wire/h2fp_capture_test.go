@@ -276,6 +276,13 @@ func selfSignedCert(t testing.TB, name string) tls.Certificate {
 func captureH2Once(t testing.TB, ln net.Listener, srv *h2fpServer) h2fpCapture {
 	t.Helper()
 	cert := selfSignedCert(t, h2fpHost)
+	if cf, kf := os.Getenv("KV_H2FP_CERT"), os.Getenv("KV_H2FP_KEY"); cf != "" {
+		c, err := tls.LoadX509KeyPair(cf, kf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cert = c
+	}
 	for {
 		raw, err := ln.Accept()
 		if err != nil {
@@ -350,6 +357,9 @@ func writeCapture(t testing.TB, path string, c h2fpCapture) {
 // 127.0.0.1 and the self-signed certificate allowed (Chrome:
 // --host-resolver-rules="MAP h2fp.test 127.0.0.1" --ignore-certificate-errors).
 // KV_H2FP_PORT fixes the port; KV_H2FP_CLIENT names the browser in the file.
+// A browser with no switch to skip the check (Firefox) gets a certificate
+// from a CA it trusts instead: KV_H2FP_CERT and KV_H2FP_KEY name the PEM
+// files, and the CA goes in through a policies.json with Certificates.Install.
 func TestCaptureBrowserH2(t *testing.T) {
 	out := os.Getenv("KV_H2FP_CAPTURE")
 	if out == "" {

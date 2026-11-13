@@ -3,6 +3,7 @@ package wire
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
@@ -320,5 +321,42 @@ func TestPageAssets(t *testing.T) {
 	}
 	if got := pageAssets(page, 1); len(got) != 1 {
 		t.Fatalf("limit 1 gave %d", len(got))
+	}
+}
+
+// Edge's HTTP/2 is Chrome's: the recorded Edge 157 opening matches the Chrome
+// 154 one in every frame's type, stream, settings, window, priority, end and
+// header order, which is why h2ProfileFor gives fp=edge chromeH2. Firefox's
+// does not, and fp=firefox stays unshaped (see the note on chromeH2).
+func TestEdgeH2IsChromes(t *testing.T) {
+	shape := func(c h2fpCapture) []string {
+		var out []string
+		for _, f := range c.Frames {
+			var names []string
+			for _, h := range f.Headers {
+				names = append(names, h[0])
+			}
+			out = append(out, fmt.Sprintf("%s %d %v %d %+v %v %v", f.Type, f.Stream, f.Settings, f.Increment, f.Priority, f.EndStream, names))
+		}
+		return out
+	}
+	chrome := shape(loadH2FP(t, "testdata/h2fp/chrome-154.json"))
+	edge := shape(loadH2FP(t, "testdata/h2fp/edge-157.json"))
+	if len(edge) != len(chrome) {
+		t.Fatalf("edge %d frames, chrome %d", len(edge), len(chrome))
+	}
+	for i := range chrome {
+		if edge[i] != chrome[i] {
+			t.Errorf("frame %d:\n edge   %s\n chrome %s", i, edge[i], chrome[i])
+		}
+	}
+	firefox := shape(loadH2FP(t, "testdata/h2fp/firefox-160.json"))
+	if firefox[0] == chrome[0] {
+		t.Errorf("firefox SETTINGS match chrome's: %s", firefox[0])
+	}
+	for fp, want := range map[string]*h2Profile{"": chromeH2, "chrome": chromeH2, "edge": chromeH2, "Edge": chromeH2, "firefox": nil, "safari": nil} {
+		if got := h2ProfileFor(fp); got != want {
+			t.Errorf("h2ProfileFor(%q) = %p, want %p", fp, got, want)
+		}
 	}
 }

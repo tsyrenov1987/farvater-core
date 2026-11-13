@@ -26,7 +26,15 @@ import (
 // only reorders and never claims a value the Transport does not use.
 //
 // chromeH2 was recorded from Chrome 154 into testdata/h2fp/chrome-154.json;
-// TestKilvaterH2MatchesChrome holds the client to that file.
+// TestKilvaterH2MatchesChrome holds the client to that file. Edge 157
+// (testdata/h2fp/edge-157.json) opens HTTP/2 exactly as Chrome does, frame
+// for frame, so fp=edge gets chromeH2 too (TestEdgeH2IsChromes).
+//
+// Firefox 160 (testdata/h2fp/firefox-160.json) is recorded but has no profile:
+// its first stream is 3, every request is followed by a WINDOW_UPDATE on its
+// stream, and its priorities are non-exclusive weights by urgency. The shaper
+// would have to renumber streams both ways and split the stream window to
+// say that, so fp=firefox keeps Go's HTTP/2.
 
 type h2Profile struct {
 	headerTable   uint32 // SETTINGS_HEADER_TABLE_SIZE
@@ -63,7 +71,7 @@ var chromeH2 = &h2Profile{
 // or nil to leave Go's HTTP/2 as it is: only a browser we have recorded gets
 // one, so the TLS and HTTP/2 layers never name different browsers.
 func h2ProfileFor(fp string) *h2Profile {
-	if isChromeAuto(fp) {
+	if isChromeAuto(fp) || strings.EqualFold(fp, "edge") {
 		return chromeH2
 	}
 	return nil

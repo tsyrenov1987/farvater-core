@@ -1,0 +1,823 @@
+{
+  "client": "Firefox 160.0 (macOS arm64, headless, fresh profile)",
+  "captured": "2026-11-13",
+  "records": [
+    {
+      "ms": 0.3,
+      "type": 22,
+      "len": 1882
+    },
+    {
+      "ms": 3.2,
+      "type": 20,
+      "len": 1
+    },
+    {
+      "ms": 3.2,
+      "type": 23,
+      "len": 53
+    },
+    {
+      "ms": 3.7,
+      "type": 23,
+      "len": 87
+    },
+    {
+      "ms": 3.9,
+      "type": 23,
+      "len": 26
+    },
+    {
+      "ms": 70.7,
+      "type": 23,
+      "len": 324
+    },
+    {
+      "ms": 147.8,
+      "type": 23,
+      "len": 135
+    },
+    {
+      "ms": 148,
+      "type": 23,
+      "len": 84
+    },
+    {
+      "ms": 150.1,
+      "type": 23,
+      "len": 150
+    },
+    {
+      "ms": 158.6,
+      "type": 23,
+      "len": 141
+    },
+    {
+      "ms": 158.6,
+      "type": 23,
+      "len": 326
+    },
+    {
+      "ms": 169.6,
+      "type": 23,
+      "len": 83
+    },
+    {
+      "ms": 170.2,
+      "type": 23,
+      "len": 102
+    },
+    {
+      "ms": 170.2,
+      "type": 23,
+      "len": 49
+    },
+    {
+      "ms": 187.9,
+      "type": 23,
+      "len": 75
+    }
+  ],
+  "frames": [
+    {
+      "ms": 3.8,
+      "type": "SETTINGS",
+      "len": 24,
+      "settings": [
+        {
+          "id": 1,
+          "val": 65536
+        },
+        {
+          "id": 2,
+          "val": 0
+        },
+        {
+          "id": 4,
+          "val": 131072
+        },
+        {
+          "id": 5,
+          "val": 16384
+        }
+      ]
+    },
+    {
+      "ms": 3.8,
+      "type": "WINDOW_UPDATE",
+      "len": 4,
+      "increment": 12517377
+    },
+    {
+      "ms": 3.9,
+      "type": "SETTINGS",
+      "len": 0,
+      "ack": true
+    },
+    {
+      "ms": 70.9,
+      "type": "HEADERS",
+      "stream": 3,
+      "len": 285,
+      "end_stream": true,
+      "priority": {
+        "exclusive": false,
+        "depends_on": 0,
+        "weight": 42
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":path",
+          "/"
+        ],
+        [
+          ":authority",
+          "h2fp.test:9447"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0"
+        ],
+        [
+          "accept",
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "upgrade-insecure-requests",
+          "1"
+        ],
+        [
+          "sec-fetch-dest",
+          "document"
+        ],
+        [
+          "sec-fetch-mode",
+          "navigate"
+        ],
+        [
+          "sec-fetch-site",
+          "none"
+        ],
+        [
+          "sec-fetch-user",
+          "?1"
+        ],
+        [
+          "priority",
+          "u=0, i"
+        ],
+        [
+          "te",
+          "trailers"
+        ]
+      ]
+    },
+    {
+      "ms": 71.1,
+      "type": "WINDOW_UPDATE",
+      "stream": 3,
+      "len": 4,
+      "increment": 12451840
+    },
+    {
+      "ms": 147.9,
+      "type": "HEADERS",
+      "stream": 5,
+      "len": 96,
+      "end_stream": true,
+      "priority": {
+        "exclusive": false,
+        "depends_on": 0,
+        "weight": 22
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":path",
+          "/s.css"
+        ],
+        [
+          ":authority",
+          "h2fp.test:9447"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0"
+        ],
+        [
+          "accept",
+          "text/css,*/*;q=0.1"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:9447/"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "sec-fetch-dest",
+          "style"
+        ],
+        [
+          "sec-fetch-mode",
+          "no-cors"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "priority",
+          "u=2"
+        ],
+        [
+          "te",
+          "trailers"
+        ]
+      ]
+    },
+    {
+      "ms": 148,
+      "type": "WINDOW_UPDATE",
+      "stream": 5,
+      "len": 4,
+      "increment": 12451840
+    },
+    {
+      "ms": 148,
+      "type": "HEADERS",
+      "stream": 7,
+      "len": 45,
+      "end_stream": true,
+      "priority": {
+        "exclusive": false,
+        "depends_on": 0,
+        "weight": 22
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":path",
+          "/a.js"
+        ],
+        [
+          ":authority",
+          "h2fp.test:9447"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:9447/"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "sec-fetch-dest",
+          "script"
+        ],
+        [
+          "sec-fetch-mode",
+          "no-cors"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "priority",
+          "u=2"
+        ],
+        [
+          "te",
+          "trailers"
+        ]
+      ]
+    },
+    {
+      "ms": 148,
+      "type": "WINDOW_UPDATE",
+      "stream": 7,
+      "len": 4,
+      "increment": 12451840
+    },
+    {
+      "ms": 150.1,
+      "type": "HEADERS",
+      "stream": 9,
+      "len": 111,
+      "end_stream": true,
+      "priority": {
+        "exclusive": false,
+        "depends_on": 0,
+        "weight": 12
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":path",
+          "/i.png"
+        ],
+        [
+          ":authority",
+          "h2fp.test:9447"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0"
+        ],
+        [
+          "accept",
+          "image/avif,image/jxl,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:9447/"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "sec-fetch-dest",
+          "image"
+        ],
+        [
+          "sec-fetch-mode",
+          "no-cors"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "priority",
+          "u=5, i"
+        ],
+        [
+          "te",
+          "trailers"
+        ]
+      ]
+    },
+    {
+      "ms": 150.1,
+      "type": "WINDOW_UPDATE",
+      "stream": 9,
+      "len": 4,
+      "increment": 12451840
+    },
+    {
+      "ms": 158.6,
+      "type": "HEADERS",
+      "stream": 11,
+      "len": 102,
+      "priority": {
+        "exclusive": false,
+        "depends_on": 0,
+        "weight": 22
+      },
+      "headers": [
+        [
+          ":method",
+          "POST"
+        ],
+        [
+          ":path",
+          "/connect"
+        ],
+        [
+          ":authority",
+          "h2fp.test:9447"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:9447/"
+        ],
+        [
+          "content-length",
+          "300"
+        ],
+        [
+          "origin",
+          "https://h2fp.test:9447"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "sec-fetch-dest",
+          "empty"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "priority",
+          "u=4"
+        ],
+        [
+          "pragma",
+          "no-cache"
+        ],
+        [
+          "cache-control",
+          "no-cache"
+        ],
+        [
+          "te",
+          "trailers"
+        ]
+      ]
+    },
+    {
+      "ms": 158.7,
+      "type": "WINDOW_UPDATE",
+      "stream": 11,
+      "len": 4,
+      "increment": 12451840
+    },
+    {
+      "ms": 158.7,
+      "type": "DATA",
+      "stream": 11,
+      "len": 300,
+      "end_stream": true
+    },
+    {
+      "ms": 169.7,
+      "type": "HEADERS",
+      "stream": 13,
+      "len": 44,
+      "end_stream": true,
+      "priority": {
+        "exclusive": false,
+        "depends_on": 0,
+        "weight": 22
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":path",
+          "/favicon.ico"
+        ],
+        [
+          ":authority",
+          "h2fp.test:9447"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0"
+        ],
+        [
+          "accept",
+          "image/avif,image/jxl,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:9447/"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "sec-fetch-dest",
+          "image"
+        ],
+        [
+          "sec-fetch-mode",
+          "no-cors"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "priority",
+          "u=6"
+        ],
+        [
+          "te",
+          "trailers"
+        ]
+      ]
+    },
+    {
+      "ms": 169.8,
+      "type": "WINDOW_UPDATE",
+      "stream": 13,
+      "len": 4,
+      "increment": 12451840
+    },
+    {
+      "ms": 170.2,
+      "type": "HEADERS",
+      "stream": 15,
+      "len": 63,
+      "priority": {
+        "exclusive": false,
+        "depends_on": 0,
+        "weight": 22
+      },
+      "headers": [
+        [
+          ":method",
+          "POST"
+        ],
+        [
+          ":path",
+          "/stream"
+        ],
+        [
+          ":authority",
+          "h2fp.test:9447"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:9447/"
+        ],
+        [
+          "content-type",
+          "text/plain;charset=UTF-8"
+        ],
+        [
+          "content-length",
+          "23"
+        ],
+        [
+          "origin",
+          "https://h2fp.test:9447"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "sec-fetch-dest",
+          "empty"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "priority",
+          "u=4"
+        ],
+        [
+          "pragma",
+          "no-cache"
+        ],
+        [
+          "cache-control",
+          "no-cache"
+        ],
+        [
+          "te",
+          "trailers"
+        ]
+      ]
+    },
+    {
+      "ms": 170.2,
+      "type": "WINDOW_UPDATE",
+      "stream": 15,
+      "len": 4,
+      "increment": 12451840
+    },
+    {
+      "ms": 170.2,
+      "type": "DATA",
+      "stream": 15,
+      "len": 23,
+      "end_stream": true
+    },
+    {
+      "ms": 187.9,
+      "type": "HEADERS",
+      "stream": 17,
+      "len": 36,
+      "end_stream": true,
+      "priority": {
+        "exclusive": false,
+        "depends_on": 0,
+        "weight": 22
+      },
+      "headers": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":path",
+          "/done"
+        ],
+        [
+          ":authority",
+          "h2fp.test:9447"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "accept-language",
+          "en-US,en;q=0.9"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "referer",
+          "https://h2fp.test:9447/"
+        ],
+        [
+          "cookie",
+          "_sid=h2fp"
+        ],
+        [
+          "sec-fetch-dest",
+          "empty"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "priority",
+          "u=4"
+        ],
+        [
+          "pragma",
+          "no-cache"
+        ],
+        [
+          "cache-control",
+          "no-cache"
+        ],
+        [
+          "te",
+          "trailers"
+        ]
+      ]
+    },
+    {
+      "ms": 188,
+      "type": "WINDOW_UPDATE",
+      "stream": 17,
+      "len": 4,
+      "increment": 12451840
+    }
+  ],
+  "client_hello": "0100075603039396dcddf08006109b01c40899166e3da98f3f1c3e4569dbb8252d91965b567520ed835f3c2cacb2c25d5e222ac3d947842dbcfb17559a03de96bbe8790f6ac035001e130113031302c02bc02fcca9cca8c02cc030c013c014009c009d002f0035010006ef0000000e000c000009683266702e7465737400170000ff01000100000a000c000a11ec001d001700180019000b00020100002300000010000e000c02683208687474702f312e310005000501000000000022000a00080403050306030203001200000033052f052d11ec04c0d882419b68bebdc11dae58c6277b388992b7b0805f25fc41b3f77fb78336e9b0207f33b0d87b247bc21a0fd7661ebaaed504c41f2c0515659e02d51797ea934ce288f3a50804da87efca2773f985c4794b86253cd4aacc288ca022d58307173fad84badad271800a71f71347bdeb24bab0838b5cceca709f71f459d459596107c1c687b42cf7b23fd3a20903a25142af16604501e92954f54ad1c71c5037cd5024692735b96ab1c417105015bca07d39191c3300a450c5eb604b8ea6aefdf98a518bc1acc2751832266ce194766310c1394659f1acb00836c2470d9d882ad0874444040e7743916a92c077d01a781108b3bbbce1e6459f3b5f87fc783112570ec12a9c7719a722799816be9cfa5d1e24c407109231a3602fac22b3338f91226ce72b6094f8bfa37a28f80023402abde3151dbdba5a19da98cb2789d9e6064a800f1fe769feb6590c9b0bcb41bbc7cace15870952db4e15a420c20bcf088b4b9cc9434ceb5ef390c017f7b4bdc3058f03c0454ac9d685cd567349e11009b256490df8b6b20991c7ec928506a2f7d57d5709c720198f2af43327138a8eab5536053bd5678facb90ecf88a3726420f99cae8813730a01c60ec02e5e21545eb1c315d44cd5e8c88eebc1d6e0438d833ce9c0110a57176b37cc897044cd74bb70b11ca6d6cf6699a7816bca49a5c540029d2537764c51c78ab71acdc3863acbbe2811950222be6be367e34b8d4f6acab5c88ac68a302fc6261af45c0f1782239b2fa168c8f0a94695e95683e1747a10b9fbc2c845619c14c7b82c4a2870e1493e045469c566bff73e26a3443b9b7860f890a1839559f9af8e59734078a26803a66fe583542930ca172d4c69b90ab924f09402ab2417c84a766beb78aad9c243455a0ef2ac9ddb04da438b3b22225850194b2a0a90c0b0c611ce4d77166ec867ede73f9edb7bf2c95d4c26beb68a0752392d9160706dd2abaa470aaae54cc76598e8510551bba43c8162b01a6d10d7cda7983f9bec43a8c904cdf4688dc7cf3af512d99a65871297e513c9fc3a166e8c4566775b3404736cf85591144a33314e74521aa1f02064fc7559e135417984f1aaa5f0087c699989c2eab25cfaa82e2cb3b6e1468b5793b99406ccbc305a169371b829fde922703214c64c253eb100c2a108b64ba784868950cb8c5f0bc89ef15fd1dc03ea88aa697bc946940cb6560f10bac749f70d89824095b08c5945b41aa89ee85a9fddb60d27989e6b63a49b2cc499eccb0e57c7a7c80b3f54089b498add9965d6f71639a9071d7706ad704f067c1605478bb030976c2c78ed7153c89931981b86cfc84400416abc55150bb5024fec28bec878f547661ac6cf3a44c190501cb1f3187dd238d5b6c29bbc2e04c6af8e43b9db820e50117b01f08218d2682cc36eb1989a23bb721880850e094abe771f6fe9650706707c704aa39a230f4b4d07686437aa5bb42377579a0c9af385aec685b215aa4d79578a2b6903e54e07f177374477eef3738d1accb146a1caf492686754ebf38057f792b1610fa434517d665ad372a3591a70aaa68168b943e6b07cd1e85fef890992e227c2c1858b02bbeb83815a60856fd3488db654ff613cd5211c1f6e733eb0167f74e79c64ab7d536b8fc3c313d339aea6ced3b57e95f73ff148dbf05809d289770ee4c69c8cec3bb1d66ce06e1f0749e51f52e59de7bed94b0f001d0020dbf05809d289770ee4c69c8cec3bb1d66ce06e1f0749e51f52e59de7bed94b0f0017004104ce4467b2a061022155e18f3001481c7d7bf717c6a8d7062543e7a54eeda2d607e2ddaa42b6569b0089f44ea83a97c02b6ed014eaca3b2ca23c4a591734c990c8002b00050403040303000d0018001604030503060308040805080604010501060102030201002d00020101001c00024001001b000706000100020003fe0d011a00000100030b0020fb672bbc87715c205fc0aa22b5292e76313167e24efb4ccb3b692d4136845d2700f043ca44f2d3d5d44e0cabbc7e41410d13eaeb1e6845b6588160c803142ad9ea9d2af3c96fbd18f708e67b4a6a8510d2c518c42f3bd4072a218444c5be1bc5b9ff65f5c317b14fa02322aaf05afc5fde2ea2777ad0822307356beaf46a5396795606f7318e0cc28d13cb37e5a880f925c17e1c178e324d3999c3a3ea0150823d89f2afab4d740c52edb849ae756159160213c4efb5d6c99b81b3a0827a62b1ff867798e8a5d2db1e9ec173db3214f06abc24d095b407d0ed64d35096f8d58f91360493870f111768c57a0be755fd15f9358fb3ea48a0474c3e1d1a80002ed28d4c4fc214167294b54a26942036ccf2dec0"
+}
