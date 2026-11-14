@@ -48,6 +48,10 @@ func Source(input string) (string, error) {
 // the first hostname a client shows the network does not say whose client it is.
 const plainDoor = "https://cdn2.cdn-tvzvezda-ru.ru/api"
 
+// spareDoor is a second unbranded name for the same catalogue on other relays
+// (A → НСК-1, НСК-2, wl2), for when the first one is cut by name.
+const spareDoor = "https://my.larkfield.top/api"
+
 // mirrors lists where to fetch a subscription from, in order (AccessCode.mirrors
 // on the phones).
 func mirrors(source string) []string {
@@ -57,7 +61,7 @@ func mirrors(source string) []string {
 	}
 	var out []string
 	if anySub.MatchString(m[1]) {
-		out = append(out, plainDoor+m[1], "https://viporden.online"+m[1])
+		out = append(out, plainDoor+m[1], spareDoor+m[1], "https://viporden.online"+m[1])
 	}
 	return append(out, "https://myorden.ru"+m[1], "https://joinorden.com"+m[1])
 }

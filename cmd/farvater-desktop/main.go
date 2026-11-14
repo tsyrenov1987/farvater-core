@@ -47,7 +47,8 @@ func catalogueURLs(s string) ([]string, error) {
 	s = strings.TrimSpace(s)
 	if u := strings.ToUpper(s); codeRE.MatchString(u) {
 		// First a door whose name does not carry the brand (service.plainDoor).
-		out := []string{"https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/" + u}
+		// Then a second such door on other relays (service.spareDoor).
+		out := []string{"https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/" + u, "https://my.larkfield.top/api/hsub/" + u}
 		for _, h := range catalogueHosts {
 			out = append(out, "https://"+h+"/hsub/"+u)
 		}

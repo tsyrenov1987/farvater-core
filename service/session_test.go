@@ -156,7 +156,7 @@ func TestCatalogueFails(t *testing.T) {
 	if st.Reason != reasonCatalogue || !strings.Contains(st.Detail, "502") {
 		t.Fatalf("%+v", st)
 	}
-	want := []string{"https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/ORDEN-AAAAA-BBBBB", "https://viporden.online/hsub/ORDEN-AAAAA-BBBBB", "https://myorden.ru/hsub/ORDEN-AAAAA-BBBBB", "https://joinorden.com/hsub/ORDEN-AAAAA-BBBBB"}
+	want := []string{"https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/ORDEN-AAAAA-BBBBB", "https://my.larkfield.top/api/hsub/ORDEN-AAAAA-BBBBB", "https://viporden.online/hsub/ORDEN-AAAAA-BBBBB", "https://myorden.ru/hsub/ORDEN-AAAAA-BBBBB", "https://joinorden.com/hsub/ORDEN-AAAAA-BBBBB"}
 	if strings.Join(w.fetched, " ") != strings.Join(want, " ") {
 		t.Fatalf("mirrors %v", w.fetched)
 	}

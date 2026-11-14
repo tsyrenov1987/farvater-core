@@ -12,7 +12,7 @@ import (
 
 func TestCatalogueURLs(t *testing.T) {
 	u, err := catalogueURLs(" orden-ABCDE-12345 ")
-	if err != nil || len(u) != len(catalogueHosts)+1 || u[0] != "https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/ORDEN-ABCDE-12345" || u[1] != "https://viporden.online/hsub/ORDEN-ABCDE-12345" {
+	if err != nil || len(u) != len(catalogueHosts)+2 || u[0] != "https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/ORDEN-ABCDE-12345" || u[1] != "https://my.larkfield.top/api/hsub/ORDEN-ABCDE-12345" || u[2] != "https://viporden.online/hsub/ORDEN-ABCDE-12345" {
 		t.Fatalf("code: %v %v", u, err)
 	}
 	if u, err = catalogueURLs("https://x.example/sub/1"); err != nil || len(u) != 1 {
