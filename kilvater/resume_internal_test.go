@@ -115,11 +115,11 @@ func TestSessionResumeAndGrace(t *testing.T) {
 	a := openStream(func(up io.Reader, down io.Writer) {
 		srv.tcpSession(context.Background(), addr, key, up, down, nil)
 	})
-	if typ, body := a.next(t); typ != FrameAck || !bytes.Equal(body, AckBody(0)) {
+	if typ, body := a.next(t); typ != FrameFlowAck || !bytes.Equal(body, AckBody(0)) {
 		t.Fatalf("first frame %d %x, want ACK 0", typ, body)
 	}
 	tc := conn()
-	if typ, _ := a.next(t); typ != FrameAck {
+	if typ, _ := a.next(t); typ != FrameFlowAck {
 		t.Fatalf("frame %d after the dial, want ACK", typ)
 	}
 	WriteFrame(a.upW, FrameData, []byte("up-1"))
@@ -142,7 +142,7 @@ func TestSessionResumeAndGrace(t *testing.T) {
 	b := openStream(func(up io.Reader, down io.Writer) {
 		srv.resume(AppendResume(nil, testSID, 4)[1:], "k", up, down, nil)
 	})
-	if typ, body := b.next(t); typ != FrameAck || !bytes.Equal(body, AckBody(4)) {
+	if typ, body := b.next(t); typ != FrameFlowAck || !bytes.Equal(body, AckBody(4)) {
 		t.Fatalf("resumed stream opens with %d %x, want ACK 4", typ, body)
 	}
 	var back []byte
@@ -214,7 +214,7 @@ func TestSessionStaleStreamCannotWrite(t *testing.T) {
 	tc := conn()
 	// The second ACK is the session's own: only then is there one to resume.
 	a.next(t)
-	if typ, _ := a.next(t); typ != FrameAck {
+	if typ, _ := a.next(t); typ != FrameFlowAck {
 		t.Fatalf("frame %d after the dial, want ACK", typ)
 	}
 	b := openStream(func(up io.Reader, down io.Writer) {

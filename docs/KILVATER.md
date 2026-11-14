@@ -127,8 +127,10 @@ After authentication the server answers `200`. Both directions of the stream the
 | 3 | PAD | ignored; varies record sizes and fills pauses (see padding) |
 | 4 | DGRAM | one UDP datagram; the frame length is the datagram boundary |
 | 5 | CLOSE | one code byte: `0` normal end, `1` the target could not be reached, `2` the target is not allowed, `3` no such session (resume) |
-| 6 | ACK | 8 bytes, big-endian: how many DATA bytes of this flow the sender has taken (resume) |
-| 7 | END | empty; client only: the flow is over, keep nothing for it (resume) |
+| 10 | FLOWACK | 8 bytes, big-endian: how many DATA bytes of this flow the sender has taken (resume) |
+| 11 | END | empty; client only: the flow is over, keep nothing for it (resume) |
+
+Types 6–9 belong to bonds (multipath, below). Resume took 10 and 11 when the two met: no build that used 6 and 7 for resume was ever given to clients or run on a node.
 
 A frame of a type this build does not know is skipped, body and all, so a newer peer can add frame types without breaking
 an older one.
@@ -175,21 +177,48 @@ goes silent does not end the app's connection. It is optional on both sides and 
 
 - The client adds an option after the address in OPEN: `[1][16][session id: 16 random bytes]`. A server
   that predates it ignores everything after the address and serves the flow as before.
-- A server that keeps sessions answers with ACK `0` before it dials, and with an ACK on every stream of
-  the flow. No ACK before the first DATA or CLOSE means the server does not keep sessions; the client
+- A server that keeps sessions answers with FLOWACK `0` before it dials, and with a FLOWACK on every stream of
+  the flow. No FLOWACK before the first DATA or CLOSE means the server does not keep sessions; the client
   then treats the flow as an ordinary one.
-- Each side counts the DATA bytes it has taken and sends an ACK every 256 KiB (builds before 14.11.2026:
+- Each side counts the DATA bytes it has taken and sends a FLOWACK every 256 KiB (builds before 14.11.2026:
   every 64 KiB; the step is the receiver's choice and either side accepts any). Each side keeps what it
   sent until it is confirmed, and stops reading its own source while 1 MiB is unconfirmed.
 - When the stream is lost, the client opens a new one — on the same connection, a new connection, or
   another entry of the same server process — with OPEN `[3][session id][8 bytes: DATA bytes taken]`.
-  The server answers ACK (how many of the client's bytes it has taken) and sends on from the client's
+  The server answers FLOWACK (how many of the client's bytes it has taken) and sends on from the client's
   count; the client sends on from the server's. If the server has no such session it answers CLOSE `3`.
 - A session answers only the key that opened it. The last stream to attach owns the flow; an earlier
   one can no longer write to the target.
 - The server cannot tell a stream the client dropped from one the network took, so a client that is
   done sends END. Without it the server holds the target for a grace period (30 s by default) and
   closes it if no stream comes back. Sessions live in the server process: a restart ends them.
+
+**Bonds (multipath).** One TCP flow may ride several streams at once, each
+reaching the same server by its own route (a CDN relay, VK's call relays, ...).
+The client opens each stream as usual but sends JOIN instead of OPEN; streams
+whose JOIN names the same 16-byte session id under the same key are one bond.
+The server's kilvater (`kilvater/bondserver.go`) dials the target once and
+spreads the target's bytes over all of the bond's streams; the client does the
+same upstream (`wire/bond.go`, link `kilbond://`). Each side puts the byte
+stream back in order by offset.
+
+| Type | Name | Body |
+|---|---|---|
+| 6 | JOIN | `[session id:16][flags:1][network:1][len:1]["host:port"]`; flag `1` = create the bond (the first stream), otherwise attach to it |
+| 7 | SEQ | `[offset:8]` then payload: bytes `offset…offset+n` of the flow |
+| 8 | ACK | `[received in order:8][read by the app:8]`: frees the sender's copies and opens its window (1 MiB) |
+| 9 | FIN | `[final offset:8]`: the sender's direction ends there |
+
+A chunk a stream lost when it died is sent again on another; a chunk stuck on a
+slow stream is sent again on a fast one after 400 ms (copies are dropped by
+offset). Each stream may hold about 600 ms of its measured rate in flight, so a
+slow route takes a small share instead of setting the pace. CLOSE on any stream
+ends the bond: `0` both directions done, `1` the target failed, `2` no such bond
+(a JOIN without the create flag after the bond is gone). The server answers a
+JOIN with an ACK once the target is up; a bond with no streams for 30 s is
+dropped. An older server skips JOIN as an unknown type and drops the stream when
+no OPEN arrives within 15 s, so the client's legs fail and the path is seen as
+dead. Only TCP bonds: UDP takes the first leg's plain stream.
 
 ## 5. Server behaviour
 
@@ -299,7 +328,7 @@ These are known limits, not plans:
   pages taken as they are written). Timed to the target's answer, 8 MiB up: 3.0 s at 512k, 2.0 s at 1m,
   1.6–2.0 s at 2m; the fronts run 1m. (Earlier figures of 4–9 s counted the 2 s the client waits on a
   silent stream after its source ends, not the upload.) What still differs, measured and not fixed: the
-  resume ACK (about 135 small records upstream per 8 MiB downloaded at a 64 KiB step, 44 at 256 KiB; about
+  resume FLOWACK (about 135 small records upstream per 8 MiB downloaded at a 64 KiB step, 44 at 256 KiB; about
   115 against 28 while uploading), and nginx's own WINDOW_UPDATE for every chunk of an unbuffered request
   body (420–580 small records downstream per 8 MiB uploaded, Chrome's POST draws 12; no nginx setting
   removes it). One vantage point outside Russia, record lengths only, no classifier.

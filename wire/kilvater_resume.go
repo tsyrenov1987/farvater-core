@@ -253,11 +253,11 @@ func (r *kilResume) Read(p []byte) (int, error) {
 			}
 			r.mu.Unlock()
 			if ack {
-				sh.WriteFrame(kilvater.FrameAck, kilvater.AckBody(t))
+				sh.WriteFrame(kilvater.FrameFlowAck, kilvater.AckBody(t))
 			}
 			r.rem = body
 			r.got = true
-		case kilvater.FrameAck:
+		case kilvater.FrameFlowAck:
 			if off, ok := kilvater.ParseAck(body); ok {
 				r.mu.Lock()
 				if !r.peer {
@@ -418,7 +418,7 @@ func (r *kilResume) reattachOn(ctx context.Context, w *kilWire) error {
 		if err != nil {
 			return fail(err)
 		}
-		if typ == kilvater.FrameAck {
+		if typ == kilvater.FrameFlowAck {
 			off, ok := kilvater.ParseAck(body)
 			if !ok {
 				return fail(errKilNoResume)

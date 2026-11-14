@@ -23,8 +23,8 @@ import (
 // after the address in OPEN and the frame types it does not know; a client
 // that predates it never sends them and is served as before.
 const (
-	FrameAck byte = 6 // body: 8 bytes, how many DATA bytes the sender has taken
-	FrameEnd byte = 7 // body: empty; the client is done with the flow, keep nothing
+	FrameFlowAck byte = 10 // body: 8 bytes, how many DATA bytes the sender has taken
+	FrameEnd     byte = 11 // body: empty; the client is done with the flow, keep nothing
 
 	// NetResume opens a stream that continues a session: the OPEN body is
 	// [NetResume][sid:16][8 bytes: DATA bytes the client has taken].
@@ -37,8 +37,6 @@ const (
 	// OpenExtSession is the option, after the address in OPEN, that carries
 	// the session id: [OpenExtSession][16][sid:16].
 	OpenExtSession byte = 1
-
-	SessionIDLen = 16
 
 	// ResumeAckStep is how many bytes a side takes before it confirms them.
 	// A sender's window must be several steps, or it waits on a confirmation
@@ -161,7 +159,7 @@ func (s *Shaper) WriteFrame(typ byte, body []byte) error {
 func writeAckPad(w io.Writer, taken uint64) error {
 	var n [1]byte
 	rand.Read(n[:])
-	b := AppendFrame(make([]byte, 0, 300), FrameAck, AckBody(taken))
+	b := AppendFrame(make([]byte, 0, 300), FrameFlowAck, AckBody(taken))
 	b = AppendFrame(b, FramePad, make([]byte, 16+int(n[0])))
 	_, err := w.Write(b)
 	return err
@@ -473,9 +471,9 @@ loop:
 			ks.addUp(len(body))
 			if n-acked >= ResumeAckStep {
 				acked = n
-				sh.WriteFrame(FrameAck, AckBody(n))
+				sh.WriteFrame(FrameFlowAck, AckBody(n))
 			}
-		case FrameAck:
+		case FrameFlowAck:
 			if off, ok := ParseAck(body); ok {
 				se.ack(off)
 			}
