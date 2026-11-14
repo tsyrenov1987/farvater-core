@@ -80,10 +80,16 @@ type PathSpec struct {
 	// TURN, set, carries the path's TCP connection through VK's call relays
 	// to the node instead of dialing Host:Port (a vkturn:// link; see vkturn.go).
 	TURN *TURNSpec
+
+	// Legs are a kilbond:// path's kilvater links, one per route (bond.go).
+	Legs []PathSpec
 }
 
 // Rail is the informational label of the path's transport.
 func (p PathSpec) Rail() string {
+	if p.Kind == KindBond {
+		return "kilbond"
+	}
 	if p.TURN != nil {
 		return "vkturn"
 	}
@@ -116,7 +122,7 @@ func (p PathSpec) Rail() string {
 // obfuscation. Salamander turns Hysteria 2 into noise that resembles nothing;
 // olcRTC is a video call (WebRTC), and so is a path over VK's call relays.
 func (p PathSpec) HTTPLike() bool {
-	return !(p.Kind == KindHysteria2 && p.Obfs != "") && p.Kind != KindOlcRTC && p.Kind != KindShadowsocks && p.TURN == nil
+	return !(p.Kind == KindHysteria2 && p.Obfs != "") && p.Kind != KindOlcRTC && p.Kind != KindShadowsocks && p.TURN == nil && p.Kind != KindBond
 }
 
 // ServerSNI is the TLS server name the wire presents (for the handshake governor).
@@ -136,6 +142,9 @@ func ParseURI(raw string) (PathSpec, error) {
 	raw = strings.TrimSpace(raw)
 	if len(raw) > 9 && strings.EqualFold(raw[:9], "olcrtc://") {
 		return parseOlcRTC(raw[9:])
+	}
+	if len(raw) > 10 && strings.EqualFold(raw[:10], "kilbond://") {
+		return parseBond(raw)
 	}
 	if len(raw) > 9 && strings.EqualFold(raw[:9], "vkturn://") {
 		return parseVKTurn(raw)

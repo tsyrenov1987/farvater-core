@@ -221,6 +221,10 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, id Identity) {
 	case <-r.Context().Done():
 		return
 	}
+	if f.err == nil && f.typ == FrameJoin {
+		s.join(id.Label(), f.body, r.Body, down, ks) // one leg of a bond (bond.go)
+		return
+	}
 	if f.err != nil || f.typ != FrameOpen || len(f.body) < 2 {
 		return
 	}
