@@ -4,6 +4,12 @@
 //
 //	go run ./tools/ja4cap -listen 127.0.0.1:8443
 //	chrome --host-resolver-rules="MAP ja4.test 127.0.0.1" https://ja4.test:8443/
+//
+// Take the browser people actually run. Chrome for Testing is not it: builds
+// 157.0.8103.78 and 158.0.8127.37 both send an extension 0x12e0 that the
+// branded Chrome 157.0.8103.78 does not (JA4 t13d1518h2_8daaf6152771_4980c97edce0
+// against t13d1517h2_8daaf6152771_cb7bf5808d99, 2026-11-14, with a window and
+// headless alike).
 package main
 
 import (
