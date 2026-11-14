@@ -5,6 +5,7 @@ package desktop
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // routes lists the routes to the private and tunnel prefixes.
@@ -23,8 +24,33 @@ func fwRule() string {
 	return out
 }
 
+// dnsPolicy is the name servers Windows applies to "." under the NRPT, "" when
+// no rule covers it. The DNS client takes a moment to read the registry, so
+// it asks again for a few seconds until ok says the answer is the one wanted.
+func dnsPolicy(t *testing.T, ok func(string) bool) string {
+	t.Helper()
+	var p string
+	for i := 0; i < 10; i++ {
+		out, err := run("powershell", "-NoProfile", "-Command",
+			"Get-DnsClientNrptPolicy | Where-Object { $_.Namespace -eq '.' } | ForEach-Object { $_.NameServers -join ';' }")
+		if err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		if p = strings.TrimSpace(out); ok(p) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Logf("dns policy for every name: %q", p)
+	return p
+}
+
 func checkUp(t *testing.T, idx, hop string) {
 	t.Helper()
+	viaTunnel := func(p string) bool { return strings.HasPrefix(p, DNSAddr+";") }
+	if p := dnsPolicy(t, viaTunnel); !viaTunnel(p) {
+		t.Errorf("dns policy for every name is %q, want the tunnel's server, then the network's", p)
+	}
 	got := routes(t)
 	t.Logf("routes while up:\n%s", got)
 	for _, p := range privateRanges {
@@ -52,6 +78,9 @@ func checkGone(t *testing.T) {
 	}
 	if strings.Contains(fwRule(), "Enabled") {
 		t.Errorf("firewall rule left behind")
+	}
+	if p := dnsPolicy(t, func(p string) bool { return p == "" }); p != "" {
+		t.Errorf("dns policy left behind: %q", p)
 	}
 }
 

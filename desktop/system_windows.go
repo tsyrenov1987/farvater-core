@@ -146,6 +146,7 @@ func Up(o Options) (*System, error) {
 	if err := blockOtherDNS(upstream); err != nil {
 		return fail(err)
 	}
+	setDNSPolicy(upstream, logf)
 	if o.KillSwitch {
 		logf("kill switch on Windows: routing only (no firewall allow-list yet)")
 	}
@@ -291,6 +292,62 @@ func blockOtherDNS(upstream []netip.Addr) error {
 	return nil
 }
 
+// dnsPolicyKey is the machine's name resolution policy (NRPT) rule for the
+// tunnel. Without it Windows sends every name to all interfaces' servers at
+// once (smart multi-homed resolution), so each name also went to the
+// network's server while the tunnel answered; the firewall rule above lets
+// that server through for the core's own lookups. The rule sends every name
+// (".") to the tunnel's server first and to the network's only when that one
+// is silent for about a second: a crashed service leaves names working, and
+// Down and Off remove the rule. Checked on windows-2025 (DNS-Client events
+// 3010): with the rule no name reached the network's server while the tunnel
+// answered.
+const (
+	dnsPolicyKey   = `SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\DnsPolicyConfig\{b8e6e642-5160-4d4f-9b75-4b4431b52f37}`
+	dnsPolicyGPKey = `SOFTWARE\Policies\Microsoft\Windows NT\DNSClient\DnsPolicyConfig`
+)
+
+// setDNSPolicy writes the rule. A failure only leaves the old behaviour, so
+// it does not stop the connection. With no network server known the rule is
+// not written: a crash would leave the machine without names.
+func setDNSPolicy(upstream []netip.Addr, logf func(string, ...any)) {
+	if len(upstream) == 0 {
+		delDNSPolicy()
+		logf("dns policy: the network has no dns server, no rule")
+		return
+	}
+	servers := []string{DNSAddr}
+	for _, a := range upstream {
+		servers = append(servers, a.String())
+	}
+	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, dnsPolicyKey, registry.SET_VALUE)
+	if err != nil {
+		logf("dns policy: %v", err)
+		return
+	}
+	defer k.Close()
+	for _, err := range []error{
+		k.SetDWordValue("Version", 1),
+		k.SetStringsValue("Name", []string{"."}),
+		k.SetStringValue("GenericDNSServers", strings.Join(servers, ";")),
+		k.SetDWordValue("ConfigOptions", 8), // generic DNS servers
+	} {
+		if err != nil {
+			logf("dns policy: %v", err)
+			return
+		}
+	}
+	if gp, err := registry.OpenKey(registry.LOCAL_MACHINE, dnsPolicyGPKey, registry.ENUMERATE_SUB_KEYS); err == nil {
+		if names, _ := gp.ReadSubKeyNames(-1); len(names) > 0 {
+			logf("dns policy: group policy has %d rules of its own, Windows may ignore ours", len(names))
+		}
+		gp.Close()
+	}
+	logf("dns policy: every name to %s", strings.Join(servers, ", "))
+}
+
+func delDNSPolicy() { _ = registry.DeleteKey(registry.LOCAL_MACHINE, dnsPolicyKey) }
+
 // defaultRoutes says which IPv4 default routes the machine has now; "" when
 // it has none. The tunnel's own are /1, so they are not in it.
 func defaultRoutes() (string, error) {
@@ -353,6 +410,7 @@ func (s *System) move(ctx context.Context, idx int, hop string) bool {
 	if err := blockOtherDNS(upstream); err != nil {
 		s.logf("%v", err)
 	}
+	setDNSPolicy(upstream, s.logf)
 	undoLAN(s.state)
 	s.state.LAN = nil
 	s.lanRoutes(idx, hop)
@@ -429,6 +487,7 @@ func (s *System) Down() {
 	if s.state.Firewall {
 		_, _ = run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+fwDNSRule)
 	}
+	delDNSPolicy()
 	if s.dev != nil {
 		s.dev.Close()
 	}
@@ -439,6 +498,7 @@ func (s *System) Down() {
 // Off undoes what a run that did not clean up left.
 func Off() error {
 	_, _ = run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+fwDNSRule)
+	delDNSPolicy()
 	if b, err := os.ReadFile(filepath.Join(StateDir, "state.json")); err == nil {
 		var st saved
 		_ = json.Unmarshal(b, &st)
