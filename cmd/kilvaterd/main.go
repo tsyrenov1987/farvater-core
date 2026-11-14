@@ -138,6 +138,11 @@ func main() {
 			log.Fatal(err)
 		}
 		ln = shapeServerSettings(ln)
+		// On this path TLS (the front proxy's OpenSSL) and the HTTP/2 above are
+		// nginx's, so the decoy's HTTP responses must be nginx's too, not Go's
+		// FileServer (decoy.go). The direct-TLS path below keeps the plain Go
+		// handler, where the whole stack is Go.
+		srv.Decoy = newNginxDecoy(srv.Decoy)
 		httpSrv.Handler = h2c.NewHandler(srv, nginxH2Server(120*time.Second))
 		log.Printf("kilvaterd listening on %s (cleartext h2c, behind a TLS proxy)", *listen)
 		log.Fatal(httpSrv.Serve(ln))
