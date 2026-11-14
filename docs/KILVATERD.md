@@ -107,6 +107,7 @@ Open the port in your firewall, for example `sudo ufw allow 443/tcp`.
 | `-pad` | `moderate` | downstream padding: `off` \| `moderate` \| `heavy`. Shapes record sizes so a tunnel looks less like one bulk transfer (KILVATER.md §4, §8). `moderate` adds well under 1 % of bytes and no goroutine; `heavy` adds ~1.4 % and keeps a pause from looking idle; `off` is v1 framing. One-sided — old clients read any mode the same way. |
 | `-metrics` | — | serve Prometheus metrics on this address, e.g. `127.0.0.1:9900`; empty disables it. Keep it on the loopback (§11) |
 | `-max-bytes-per-key` | `0` | refuse a key's new streams once it has carried this many payload bytes up+down; `0` is no limit (§11) |
+| `-max-bytes-window` | `0` | with `-max-bytes-per-key`: count a key's bytes per window of this length (e.g. `24h`) instead of for the life of the process; `0` is no window (§11) |
 | `-max-streams-per-key` | `0` | cap a key's concurrent streams; `0` is no limit (§11) |
 | `-genkey` | — | print a new random v1 client key and exit |
 | `-genmaster` | — | print a new random master key and exit |
@@ -286,6 +287,6 @@ actually connect (a rejected tag makes no series). Health, unlabelled: `kilvater
 process's life and reset on restart.
 
 **Per-key limits** are off by default. `-max-bytes-per-key N` refuses a key's *new* streams once it has carried
-`N` payload bytes up+down; `-max-streams-per-key N` caps its concurrent streams. A refused request gets the
+`N` payload bytes up+down; `-max-streams-per-key N` caps its concurrent streams. With `-max-bytes-window D` the byte count is per window of length `D`, starting at the key's first stream; the counts live in memory, so a restart starts every window anew. The stream cap is checked and counted in one step, so streams arriving together cannot exceed it. A refused request gets the
 decoy, exactly like a bad tag, and a stream already running is never cut — the limits gate new streams only.
 Byte totals are per process, so they reset on restart; enforce longer windows from the monitor.

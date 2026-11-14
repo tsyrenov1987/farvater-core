@@ -423,7 +423,7 @@ func (s *kilSession) Run(ctx context.Context, target Target, prelude []byte, up 
 	defer sh.Close()
 	if err := sh.WriteOpening(kilvater.AppendFrame(nil, kilvater.FrameOpen, body), prelude); err != nil {
 		s.conn.Close()
-		return OutcomeError, err
+		return OutcomeError, kilRefusal(err)
 	}
 	fr := &kilFrameReader{r: s.conn}
 	out, err := runStream(ctx, s.conn, &kilFrameWriter{sh: sh}, fr, up, down, m)
@@ -432,7 +432,25 @@ func (s *kilSession) Run(ctx context.Context, target Target, prelude []byte, up 
 		// ends as before, and the error tells the caller the path is not to blame.
 		return out, ErrTargetUnreachable
 	}
-	return out, err
+	return out, kilRefusal(err)
+}
+
+// ErrAccessRefused is a stream the node answered with its plain site instead
+// of a tunnel. The node gives every request it will not serve the same answer
+// and never says why, so the cause is one of: the key is revoked or not on the
+// node's list, the key is over its stream or volume limit, or this device's
+// clock is too far off for the mark to be fresh. The path itself carried the
+// request and the answer.
+var ErrAccessRefused = errors.New("wire: the node did not accept the key (revoked, not on its list, over its limit, or the clock is off)")
+
+// kilRefusal turns the mux's "answered 404" into ErrAccessRefused, keeping the
+// status in the text; any other error passes as it is.
+func kilRefusal(err error) error {
+	var se *H2StatusError
+	if errors.As(err, &se) {
+		return fmt.Errorf("%w: answered %s", ErrAccessRefused, se.Status)
+	}
+	return err
 }
 
 // ErrTargetUnreachable comes with OutcomeRemoteFin from a transport whose

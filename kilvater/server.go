@@ -42,8 +42,14 @@ type Server struct {
 	// count v2 keys only (the shared v1 keys are one label for everyone). A
 	// refused request gets the decoy, like a bad tag; a stream already running
 	// is never cut.
+	//
+	// MaxBytesWindow, if set, makes MaxBytesPerKey a cap per period instead of
+	// one for the life of the process: a key's count starts over once the
+	// window that began with its first stream has passed. The counts live in
+	// memory, so a restart starts every key's window anew.
 	MaxBytesPerKey   int64
 	MaxStreamsPerKey int64
+	MaxBytesWindow   time.Duration
 
 	// DenyDst are addresses clients may reach only on the ports in SelfPorts:
 	// the server's own public addresses and those of its sister nodes. A
@@ -158,41 +164,41 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.Decoy.ServeHTTP(w, r)
 		return
 	}
-	if s.overLimit(id) {
+	ks, ok := s.admit(id, time.Now())
+	if !ok {
 		s.Metrics.limitReject()
 		s.Decoy.ServeHTTP(w, r)
 		return
 	}
-	s.tunnel(w, r, id)
+	defer s.Metrics.closeStream(ks)
+	s.tunnel(w, r, ks)
 }
 
-// overLimit reports whether a key has reached a configured per-key limit, so
-// its next stream is refused. It never cuts a running stream.
-func (s *Server) overLimit(id Identity) bool {
-	if s.Metrics == nil || (s.MaxBytesPerKey <= 0 && s.MaxStreamsPerKey <= 0) {
-		return false
+// admit counts a new stream for the key, unless the key has reached a
+// configured per-key limit, in which case the stream is refused. The check of
+// the stream limit and the count are one step, so streams arriving together
+// cannot pass it between them. It never cuts a running stream.
+func (s *Server) admit(id Identity, now time.Time) (*keyStat, bool) {
+	if s.Metrics == nil {
+		return nil, true
 	}
-	if !id.V2 {
-		return false // the v1 keys share one label: a limit there would be everyone's
+	var maxStreams int64
+	// The v1 keys share one label: a limit there would be everyone's.
+	if id.V2 {
+		if s.MaxBytesPerKey > 0 && s.Metrics.stat(id.Label()).windowBytes(now, s.MaxBytesWindow) >= s.MaxBytesPerKey {
+			return nil, false
+		}
+		maxStreams = s.MaxStreamsPerKey
 	}
-	ks := s.Metrics.stat(id.Label())
-	if s.MaxBytesPerKey > 0 && ks.up.Load()+ks.down.Load() >= s.MaxBytesPerKey {
-		return true
-	}
-	if s.MaxStreamsPerKey > 0 && ks.streamsOpen.Load() >= s.MaxStreamsPerKey {
-		return true
-	}
-	return false
+	return s.Metrics.openStream(id.Label(), maxStreams)
 }
 
-func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, id Identity) {
+func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	ks := s.Metrics.openStream(id.Label())
-	defer s.Metrics.closeStream(ks)
 	w.WriteHeader(http.StatusOK)
 	fl.Flush()
 	down := &flushed{w: w, f: fl}

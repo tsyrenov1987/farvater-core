@@ -397,7 +397,7 @@ func (m *h2Mux) openStreamFunc(ctx context.Context, method, reqURL string, heade
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
-			s.downErr = errors.New("h2mux: the server answered " + resp.Status)
+			s.downErr = &H2StatusError{Code: resp.StatusCode, Status: resp.Status}
 			resp.Body.Close()
 			close(s.ready)
 			pw.CloseWithError(s.downErr)
@@ -558,3 +558,14 @@ func (s *h2MuxStream) SetReadDeadline(t time.Time) error  { return nil }
 func (s *h2MuxStream) SetWriteDeadline(t time.Time) error { return nil }
 
 var _ net.Conn = (*h2MuxStream)(nil)
+
+// H2StatusError is a stream the server answered with something other than
+// 200: the connection, TLS and HTTP/2 all worked, and the server chose not to
+// serve the request. A transport that knows what that means of its server
+// (kilvater: the key was not accepted) reads the code with errors.As.
+type H2StatusError struct {
+	Code   int
+	Status string
+}
+
+func (e *H2StatusError) Error() string { return "h2mux: the server answered " + e.Status }

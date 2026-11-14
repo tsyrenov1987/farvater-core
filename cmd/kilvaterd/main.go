@@ -48,6 +48,7 @@ func main() {
 	nodeMaster := flag.Bool("nodemaster", false, "with -master (the fleet master, first line) and -node: print that node's master, for the node's -master file, and exit")
 	metricsAddr := flag.String("metrics", "", "serve Prometheus metrics on this address (e.g. 127.0.0.1:9900); empty disables it; keep it on the loopback or a management overlay, never public")
 	maxBytesPerKey := flag.Int64("max-bytes-per-key", 0, "refuse a key's new streams once it has carried this many payload bytes up+down; 0 is no limit")
+	maxBytesWindow := flag.Duration("max-bytes-window", 0, "with -max-bytes-per-key: count a key's bytes per window of this length (e.g. 24h) instead of for the life of the process; 0 is no window")
 	maxStreamsPerKey := flag.Int64("max-streams-per-key", 0, "cap a key's concurrent streams; 0 is no limit")
 	denyDst := flag.String("deny-dst", "", "comma-separated addresses or prefixes (the sister nodes) clients may reach only on -self-ports; the server's own addresses are always in the list")
 	denyDstFile := flag.String("deny-dst-file", "", "more -deny-dst addresses or prefixes, one per line, '#' comments (reloaded on SIGHUP); a missing file adds nothing")
@@ -123,6 +124,7 @@ func main() {
 		Metrics:          metrics,
 		MaxBytesPerKey:   *maxBytesPerKey,
 		MaxStreamsPerKey: *maxStreamsPerKey,
+		MaxBytesWindow:   *maxBytesWindow,
 	}
 	if srv.DenyDst, err = denyPrefixes(*denyDst); err != nil {
 		log.Fatalf("-deny-dst: %v", err)
@@ -155,7 +157,7 @@ func main() {
 	log.Printf("targets: %d own/sister prefix(es) open on ports %v only, ports %v closed", len(srv.DenyDst), srv.SelfPorts, srv.DenyPorts)
 	log.Printf("downstream padding: %s", srv.Pad)
 	if *maxBytesPerKey > 0 || *maxStreamsPerKey > 0 {
-		log.Printf("per-key limits: max_bytes=%d max_streams=%d", *maxBytesPerKey, *maxStreamsPerKey)
+		log.Printf("per-key limits: max_bytes=%d per %v, max_streams=%d", *maxBytesPerKey, *maxBytesWindow, *maxStreamsPerKey)
 	}
 	if *metricsAddr != "" {
 		startMetrics(*metricsAddr, metrics)

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Metrics counts traffic and health for a Server, exported in Prometheus text
@@ -46,6 +47,28 @@ type keyStat struct {
 	up, down    atomic.Int64
 	streams     atomic.Int64 // opened over the process's life
 	streamsOpen atomic.Int64 // active now
+
+	winMu    sync.Mutex
+	winStart time.Time // when the current volume window began
+	winBase  int64     // up+down at that moment
+}
+
+// windowBytes is what the key has carried in the current window of length win,
+// starting a new window when the last has passed. With no window it is the
+// total for the life of the process.
+func (ks *keyStat) windowBytes(now time.Time, win time.Duration) int64 {
+	total := ks.up.Load() + ks.down.Load()
+	if win <= 0 {
+		return total
+	}
+	ks.winMu.Lock()
+	defer ks.winMu.Unlock()
+	if ks.winStart.IsZero() {
+		ks.winStart = now
+	} else if now.Sub(ks.winStart) >= win {
+		ks.winStart, ks.winBase = now, total
+	}
+	return total - ks.winBase
 }
 
 func (ks *keyStat) addUp(n int) {
@@ -87,17 +110,31 @@ func (m *Metrics) stat(label string) *keyStat {
 	return ks
 }
 
-// openStream records a new stream for label and returns its counters.
-func (m *Metrics) openStream(label string) *keyStat {
+// openStream records a new stream for label and returns its counters. With
+// max above zero the stream is counted only while the key has fewer than max
+// open, in one step; otherwise it reports false and counts nothing.
+func (m *Metrics) openStream(label string, max int64) (*keyStat, bool) {
 	if m == nil {
-		return nil
+		return nil, true
+	}
+	ks := m.stat(label)
+	if max > 0 {
+		for {
+			n := ks.streamsOpen.Load()
+			if n >= max {
+				return nil, false
+			}
+			if ks.streamsOpen.CompareAndSwap(n, n+1) {
+				break
+			}
+		}
+	} else {
+		ks.streamsOpen.Add(1)
 	}
 	m.streamsTotal.Add(1)
 	m.streamsOpen.Add(1)
-	ks := m.stat(label)
 	ks.streams.Add(1)
-	ks.streamsOpen.Add(1)
-	return ks
+	return ks, true
 }
 
 // closeStream records that a stream opened with openStream has ended.

@@ -81,3 +81,30 @@ func TestKilFrameReaderCloseCodes(t *testing.T) {
 		}
 	}
 }
+
+// A node that does not know the key answers with its site, and the caller is
+// told the key was refused rather than left with a bare HTTP status.
+func TestKilvaterAccessRefused(t *testing.T) {
+	_, hexKey := kilTestKey(t)
+	other, _ := kilTestKey(t)
+	w, err := newKilWire(kilTestSpec(hexKey), kilServerDial(t, other))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sess, err := w.Dial(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := make(chan []byte)
+	var down bytes.Buffer
+	_, err = sess.Run(ctx, Target{Host: "127.0.0.1", Port: 9}, []byte("hello"), up, &down, nopMeter{})
+	if !errors.Is(err, ErrAccessRefused) {
+		t.Fatalf("got %v; want ErrAccessRefused", err)
+	}
+	if errors.Is(err, ErrTargetUnreachable) {
+		t.Fatal("a refused key is not an unreachable target")
+	}
+}
