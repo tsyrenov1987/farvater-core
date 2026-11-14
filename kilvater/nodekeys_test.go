@@ -60,6 +60,9 @@ func TestVerifierNodeBoundKeys(t *testing.T) {
 			t.Errorf("%s key refused while moving: n=%d why=%q", name, n, why)
 		}
 	}
+	if h := moving.MasterHits(); len(h) != 2 || h[0] != 1 || h[1] != 1 {
+		t.Errorf("master hits %v, want [1 1]", h)
+	}
 	if n, _, why := moving.VerifyDetail(kilvater.NewTagV2(id, keyB, "/connect", now), "/connect", now); n >= 0 || why != kilvater.FailMAC {
 		t.Errorf("node b key on node a: n=%d why=%q, want refused as mac", n, why)
 	}

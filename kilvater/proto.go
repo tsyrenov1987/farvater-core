@@ -174,6 +174,11 @@ type Verifier struct {
 	pruned int64
 
 	replays atomic.Int64 // tags rejected as replays, read by metrics
+
+	// masterHits counts accepted v2 tags by the position of the master that
+	// verified them (VerifierConfig order: Master, then Masters), so an operator
+	// sees when nothing uses a master any more before dropping it.
+	masterHits [maxMasterHits]atomic.Int64
 }
 
 func NewVerifier(keys []Key) *Verifier {
@@ -235,6 +240,22 @@ func (id Identity) Label() string {
 		return id.KeyID.String()
 	}
 	return "v1"
+}
+
+const maxMasterHits = 4
+
+// MasterHits returns how many v2 tags each configured master has verified, by
+// position (Master first, then Masters), for metrics.
+func (v *Verifier) MasterHits() []int64 {
+	n := len(v.set.Load().masters)
+	if n > maxMasterHits {
+		n = maxMasterHits
+	}
+	out := make([]int64, n)
+	for i := range out {
+		out[i] = v.masterHits[i].Load()
+	}
+	return out
 }
 
 // Replays is the number of tags rejected as replays, for metrics.
@@ -323,20 +344,23 @@ func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (
 		return -1, claimed, FailRevoked
 	}
 	tagMAC := b[off+16:]
-	ok := false
-	for _, m := range set.masters {
+	hit := -1
+	for i, m := range set.masters {
 		if hmac.Equal(macV2(DeriveKey(m, id), id, b[off:off+8], b[off+8:off+16], path), tagMAC) {
-			ok = true
+			hit = i
 			break
 		}
 	}
-	if !ok {
+	if hit < 0 {
 		return -1, claimed, FailMAC
 	}
 	// Key the replay set by the MAC: unique per client, ts and nonce, so two
 	// clients that pick the same nonce are not taken for a replay of each other.
 	if !v.firstSeen(tagMAC, ts, now) {
 		return -1, claimed, FailReplay
+	}
+	if hit < maxMasterHits {
+		v.masterHits[hit].Add(1)
 	}
 	return verifiedV2, claimed, ""
 }

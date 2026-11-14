@@ -211,6 +211,13 @@ func (m *Metrics) WritePrometheus(w io.Writer) {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %d\n", s.name, s.help, s.name, s.typ, s.name, s.val)
 	}
 
+	if m.verifier != nil {
+		fmt.Fprintf(w, "# HELP kilvater_master_accepts_total v2 tags verified, by the position of the master in the -master file\n# TYPE kilvater_master_accepts_total counter\n")
+		for i, n := range m.verifier.MasterHits() {
+			fmt.Fprintf(w, "kilvater_master_accepts_total{master=\"%d\"} %d\n", i, n)
+		}
+	}
+
 	// Per-key failures, sorted so the output is stable.
 	m.mu.Lock()
 	fl := make([]failLabel, 0, len(m.fails))
