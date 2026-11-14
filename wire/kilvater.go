@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,7 +29,13 @@ type kilWire struct {
 	mux   *h2Mux
 	pad   kilvater.PadMode // how the client shapes the frames it sends up
 	now   func() time.Time
-	skew  atomic.Int64 // the server's clock minus ours, from the last page fetched
+
+	// What the last page fetch left behind, as a browser's cache would hold
+	// it: later connections revalidate instead of fetching it all again.
+	cacheMu sync.Mutex
+	cache   map[string]validator // by path
+	assets  []pageAsset          // the page's, from its last full fetch
+	skew    atomic.Int64         // the server's clock minus ours, from the last page fetched
 }
 
 func newKilvater(s PathSpec) (Wire, error) {
@@ -50,6 +57,17 @@ func newKilvater(s PathSpec) (Wire, error) {
 const (
 	kilConnMaxAge   = 10 * time.Minute
 	kilConnMaxBytes = 256 << 20 // 256 MiB
+
+	// Each connection draws its own limits within ±30% of those (7 to 13
+	// minutes, 179 to 333 MiB), and the next one is made in the background
+	// once it is 80% into either, so a rotation holds no stream up.
+	kilConnSpread = 0.3
+	kilConnAhead  = 0.8
+
+	// A connection with nothing to read is PINGed after 15 to 25 s, drawn
+	// once per path: not the same number on every client.
+	kilPingAfterIdle  = 15 * time.Second
+	kilPingIdleJitter = 10 * time.Second
 )
 
 func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilWire, error) {
@@ -65,7 +83,8 @@ func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilW
 		}
 		w.keyID = &id
 	}
-	const pingAfterIdle, pingTimeout = 15 * time.Second, 5 * time.Second
+	const pingTimeout = 5 * time.Second
+	pingAfterIdle := kilPingAfterIdle + rand.N(kilPingIdleJitter)
 	if p := h2ProfileFor(s.Fingerprint); p != nil {
 		w.mux = newH2Mux(shapedDial(dial, p), pingAfterIdle, pingTimeout)
 		w.mux.tr = p.transport(pingAfterIdle, pingTimeout)
@@ -80,6 +99,7 @@ func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilW
 	w.mux.tr.IdleConnTimeout = h2IdleClose
 	w.mux.warm = w.warm
 	w.mux.maxAge, w.mux.maxBytes = kilConnMaxAge, kilConnMaxBytes
+	w.mux.spread, w.mux.ahead = kilConnSpread, kilConnAhead
 	return w, nil
 }
 
@@ -189,6 +209,7 @@ func (w *kilWire) warm(ctx context.Context, cc *http2.ClientConn) {
 	origin := "https://" + w.authority()
 	h := http.Header{}
 	browserHeaders(h, "navigate")
+	w.conditional(h, "/")
 	req, err := newGet(ctx, origin+"/", h)
 	if err != nil {
 		return
@@ -203,33 +224,26 @@ func (w *kilWire) warm(ctx context.Context, cc *http2.ClientConn) {
 	if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
 		w.skew.Store(int64(d.Sub(w.now())))
 	}
-	var body io.Reader = resp.Body
-	switch resp.Header.Get("Content-Encoding") {
-	case "":
-	case "gzip":
-		if body, err = gzip.NewReader(resp.Body); err != nil {
-			return
-		}
-	default:
-		io.Copy(io.Discard, io.LimitReader(resp.Body, warmPageMax))
-		return
-	}
-	page, _ := io.ReadAll(io.LimitReader(body, warmPageMax))
-	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+	var assets []pageAsset
+	if resp.StatusCode == http.StatusNotModified {
+		// The page has not changed: its assets are the ones it had.
+		w.cacheMu.Lock()
+		assets = w.assets
+		w.cacheMu.Unlock()
+	} else if assets, err = w.readPage(resp); err != nil {
 		return
 	}
 	// Wait for the assets as the page's load would, but no longer than twice
 	// what the page took: a slow asset must not hold the tunnel up. Those not
 	// done by then finish in the background.
-	assets := pageAssets(page, warmAssets)
 	done := make(chan struct{}, len(assets))
 	for _, a := range assets {
 		go func() {
-			fetchAsset(cc, origin, a)
+			w.fetchAsset(cc, origin, a)
 			done <- struct{}{}
 		}()
 	}
-	defer func() { go fetchAsset(cc, origin, pageAsset{"/favicon.ico", "favicon"}) }()
+	defer func() { go w.fetchAsset(cc, origin, pageAsset{"/favicon.ico", "favicon"}) }()
 	limit := time.NewTimer(max(2*rtt, 200*time.Millisecond))
 	defer limit.Stop()
 	for range assets {
@@ -241,6 +255,69 @@ func (w *kilWire) warm(ctx context.Context, cc *http2.ClientConn) {
 			return
 		}
 	}
+}
+
+// validator is what a response gave to revalidate it with.
+type validator struct{ etag, modified string }
+
+// conditional adds to a request for path what the last answer to it left to
+// revalidate with, as a browser asks again for what it has cached.
+func (w *kilWire) conditional(h http.Header, path string) {
+	w.cacheMu.Lock()
+	v, ok := w.cache[path]
+	w.cacheMu.Unlock()
+	if !ok {
+		return
+	}
+	if v.etag != "" {
+		h.Set("If-None-Match", v.etag)
+	}
+	if v.modified != "" {
+		h.Set("If-Modified-Since", v.modified)
+	}
+}
+
+// remember keeps a 200 answer's validators for path, if it gave any.
+func (w *kilWire) remember(path string, resp *http.Response) {
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	v := validator{resp.Header.Get("ETag"), resp.Header.Get("Last-Modified")}
+	if v == (validator{}) {
+		return
+	}
+	w.cacheMu.Lock()
+	if w.cache == nil {
+		w.cache = map[string]validator{}
+	}
+	w.cache[path] = v
+	w.cacheMu.Unlock()
+}
+
+// readPage reads a page answered in full and lists the assets to fetch.
+func (w *kilWire) readPage(resp *http.Response) ([]pageAsset, error) {
+	var err error
+	var body io.Reader = resp.Body
+	switch resp.Header.Get("Content-Encoding") {
+	case "":
+	case "gzip":
+		if body, err = gzip.NewReader(resp.Body); err != nil {
+			return nil, err
+		}
+	default:
+		io.Copy(io.Discard, io.LimitReader(resp.Body, warmPageMax))
+		return nil, errors.New("kilvater: page encoding not read")
+	}
+	page, _ := io.ReadAll(io.LimitReader(body, warmPageMax))
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+		return nil, errors.New("kilvater: not a page")
+	}
+	assets := pageAssets(page, warmAssets)
+	w.remember("/", resp)
+	w.cacheMu.Lock()
+	w.assets = assets
+	w.cacheMu.Unlock()
+	return assets, nil
 }
 
 type pageAsset struct{ path, kind string } // kind: a browserHeaders asset variant
@@ -298,12 +375,13 @@ func sameOriginPath(ref string) (string, bool) {
 	return u.RequestURI(), true
 }
 
-func fetchAsset(cc *http2.ClientConn, origin string, a pageAsset) {
+func (w *kilWire) fetchAsset(cc *http2.ClientConn, origin string, a pageAsset) {
 	ctx, cancel := context.WithTimeout(context.Background(), assetTimeout)
 	defer cancel()
 	h := http.Header{}
 	h.Set("Referer", origin+"/")
 	browserHeaders(h, a.kind)
+	w.conditional(h, a.path)
 	req, err := newGet(ctx, origin+a.path, h)
 	if err != nil {
 		return
@@ -312,6 +390,7 @@ func fetchAsset(cc *http2.ClientConn, origin string, a pageAsset) {
 	if err != nil {
 		return
 	}
+	w.remember(a.path, resp)
 	io.Copy(io.Discard, io.LimitReader(resp.Body, warmPageMax))
 	resp.Body.Close()
 }

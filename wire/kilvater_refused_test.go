@@ -81,4 +81,3 @@ func TestKilFrameReaderCloseCodes(t *testing.T) {
 		}
 	}
 }
-

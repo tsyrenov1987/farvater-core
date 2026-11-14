@@ -44,8 +44,13 @@ then on (§3).
 **One connection, many streams:**
 - One TLS connection carries many streams, up to the server's HTTP/2 stream limit, the way a browser reuses a
   connection.
-- A new connection is dialed only when the current one is full or dead.
-- Dead connections are found by HTTP/2 PING after an idle gap.
+- A new connection is dialed only when the current one is full, dead, or past its rotation limit: about
+  10 minutes or 256 MiB, each connection drawing its own limits within ±30 % of those. Once a connection is
+  80 % into a limit the next one is dialed and warmed in the background, so the rotation holds no stream up;
+  the old connection finishes the streams it carries.
+- Dead connections are found by HTTP/2 PING after an idle gap of 15 to 25 s, drawn once per path.
+- From the second connection on, the page and its assets are asked for with `If-None-Match` /
+  `If-Modified-Since` from the answers the first one got, as a browser revalidates what it has cached.
 
 ## 2. Share link
 
@@ -121,7 +126,10 @@ After authentication the server answers `200`. Both directions of the stream the
 | 2 | DATA | payload (a TCP byte stream) |
 | 3 | PAD | ignored; varies record sizes and fills pauses (see padding) |
 | 4 | DGRAM | one UDP datagram; the frame length is the datagram boundary |
-| 5 | CLOSE | one code byte: `0` normal end, `1` error / refused |
+| 5 | CLOSE | one code byte: `0` normal end, `1` the target could not be reached, `2` the target is not allowed |
+
+A frame of a type above 5 is skipped, body and all, so a newer peer can add frame types without breaking
+an older one.
 
 A length above 16384 is a protocol error. It is never turned into an allocation.
 
@@ -129,7 +137,8 @@ A length above 16384 is a protocol error. It is never turned into an allocation.
 
 1. The server's first frame is a PAD of random length (16–271 bytes).
 2. The client sends OPEN, then a PAD, then DATA (a TCP target) or DGRAM frames (a
-   UDP target) in both directions, and finally CLOSE or end of stream.
+   UDP target) in both directions, and finally CLOSE or end of stream. OPEN, the first DATA
+   (or DGRAM) and their PAD leave in one write, so they ride one TLS record.
 3. If OPEN does not arrive within 15 s of authentication, the stream is dropped.
 
 **Padding.** DATA is split into frames whose sizes follow a web-like spread rather than a run of
@@ -138,6 +147,10 @@ is one-sided and needs no agreement: a peer joins DATA frames back together and 
 any padding mode interoperates with any other, in both directions. Both ends pad. The mode — `off`,
 `moderate` (default), or `heavy` — is set per server (`kilvaterd -pad`) and per client (the link's optional
 `pad` parameter); it only changes how many frames of what sizes are sent, never the bytes delivered.
+
+Unless the mode is `off`, the first eight writes of a stream are padded harder, each as one record: a write
+shorter than 900 bytes is filled up to 900–1400, a longer one (up to 4096) gets 0–255 more. Those records are
+where a TLS handshake carried inside the tunnel shows its sizes.
 
 **UDP.** An OPEN with network byte `2` starts a UDP association instead of a TCP
 one: the stream then carries DGRAM frames, one frame per datagram in each
@@ -152,10 +165,16 @@ onto a stream; a different destination opens its own stream. DNS (a datagram to
 **Dialing the target:**
 - The server dials the OPEN target with a 10 s timeout.
 - It refuses non-public addresses unless the operator runs with `-allow-private`. Refused targets get
-  `CLOSE(1)`. Non-public means loopback, RFC 1918, RFC 6598 shared space, link-local (including cloud
+  `CLOSE(2)`; a target that did not answer gets `CLOSE(1)`. A client that sees either before any data knows
+  the path itself is fine. Non-public means loopback, RFC 1918, RFC 6598 shared space, link-local (including cloud
   metadata at 169.254.169.254), unique-local, multicast and unspecified.
 - The check runs on the address actually dialed, after DNS resolution. A hostname that resolves to
   `127.0.0.1` is refused too.
+- The node's own addresses and those listed in `-deny-dst` (its sister nodes) are refused on every port but
+  `-self-ports` (80 and 443 by default), so the tunnel cannot be turned on the nodes' own services, tunnel
+  ports included. Ports in `-deny-ports` (25 by default) are refused everywhere.
+- `-max-streams-per-key` counts streams per subscriber for per-subscriber (v2) keys only; a shared v1 key is
+  one name for every client and is not limited by it.
 
 **UDP associations:**
 - A UDP OPEN dials a socket connected to the one target in OPEN. The same
