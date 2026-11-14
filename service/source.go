@@ -44,6 +44,10 @@ func Source(input string) (string, error) {
 	return "", errNotOrden
 }
 
+// plainDoor serves the same catalogue under a name without the brand in it, so
+// the first hostname a client shows the network does not say whose client it is.
+const plainDoor = "https://cdn2.cdn-tvzvezda-ru.ru/api"
+
 // mirrors lists where to fetch a subscription from, in order (AccessCode.mirrors
 // on the phones).
 func mirrors(source string) []string {
@@ -53,7 +57,7 @@ func mirrors(source string) []string {
 	}
 	var out []string
 	if anySub.MatchString(m[1]) {
-		out = append(out, "https://viporden.online"+m[1])
+		out = append(out, plainDoor+m[1], "https://viporden.online"+m[1])
 	}
 	return append(out, "https://myorden.ru"+m[1], "https://joinorden.com"+m[1])
 }

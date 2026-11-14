@@ -362,7 +362,10 @@ func (s *Session) fetch(ctx context.Context, source string) (*fetched, error) {
 				break
 			}
 			r.f, r.err = s.fetchOne(u)
-			if r.err == nil || settled(r.err) {
+			// The plain door's refusal is not final: it is a path on a relay's
+			// site, and a 404 there may be the site's, not the server's answer
+			// about the code.
+			if r.err == nil || settled(r.err) && !strings.HasPrefix(u, plainDoor) {
 				break
 			}
 		}
