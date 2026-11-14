@@ -173,6 +173,8 @@ onto a stream; a different destination opens its own stream. DNS (a datagram to
 - The node's own addresses and those listed in `-deny-dst` (its sister nodes) are refused on every port but
   `-self-ports` (80 and 443 by default), so the tunnel cannot be turned on the nodes' own services, tunnel
   ports included. Ports in `-deny-ports` (25 by default) are refused everywhere.
+  `-deny-dst-file` holds more such addresses, one per line; it is re-read on SIGHUP, so a fleet address
+  change needs no restart.
 - `-max-streams-per-key` counts streams per subscriber for per-subscriber (v2) keys only; a shared v1 key is
   one name for every client and is not limited by it.
 

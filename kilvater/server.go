@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -52,6 +53,10 @@ type Server struct {
 	// stay open, so a site hosted on the node still loads through the tunnel.
 	DenyDst   []netip.Prefix
 	SelfPorts []uint16
+	// denyExtra is a second DenyDst list that may be swapped while serving
+	// (SetDenyExtra): the fleet's addresses change, and a restart to learn a
+	// new one would cut every tunnel.
+	denyExtra atomic.Pointer[[]netip.Prefix]
 	// DenyPorts are target ports no client may reach (25: a key must not turn
 	// the node into a mail relay).
 	DenyPorts []uint16
@@ -86,7 +91,11 @@ func (s *Server) allowed(ap netip.AddrPort) bool {
 			return false
 		}
 	}
-	for _, pfx := range s.DenyDst {
+	deny := s.DenyDst
+	if extra := s.denyExtra.Load(); extra != nil {
+		deny = append(deny[:len(deny):len(deny)], *extra...)
+	}
+	for _, pfx := range deny {
 		if pfx.Contains(ip) {
 			for _, p := range s.SelfPorts {
 				if ap.Port() == p {
@@ -97,6 +106,12 @@ func (s *Server) allowed(ap netip.AddrPort) bool {
 		}
 	}
 	return true
+}
+
+// SetDenyExtra replaces the reloadable part of the DenyDst list. It is safe
+// to call while serving; streams already open are not touched.
+func (s *Server) SetDenyExtra(list []netip.Prefix) {
+	s.denyExtra.Store(&list)
 }
 
 // dialer checks the address actually dialed, after name resolution, so a

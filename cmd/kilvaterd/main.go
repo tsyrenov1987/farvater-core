@@ -50,6 +50,7 @@ func main() {
 	maxBytesPerKey := flag.Int64("max-bytes-per-key", 0, "refuse a key's new streams once it has carried this many payload bytes up+down; 0 is no limit")
 	maxStreamsPerKey := flag.Int64("max-streams-per-key", 0, "cap a key's concurrent streams; 0 is no limit")
 	denyDst := flag.String("deny-dst", "", "comma-separated addresses or prefixes (the sister nodes) clients may reach only on -self-ports; the server's own addresses are always in the list")
+	denyDstFile := flag.String("deny-dst-file", "", "more -deny-dst addresses or prefixes, one per line, '#' comments (reloaded on SIGHUP); a missing file adds nothing")
 	selfPorts := flag.String("self-ports", "80,443", "target ports left open on the server's own addresses and on -deny-dst")
 	denyPorts := flag.String("deny-ports", "25", "target ports no client may reach, comma-separated; empty allows all")
 	showVersion := flag.Bool("version", false, "print the version and exit")
@@ -125,6 +126,25 @@ func main() {
 	}
 	if srv.DenyDst, err = denyPrefixes(*denyDst); err != nil {
 		log.Fatalf("-deny-dst: %v", err)
+	}
+	if *denyDstFile != "" {
+		loadDeny := func() {
+			list, err := readPrefixFile(*denyDstFile)
+			if err != nil {
+				log.Printf("-deny-dst-file: %v (keeping the current list)", err)
+				return
+			}
+			srv.SetDenyExtra(list)
+			log.Printf("deny-dst-file: %d prefix(es)", len(list))
+		}
+		loadDeny()
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGHUP)
+		go func() {
+			for range ch {
+				loadDeny()
+			}
+		}()
 	}
 	if srv.SelfPorts, err = parsePorts(*selfPorts); err != nil {
 		log.Fatalf("-self-ports: %v", err)
@@ -398,6 +418,47 @@ func installReload(v *kilvater.Verifier, load func() (kilvater.VerifierConfig, e
 			log.Printf("reloaded: %d v1 key(s), %d master(s), %d revoked, %s", len(cfg.Keys), nMasters(cfg), len(cfg.Revoked), allowNote(cfg))
 		}
 	}()
+}
+
+// parsePrefix reads one address or prefix.
+func parsePrefix(f string) (netip.Prefix, error) {
+	if p, err := netip.ParsePrefix(f); err == nil {
+		return p.Masked(), nil
+	}
+	a, err := netip.ParseAddr(f)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("%q is neither an address nor a prefix", f)
+	}
+	a = a.Unmap()
+	return netip.PrefixFrom(a, a.BitLen()), nil
+}
+
+// readPrefixFile reads the -deny-dst-file list. A file that does not exist
+// yields an empty list; one bad line fails the whole read, so a broken edit
+// never loosens the list in force.
+func readPrefixFile(path string) ([]netip.Prefix, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []netip.Prefix
+	for _, line := range strings.Split(string(data), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		p, err := parsePrefix(line)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 // denyPrefixes is the -deny-dst list plus every address on the host's own

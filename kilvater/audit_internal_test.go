@@ -171,3 +171,25 @@ func TestTCPSkipsUnknownFrameTypes(t *testing.T) {
 		t.Fatalf("target got %q, want %q", b, "payload")
 	}
 }
+
+func TestSetDenyExtraReloads(t *testing.T) {
+	s := &Server{DenyDst: []netip.Prefix{netip.MustParsePrefix("203.0.113.7/32")}, SelfPorts: []uint16{443}}
+	relay := netip.MustParseAddrPort("192.0.2.9:22")
+	if !s.allowed(relay) {
+		t.Fatal("an address outside every list must be open")
+	}
+	s.SetDenyExtra([]netip.Prefix{netip.MustParsePrefix("192.0.2.9/32")})
+	if s.allowed(relay) {
+		t.Error("the reloaded list must close the address")
+	}
+	if !s.allowed(netip.MustParseAddrPort("192.0.2.9:443")) {
+		t.Error("SelfPorts stay open on the reloaded list")
+	}
+	if s.allowed(netip.MustParseAddrPort("203.0.113.7:22")) {
+		t.Error("the static list must stay in force")
+	}
+	s.SetDenyExtra(nil)
+	if !s.allowed(relay) {
+		t.Error("an emptied list must open the address again")
+	}
+}
