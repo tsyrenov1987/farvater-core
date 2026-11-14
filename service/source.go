@@ -52,6 +52,10 @@ const plainDoor = "https://cdn2.cdn-tvzvezda-ru.ru/api"
 // (A → НСК-1, НСК-2, wl2), for when the first one is cut by name.
 const spareDoor = "https://my.larkfield.top/api"
 
+func isDoor(u string) bool {
+	return strings.HasPrefix(u, plainDoor) || strings.HasPrefix(u, spareDoor)
+}
+
 // mirrors lists where to fetch a subscription from, in order (AccessCode.mirrors
 // on the phones).
 func mirrors(source string) []string {

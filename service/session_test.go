@@ -168,8 +168,8 @@ func TestSettledAnswerStopsMirrors(t *testing.T) {
 	s := session(t, w, true)
 	s.Connect()
 	st := waitState(t, s, "failed")
-	// The plain door's 404 is not taken for the answer; the next mirror's is.
-	if len(w.fetched) != 2 || !strings.Contains(st.Detail, "Такого кода нет") {
+	// The doors' 404s are not taken for the answer; the next mirror's is.
+	if len(w.fetched) != 3 || !strings.HasPrefix(w.fetched[2], "https://viporden.online/") || !strings.Contains(st.Detail, "Такого кода нет") {
 		t.Fatalf("%v %+v", w.fetched, st)
 	}
 }
