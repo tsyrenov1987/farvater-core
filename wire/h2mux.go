@@ -533,7 +533,26 @@ func (s *h2MuxStream) Write(p []byte) (int, error) {
 	if s.up == nil {
 		return 0, io.ErrClosedPipe
 	}
-	return s.up.Write(p)
+	n, err := s.up.Write(p)
+	if err != nil {
+		// The transport closes the request body once the stream is over, so
+		// a write that loses that race sees only a closed pipe. The answer
+		// that ended the stream is the error worth returning (a refusal must
+		// not pass for a broken path); it is known as soon as RoundTrip is.
+		<-s.ready
+		if s.downErr != nil {
+			return n, s.downErr
+		}
+	}
+	return n, err
+}
+
+// CloseWrite ends the request body, leaving the response to be read.
+func (s *h2MuxStream) CloseWrite() error {
+	if s.up == nil {
+		return nil
+	}
+	return s.up.Close()
 }
 
 func (s *h2MuxStream) Close() error {

@@ -54,6 +54,9 @@ func main() {
 	denyDstFile := flag.String("deny-dst-file", "", "more -deny-dst addresses or prefixes, one per line, '#' comments (reloaded on SIGHUP); a missing file adds nothing")
 	selfPorts := flag.String("self-ports", "80,443", "target ports left open on the server's own addresses and on -deny-dst")
 	denyPorts := flag.String("deny-ports", "25", "target ports no client may reach, comma-separated; empty allows all")
+	resumeGrace := flag.Duration("resume-grace", kilvater.DefaultResumeGrace, "how long a TCP flow whose stream was lost waits for its client to come back on another stream; 0 turns resumable flows off")
+	resumeMaxBytes := flag.Int64("resume-max-bytes", kilvater.DefaultResumeMaxBytes, "stop keeping flows that lose their stream while this many bytes are buffered for clients")
+	resumeMaxKept := flag.Int64("resume-max-kept", kilvater.DefaultResumeMaxKept, "stop keeping flows that lose their stream while this many already wait for their client")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -125,7 +128,12 @@ func main() {
 		MaxBytesPerKey:   *maxBytesPerKey,
 		MaxStreamsPerKey: *maxStreamsPerKey,
 		MaxBytesWindow:   *maxBytesWindow,
+
+		ResumeGrace:    *resumeGrace,
+		ResumeMaxBytes: *resumeMaxBytes,
+		ResumeMaxKept:  *resumeMaxKept,
 	}
+	metrics.Resume = srv.ResumeStats
 	if srv.DenyDst, err = denyPrefixes(*denyDst); err != nil {
 		log.Fatalf("-deny-dst: %v", err)
 	}

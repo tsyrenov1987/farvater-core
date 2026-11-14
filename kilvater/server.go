@@ -67,6 +67,19 @@ type Server struct {
 	// the node into a mail relay).
 	DenyPorts []uint16
 
+	// ResumeGrace is how long a TCP flow whose stream was lost waits for its
+	// client to come back on another stream (resume.go). Zero turns resumption
+	// off: the session option in OPEN is ignored and every flow ends with its
+	// stream, as before. ResumeWindow is how many bytes from the target the
+	// server holds per flow until the client confirms them (0: ResumeWindow
+	// of the package). ResumeMaxKept and ResumeMaxBytes bound what waiting
+	// flows may cost: past either, a flow that loses its stream is not kept.
+	ResumeGrace    time.Duration
+	ResumeWindow   int
+	ResumeMaxKept  int64
+	ResumeMaxBytes int64
+	sess           sessions
+
 	// Dial, if set, reaches the clients' TCP targets instead of the checked
 	// dialer (a test lab routing every name to its own site).
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -171,7 +184,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.Metrics.closeStream(ks)
-	s.tunnel(w, r, ks)
+	s.tunnel(w, r, ks, id.Label())
 }
 
 // admit counts a new stream for the key, unless the key has reached a
@@ -193,7 +206,7 @@ func (s *Server) admit(id Identity, now time.Time) (*keyStat, bool) {
 	return s.Metrics.openStream(id.Label(), maxStreams)
 }
 
-func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat) {
+func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat, label string) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -230,19 +243,79 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat) {
 	if f.err != nil || f.typ != FrameOpen || len(f.body) < 2 {
 		return
 	}
-	addr, _, err := ParseAddr(f.body[1:])
+	if f.body[0] == NetResume {
+		s.resume(f.body[1:], label, r.Body, down, ks)
+		return
+	}
+	addr, rest, err := ParseAddr(f.body[1:])
 	if err != nil {
 		return
 	}
 
 	switch f.body[0] {
 	case NetTCP:
+		if sid, ok := ParseSessionExt(rest); ok && s.ResumeGrace > 0 {
+			s.tcpSession(r.Context(), addr, sessKey{label, sid}, r.Body, down, ks)
+			return
+		}
 		s.tcp(r.Context(), addr, r.Body, down, ks)
 	case NetUDP:
 		s.udp(r.Context(), addr, r.Body, down, ks)
 	default:
 		WriteFrame(down, FrameClose, []byte{1})
 	}
+}
+
+// tcpSession is tcp for a client that asked for a resumable flow: the
+// connection to the target belongs to a session, not to this stream.
+func (s *Server) tcpSession(ctx context.Context, addr string, key sessKey, up io.Reader, down io.Writer, ks *keyStat) {
+	dial := s.dialer().DialContext
+	if s.Dial != nil {
+		dial = s.Dial
+	}
+	// Said before the dial, so the client knows at once that the server keeps
+	// count and need not guess while the target is slow to answer.
+	writeAckPad(down, 0)
+	remote, err := dial(ctx, "tcp", addr)
+	if err != nil {
+		s.log("dial %s: %v", addr, err)
+		s.Metrics.dialFail(closeCode(err))
+		WriteFrame(down, FrameClose, []byte{closeCode(err)})
+		return
+	}
+	se := s.sess.add(key, remote, s.resumeWindow())
+	gen, upDone, err := se.attach(0)
+	if err != nil {
+		se.close()
+		return
+	}
+	s.serve(se, gen, 0, upDone, up, down, ks)
+}
+
+// resume continues a session on a new stream. A session only ever answers the
+// key that opened it.
+func (s *Server) resume(body []byte, label string, up io.Reader, down io.Writer, ks *keyStat) {
+	if len(body) < SessionIDLen+8 {
+		WriteFrame(down, FrameClose, []byte{CloseGone})
+		return
+	}
+	var sid SessionID
+	copy(sid[:], body)
+	from, _ := ParseAck(body[SessionIDLen:])
+	se := s.sess.get(sessKey{label, sid})
+	if se == nil {
+		s.sess.gone.Add(1)
+		WriteFrame(down, FrameClose, []byte{CloseGone})
+		return
+	}
+	gen, upDone, err := se.attach(from)
+	if err != nil {
+		s.sess.gone.Add(1)
+		WriteFrame(down, FrameClose, []byte{CloseGone})
+		return
+	}
+	s.sess.resumed.Add(1)
+	s.serve(se, gen, from, upDone, up, down, ks)
 }
 
 func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Writer, ks *keyStat) {

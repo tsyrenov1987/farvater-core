@@ -109,6 +109,9 @@ Open the port in your firewall, for example `sudo ufw allow 443/tcp`.
 | `-max-bytes-per-key` | `0` | refuse a key's new streams once it has carried this many payload bytes up+down; `0` is no limit (§11) |
 | `-max-bytes-window` | `0` | with `-max-bytes-per-key`: count a key's bytes per window of this length (e.g. `24h`) instead of for the life of the process; `0` is no window (§11) |
 | `-max-streams-per-key` | `0` | cap a key's concurrent streams; `0` is no limit (§11) |
+| `-resume-grace` | `30s` | how long a TCP flow whose stream was lost waits for its client to come back on another stream (KILVATER.md §4, "Resuming a flow"); `0` turns resumable flows off. Clients that do not ask for it are served as before |
+| `-resume-max-bytes` | `134217728` | while this many bytes are buffered for clients, a flow that loses its stream is closed instead of kept |
+| `-resume-max-kept` | `4096` | while this many flows already wait for their client, a flow that loses its stream is closed instead of kept |
 | `-genkey` | — | print a new random v1 client key and exit |
 | `-genmaster` | — | print a new random master key and exit |
 | `-issue <id>` | — | with `-master`: print the key id and derived key for a subscriber id, and exit (§10) |
@@ -283,7 +286,8 @@ Per key (`key="<id>"` or `key="v1"`): `kilvater_key_up_bytes_total`, `kilvater_k
 actually connect (a rejected tag makes no series). Health, unlabelled: `kilvater_connections_total` /
 `_open`, `kilvater_handshake_failures_total`, `kilvater_streams_total` / `_open`, `kilvater_auth_failures_total`
 (a request whose tag cookie did not verify), `kilvater_replay_hits_total`, `kilvater_open_timeouts_total`,
-`kilvater_limit_rejects_total`, `kilvater_up_bytes_total` / `_down_bytes_total`. Counters are over the
+`kilvater_limit_rejects_total`, `kilvater_up_bytes_total` / `_down_bytes_total`. Resumable flows: `kilvater_resumed_total`,
+`kilvater_resume_gone_total`, `kilvater_resume_lost_total`, `kilvater_resume_kept`, `kilvater_resume_held_bytes`. Counters are over the
 process's life and reset on restart.
 
 **Per-key limits** are off by default. `-max-bytes-per-key N` refuses a key's *new* streams once it has carried

@@ -17,6 +17,9 @@ import (
 // address. All methods are safe on a nil *Metrics, so a Server without metrics
 // pays nothing and needs no guards at the call sites.
 type Metrics struct {
+	// Resume, if set, reports the server's resumable flows (Server.ResumeStats).
+	Resume func() ResumeStats
+
 	mu   sync.Mutex
 	keys map[string]*keyStat
 	// fails counts refused v2 tags by claimed key id and reason. The id in a
@@ -279,6 +282,22 @@ func (m *Metrics) WritePrometheus(w io.Writer) {
 		{"kilvater_down_bytes_total", "counter", "payload bytes from targets to clients", m.downBytes.Load()},
 	} {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %d\n", s.name, s.help, s.name, s.typ, s.name, s.val)
+	}
+
+	if m.Resume != nil {
+		rs := m.Resume()
+		for _, s := range []struct {
+			name, typ, help string
+			val             int64
+		}{
+			{"kilvater_resumed_total", "counter", "streams that continued a flow after its stream was lost", rs.Resumed},
+			{"kilvater_resume_gone_total", "counter", "streams that asked to continue a flow the server no longer had", rs.Gone},
+			{"kilvater_resume_lost_total", "counter", "flows dropped while waiting for their client to return", rs.Lost},
+			{"kilvater_resume_kept", "gauge", "flows waiting for their client to return now", rs.Kept},
+			{"kilvater_resume_held_bytes", "gauge", "bytes buffered for clients until they confirm them", rs.HeldBytes},
+		} {
+			fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %d\n", s.name, s.help, s.name, s.typ, s.name, s.val)
+		}
 	}
 
 	if m.verifier != nil {
