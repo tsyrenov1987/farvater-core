@@ -97,6 +97,9 @@ type Receipt struct {
 	DstClass   DstClass
 	Explore    bool
 	SleptMs    int64 // how long the device slept while the flow was open
+	// DstRefused: the node itself said, over the path, that it could not reach
+	// the destination. The path carried the question and that reply.
+	DstRefused bool
 }
 
 // FirstByte reports whether the destination answered through this path.

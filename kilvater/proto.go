@@ -56,6 +56,21 @@ func WriteFrame(w io.Writer, typ byte, body []byte) error {
 	return err
 }
 
+// AppendFrame appends one frame to b. The caller keeps body within MaxFrame.
+// It lets several frames go out in one Write, and so in one TLS record.
+func AppendFrame(b []byte, typ byte, body []byte) []byte {
+	b = append(b, typ, byte(len(body)>>16), byte(len(body)>>8), byte(len(body)))
+	return append(b, body...)
+}
+
+// Codes a CLOSE frame carries. A reader that knows none of them treats every
+// CLOSE as the end of the stream, as v1 did.
+const (
+	CloseOK        byte = 0 // the target finished
+	CloseDialFail  byte = 1 // the server could not reach the target
+	CloseForbidden byte = 2 // the server will not dial this target
+)
+
 // WritePad writes a PAD frame of a random length, so the size of the first
 // records a session puts on the wire varies run to run. The body is ignored
 // on read; only its length, which TLS passes through to the record size,
@@ -159,8 +174,9 @@ const verifiedV2 = 1 << 20
 // set; it gates only new streams, so a running tunnel is never touched.
 type keySet struct {
 	keys    []Key          // v1 flat keys, tried for a v1 tag
-	master  *Key           // optional master for v2 derived keys
+	masters []Key          // masters a v2 key may be derived from (none disables v2)
 	revoked map[KeyID]bool // revoked v2 key ids
+	allowed map[KeyID]bool // the only v2 key ids accepted; nil accepts any
 }
 
 // Verifier checks tags against its key material and refuses a tag seen before.
@@ -174,6 +190,11 @@ type Verifier struct {
 	pruned int64
 
 	replays atomic.Int64 // tags rejected as replays, read by metrics
+
+	// masterHits counts accepted v2 tags by the position of the master that
+	// verified them (VerifierConfig order: Master, then Masters), so an operator
+	// sees when nothing uses a master any more before dropping it.
+	masterHits [maxMasterHits]atomic.Int64
 }
 
 func NewVerifier(keys []Key) *Verifier {
@@ -185,9 +206,19 @@ func NewVerifier(keys []Key) *Verifier {
 // VerifierConfig is a verifier's key material, for NewVerifierConfig and
 // Reload (the shape a kilvaterd reload reads from its files).
 type VerifierConfig struct {
-	Keys    []Key   // v1 flat keys
-	Master  *Key    // optional master enabling v2 derived keys
+	Keys   []Key // v1 flat keys
+	Master *Key  // optional master enabling v2 derived keys
+	// Masters are further masters a v2 key is accepted under, tried after
+	// Master. They let a node take keys derived from its node master
+	// (NodeMaster) and, while clients move over, from the fleet master too.
+	Masters []Key
 	Revoked []KeyID // revoked v2 key ids
+	// Allowed, when AllowList is set, are the only v2 key ids accepted: an id
+	// a master would derive a key for is refused unless it is listed. This is
+	// how a subscriber who is gone, deleted or paused loses the tunnel without
+	// anyone having to remember the id to revoke. v1 keys are not affected.
+	Allowed   []KeyID
+	AllowList bool
 }
 
 // NewVerifierConfig builds a verifier from full key material (v1 keys, an
@@ -206,7 +237,19 @@ func (v *Verifier) Reload(cfg VerifierConfig) {
 	for _, id := range cfg.Revoked {
 		rev[id] = true
 	}
-	v.set.Store(&keySet{keys: cfg.Keys, master: cfg.Master, revoked: rev})
+	var masters []Key
+	if cfg.Master != nil {
+		masters = append(masters, *cfg.Master)
+	}
+	masters = append(masters, cfg.Masters...)
+	var allowed map[KeyID]bool
+	if cfg.AllowList {
+		allowed = make(map[KeyID]bool, len(cfg.Allowed))
+		for _, id := range cfg.Allowed {
+			allowed[id] = true
+		}
+	}
+	v.set.Store(&keySet{keys: cfg.Keys, masters: masters, revoked: rev, allowed: allowed})
 }
 
 // Identity names the key a tag authenticated as, for per-key accounting and
@@ -228,6 +271,22 @@ func (id Identity) Label() string {
 	return "v1"
 }
 
+const maxMasterHits = 4
+
+// MasterHits returns how many v2 tags each configured master has verified, by
+// position (Master first, then Masters), for metrics.
+func (v *Verifier) MasterHits() []int64 {
+	n := len(v.set.Load().masters)
+	if n > maxMasterHits {
+		n = maxMasterHits
+	}
+	out := make([]int64, n)
+	for i := range out {
+		out[i] = v.masterHits[i].Load()
+	}
+	return out
+}
+
 // Replays is the number of tags rejected as replays, for metrics.
 func (v *Verifier) Replays() int64 { return v.replays.Load() }
 
@@ -244,18 +303,38 @@ func (v *Verifier) Verify(tag, path string, now time.Time) int {
 // meaningful only on accept. Call one of Verify/VerifyIdentity per request:
 // both consume the replay window.
 func (v *Verifier) VerifyIdentity(tag, path string, now time.Time) (int, Identity) {
+	n, id, _ := v.VerifyDetail(tag, path, now)
+	return n, id
+}
+
+// Reasons a v2 tag is refused, as VerifyDetail reports them.
+const (
+	FailNoV2    = "nov2"    // the server has no master
+	FailWindow  = "window"  // the timestamp is outside TagWindow
+	FailRevoked = "revoked" // the key id is revoked
+	FailUnknown = "unknown" // the key id is not on the allow list
+	FailMAC     = "mac"     // the MAC matches no master: a wrong or foreign key
+	FailReplay  = "replay"  // the tag was seen before
+)
+
+// VerifyDetail is VerifyIdentity plus, on a refused v2 tag, why: the Identity
+// then carries the key id the tag claimed (unverified — anyone can write any id
+// into a tag) and the reason is one of the Fail* constants. For a refused v1 or
+// malformed tag the Identity is zero and the reason empty.
+func (v *Verifier) VerifyDetail(tag, path string, now time.Time) (int, Identity, string) {
 	b, err := base64.RawURLEncoding.DecodeString(tag)
 	if err != nil {
-		return -1, Identity{}
+		return -1, Identity{}, ""
 	}
 	set := v.set.Load()
 	switch {
 	case len(b) == TagSize:
-		return v.verifyV1(set, b, path, now)
+		n, id := v.verifyV1(set, b, path, now)
+		return n, id, ""
 	case len(b) == tagV2Size && b[0] == tagVersion2:
 		return v.verifyV2(set, b, path, now)
 	default:
-		return -1, Identity{}
+		return -1, Identity{}, ""
 	}
 }
 
@@ -279,31 +358,44 @@ func (v *Verifier) verifyV1(set *keySet, b []byte, path string, now time.Time) (
 	return idx, Identity{Index: idx}
 }
 
-func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (int, Identity) {
-	if set.master == nil {
-		return -1, Identity{}
-	}
+func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (int, Identity, string) {
 	var id KeyID
 	copy(id[:], b[1:1+KeyIDSize])
+	claimed := Identity{V2: true, KeyID: id}
+	if len(set.masters) == 0 {
+		return -1, claimed, FailNoV2
+	}
 	off := 1 + KeyIDSize
 	ts := int64(binary.BigEndian.Uint64(b[off : off+8]))
 	if !withinWindow(ts, now) {
-		return -1, Identity{}
+		return -1, claimed, FailWindow
 	}
 	if set.revoked[id] {
-		return -1, Identity{}
+		return -1, claimed, FailRevoked
 	}
-	want := macV2(DeriveKey(*set.master, id), id, b[off:off+8], b[off+8:off+16], path)
+	if set.allowed != nil && !set.allowed[id] {
+		return -1, claimed, FailUnknown
+	}
 	tagMAC := b[off+16:]
-	if !hmac.Equal(want, tagMAC) {
-		return -1, Identity{}
+	hit := -1
+	for i, m := range set.masters {
+		if hmac.Equal(macV2(DeriveKey(m, id), id, b[off:off+8], b[off+8:off+16], path), tagMAC) {
+			hit = i
+			break
+		}
+	}
+	if hit < 0 {
+		return -1, claimed, FailMAC
 	}
 	// Key the replay set by the MAC: unique per client, ts and nonce, so two
 	// clients that pick the same nonce are not taken for a replay of each other.
 	if !v.firstSeen(tagMAC, ts, now) {
-		return -1, Identity{}
+		return -1, claimed, FailReplay
 	}
-	return verifiedV2, Identity{V2: true, KeyID: id}
+	if hit < maxMasterHits {
+		v.masterHits[hit].Add(1)
+	}
+	return verifiedV2, claimed, ""
 }
 
 func withinWindow(ts int64, now time.Time) bool {

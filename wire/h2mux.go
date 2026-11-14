@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -53,6 +54,18 @@ type h2Mux struct {
 	maxAge   time.Duration
 	maxBytes int64
 
+	// spread makes each connection's own limits a random share of maxAge and
+	// maxBytes, within ±spread of them (0: exactly the limits), so a client's
+	// connections do not turn over on one clock.
+	spread float64
+
+	// ahead, when above 0, is the share of a connection's limit past which
+	// the next connection is made in the background (dialed and warmed), so
+	// the stream that rotates takes one that is ready instead of holding
+	// every new stream behind a handshake and a page fetch. 0 turns it off:
+	// the rotating stream dials, as before.
+	ahead float64
+
 	// onEnd, when set, hears of each connection's end: how it ended, the bytes
 	// it had carried and when it was made (ConnWatcher). Set before the first
 	// stream. lostPing is when the Transport last gave a connection up for a
@@ -65,6 +78,124 @@ type h2Mux struct {
 	conn *countConn
 	at   time.Time     // when cc was made
 	n    *atomic.Int64 // bytes read and written on cc, for maxBytes
+
+	ageLim  time.Duration // cc's own rotation limits (maxAge, maxBytes, spread)
+	byteLim int64
+
+	spare    *muxConn // the next connection, made ahead of the rotation
+	sparing  bool     // one is being made
+	spareGen int      // bumped to disown the one being made (refresh, Close)
+}
+
+// muxConn is a connection made and warmed, not yet the current one.
+type muxConn struct {
+	cc   *http2.ClientConn
+	conn *countConn
+	n    *atomic.Int64
+	made time.Time
+}
+
+// spareDialTimeout bounds the making of the next connection in the background.
+const spareDialTimeout = 30 * time.Second
+
+// newConn dials and warms one connection. It takes no lock.
+func (m *h2Mux) newConn(ctx context.Context) (*muxConn, error) {
+	raw, err := m.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	n := new(atomic.Int64)
+	c := &countConn{Conn: raw, n: n, m: m, made: time.Now()}
+	cc, err := m.tr.NewClientConn(&h2FrameCap{Conn: c})
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	if m.warm != nil {
+		m.warm(ctx, cc)
+	}
+	return &muxConn{cc: cc, conn: c, n: n, made: c.made}, nil
+}
+
+// adoptLocked makes c the current connection and retires the one before it.
+func (m *h2Mux) adoptLocked(c *muxConn) {
+	old, oldConn := m.cc, m.conn
+	m.cc, m.conn, m.at, m.n = c.cc, c.conn, time.Now(), c.n
+	m.ageLim, m.byteLim = spreadDuration(m.maxAge, m.spread), int64(spreadDuration(time.Duration(m.maxBytes), m.spread))
+	if old != nil {
+		m.retire(old, oldConn)
+	}
+}
+
+// spreadDuration is a random point within ±spread of d.
+func spreadDuration(d time.Duration, spread float64) time.Duration {
+	if d <= 0 || spread <= 0 {
+		return d
+	}
+	return time.Duration(float64(d) * (1 - spread + 2*spread*rand.Float64()))
+}
+
+// dueLocked reports whether the current connection is far enough into a
+// limit for the next one to be made ahead.
+func (m *h2Mux) dueLocked() bool {
+	if m.ahead <= 0 || m.cc == nil {
+		return false
+	}
+	if m.ageLim > 0 && float64(time.Since(m.at)) >= m.ahead*float64(m.ageLim) {
+		return true
+	}
+	return m.byteLim > 0 && m.n != nil && float64(m.n.Load()) >= m.ahead*float64(m.byteLim)
+}
+
+// spareAheadLocked starts the making of the next connection, once.
+func (m *h2Mux) spareAheadLocked() {
+	if m.sparing || m.spare != nil {
+		return
+	}
+	m.sparing = true
+	gen := m.spareGen
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), spareDialTimeout)
+		c, err := m.newConn(ctx)
+		cancel()
+		m.mu.Lock()
+		m.sparing = false
+		if err == nil && gen == m.spareGen {
+			m.spare = c
+			c = nil
+		}
+		m.mu.Unlock()
+		if c != nil {
+			c.cc.Close()
+			c.conn.Close()
+		}
+	}()
+}
+
+// takeSpareLocked hands over the connection made ahead if it can still carry
+// a stream, reserving one on it; a spare that died waiting is dropped.
+func (m *h2Mux) takeSpareLocked() *muxConn {
+	c := m.spare
+	if c == nil {
+		return nil
+	}
+	m.spare = nil
+	if (m.maxAge > 0 && time.Since(c.made) >= m.maxAge) || !c.cc.ReserveNewRequest() {
+		c.cc.Close()
+		c.conn.Close()
+		return nil
+	}
+	return c
+}
+
+// dropSpareLocked gives up the connection made ahead, and the one being made.
+func (m *h2Mux) dropSpareLocked() {
+	m.spareGen++
+	if c := m.spare; c != nil {
+		m.spare = nil
+		c.cc.Close()
+		c.conn.Close()
+	}
 }
 
 // h2StreamWindow is how much one stream may hold that the app has not read
@@ -113,12 +244,14 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cc != nil && !m.expiredLocked() && m.cc.ReserveNewRequest() {
+		if m.dueLocked() {
+			m.spareAheadLocked()
+		}
 		return m.cc, m.conn, nil
 	}
-	old, oldConn := m.cc, m.conn
-	raw, err := m.dial(ctx)
-	if err != nil {
-		return nil, nil, err
+	if c := m.takeSpareLocked(); c != nil {
+		m.adoptLocked(c)
+		return c.cc, c.conn, nil
 	}
 	if m.onEnd != nil && m.tr.CountError == nil {
 		// The Transport names the error just before it closes the connection
@@ -129,26 +262,17 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 			}
 		}
 	}
-	n := new(atomic.Int64)
-	c := &countConn{Conn: raw, n: n, m: m, made: time.Now()}
-	cc, err := m.tr.NewClientConn(&h2FrameCap{Conn: c})
+	c, err := m.newConn(ctx)
 	if err != nil {
-		c.Close()
 		return nil, nil, err
 	}
-	if m.warm != nil {
-		m.warm(ctx, cc)
-	}
-	if !cc.ReserveNewRequest() {
-		cc.Close()
-		c.Close()
+	if !c.cc.ReserveNewRequest() {
+		c.cc.Close()
+		c.conn.Close()
 		return nil, nil, errors.New("h2mux: a fresh connection would not take a stream")
 	}
-	m.cc, m.conn, m.at, m.n = cc, c, time.Now(), n
-	if old != nil {
-		m.retire(old, oldConn)
-	}
-	return cc, c, nil
+	m.adoptLocked(c)
+	return c.cc, c.conn, nil
 }
 
 // expiredLocked reports whether the current connection has hit a rotation
@@ -157,10 +281,10 @@ func (m *h2Mux) expiredLocked() bool {
 	if m.cc == nil {
 		return false
 	}
-	if m.maxAge > 0 && time.Since(m.at) >= m.maxAge {
+	if m.ageLim > 0 && time.Since(m.at) >= m.ageLim {
 		return true
 	}
-	if m.maxBytes > 0 && m.n != nil && m.n.Load() >= m.maxBytes {
+	if m.byteLim > 0 && m.n != nil && m.n.Load() >= m.byteLim {
 		return true
 	}
 	return false
@@ -174,7 +298,11 @@ func (m *h2Mux) expiredLocked() bool {
 func (m *h2Mux) needsDial() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.cc == nil || !m.cc.CanTakeNewRequest() || m.expiredLocked()
+	if m.cc != nil && m.cc.CanTakeNewRequest() && !m.expiredLocked() {
+		return false
+	}
+	// A connection made ahead takes the stream with no handshake.
+	return m.spare == nil || !m.spare.cc.CanTakeNewRequest()
 }
 
 // retire lets a connection that takes no new streams finish the ones it
@@ -211,6 +339,10 @@ const defaultRetirePing = 10 * time.Second
 func (m *h2Mux) refresh(t time.Time) {
 	m.mu.Lock()
 	old, oldConn := m.cc, m.conn
+	if m.sparing || (m.spare != nil && m.spare.made.Before(t)) {
+		// One being made started on the network as it was: disown it too.
+		m.dropSpareLocked()
+	}
 	if old == nil || !m.at.Before(t) {
 		m.mu.Unlock()
 		return
@@ -307,6 +439,7 @@ func (m *h2Mux) post(ctx context.Context, reqURL string, header http.Header, bod
 func (m *h2Mux) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.dropSpareLocked()
 	if m.cc != nil {
 		m.cc.Close()
 		m.cc = nil

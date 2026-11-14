@@ -249,3 +249,36 @@ func TestListenPlainUnixSocket(t *testing.T) {
 		t.Fatalf("echo %q (%v)", got, err)
 	}
 }
+
+// With the front proxy offering ALPN "h2 http/1.1" (so a prober that offers
+// only http/1.1 gets a page, as from any nginx, not a no_application_protocol
+// alert), kilvaterd's h2c listener receives plain HTTP/1.1 too. The SETTINGS
+// shaper must let that response through: read as a frame header, "HTTP/1.1"
+// is a multi-megabyte length, and it used to hold the response forever.
+func TestH2CServesHTTP1Decoy(t *testing.T) {
+	key, _ := h2cTestKey(t)
+	srv := &kilvater.Server{
+		Verifier: kilvater.NewVerifier([]kilvater.Key{key}),
+		Decoy:    newNginxDecoy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "a real site") })),
+	}
+	addr := serveH2C(t, srv)
+	c := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{}}
+	for _, m := range []string{"GET", "POST"} {
+		req, _ := http.NewRequest(m, "http://"+addr+"/", nil)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatalf("%s over HTTP/1.1: %v", m, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.ProtoMajor != 1 || resp.Header.Get("Server") != "nginx" {
+			t.Errorf("%s: proto %s, Server %q", m, resp.Proto, resp.Header.Get("Server"))
+		}
+		if m == "GET" && string(body) != "a real site" {
+			t.Errorf("GET body %q", body)
+		}
+		if m == "POST" && resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("POST status %d, want 405", resp.StatusCode)
+		}
+	}
+}

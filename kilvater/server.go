@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -37,11 +38,28 @@ type Server struct {
 
 	// MaxBytesPerKey caps the total (up+down) payload bytes one key may carry
 	// before its new streams are refused; MaxStreamsPerKey caps a key's
-	// concurrent streams. Both are off at zero, and both need Metrics set. A
+	// concurrent streams. Both are off at zero, both need Metrics set, and both
+	// count v2 keys only (the shared v1 keys are one label for everyone). A
 	// refused request gets the decoy, like a bad tag; a stream already running
 	// is never cut.
 	MaxBytesPerKey   int64
 	MaxStreamsPerKey int64
+
+	// DenyDst are addresses clients may reach only on the ports in SelfPorts:
+	// the server's own public addresses and those of its sister nodes. A
+	// connection the server makes to its own address goes over the loopback,
+	// past the firewall that hides its management ports from the internet,
+	// and a sister node may let this one in by address. The public web ports
+	// stay open, so a site hosted on the node still loads through the tunnel.
+	DenyDst   []netip.Prefix
+	SelfPorts []uint16
+	// denyExtra is a second DenyDst list that may be swapped while serving
+	// (SetDenyExtra): the fleet's addresses change, and a restart to learn a
+	// new one would cut every tunnel.
+	denyExtra atomic.Pointer[[]netip.Prefix]
+	// DenyPorts are target ports no client may reach (25: a key must not turn
+	// the node into a mail relay).
+	DenyPorts []uint16
 
 	// Dial, if set, reaches the clients' TCP targets instead of the checked
 	// dialer (a test lab routing every name to its own site).
@@ -62,20 +80,60 @@ func publicOnly(ip netip.Addr) bool {
 		!ip.IsMulticast() && !cgnat.Contains(ip)
 }
 
-// dialer checks the address actually dialed, after name resolution, so a
-// hostname that resolves to a private address is refused too.
-func (s *Server) dialer() *net.Dialer {
-	d := &net.Dialer{Timeout: 10 * time.Second}
-	if !s.AllowPrivate {
-		d.Control = func(_, address string, _ syscall.RawConn) error {
-			ap, err := netip.ParseAddrPort(address)
-			if err != nil || !publicOnly(ap.Addr()) {
-				return errForbiddenTarget
-			}
-			return nil
+// allowed reports whether the resolved address may be dialed.
+func (s *Server) allowed(ap netip.AddrPort) bool {
+	ip := ap.Addr().Unmap()
+	if !s.AllowPrivate && !publicOnly(ip) {
+		return false
+	}
+	for _, p := range s.DenyPorts {
+		if ap.Port() == p {
+			return false
 		}
 	}
+	deny := s.DenyDst
+	if extra := s.denyExtra.Load(); extra != nil {
+		deny = append(deny[:len(deny):len(deny)], *extra...)
+	}
+	for _, pfx := range deny {
+		if pfx.Contains(ip) {
+			for _, p := range s.SelfPorts {
+				if ap.Port() == p {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return true
+}
+
+// SetDenyExtra replaces the reloadable part of the DenyDst list. It is safe
+// to call while serving; streams already open are not touched.
+func (s *Server) SetDenyExtra(list []netip.Prefix) {
+	s.denyExtra.Store(&list)
+}
+
+// dialer checks the address actually dialed, after name resolution, so a
+// hostname that resolves to a private or denied address is refused too.
+func (s *Server) dialer() *net.Dialer {
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	d.Control = func(_, address string, _ syscall.RawConn) error {
+		ap, err := netip.ParseAddrPort(address)
+		if err != nil || !s.allowed(ap) {
+			return errForbiddenTarget
+		}
+		return nil
+	}
 	return d
+}
+
+// closeCode is the CLOSE code for a dial that failed.
+func closeCode(err error) byte {
+	if errors.Is(err, errForbiddenTarget) {
+		return CloseForbidden
+	}
+	return CloseDialFail
 }
 
 // openReadTimeout bounds how long the server waits for a client's OPEN frame
@@ -94,9 +152,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.Decoy.ServeHTTP(w, r) // an ordinary visitor, no tag at all
 		return
 	}
-	n, id := s.Verifier.VerifyIdentity(c.Value, r.URL.Path, time.Now())
+	n, id, why := s.Verifier.VerifyDetail(c.Value, r.URL.Path, time.Now())
 	if n < 0 {
-		s.Metrics.authFail() // a tag cookie was present but did not verify
+		s.Metrics.authFailKey(id, why) // a tag cookie was present but did not verify
 		s.Decoy.ServeHTTP(w, r)
 		return
 	}
@@ -113,6 +171,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) overLimit(id Identity) bool {
 	if s.Metrics == nil || (s.MaxBytesPerKey <= 0 && s.MaxStreamsPerKey <= 0) {
 		return false
+	}
+	if !id.V2 {
+		return false // the v1 keys share one label: a limit there would be everyone's
 	}
 	ks := s.Metrics.stat(id.Label())
 	if s.MaxBytesPerKey > 0 && ks.up.Load()+ks.down.Load() >= s.MaxBytesPerKey {
@@ -186,7 +247,8 @@ func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Wri
 	remote, err := dial(ctx, "tcp", addr)
 	if err != nil {
 		s.log("dial %s: %v", addr, err)
-		WriteFrame(down, FrameClose, []byte{1})
+		s.Metrics.dialFail(closeCode(err))
+		WriteFrame(down, FrameClose, []byte{closeCode(err)})
 		return
 	}
 	defer remote.Close()
@@ -231,6 +293,9 @@ func (s *Server) tcp(ctx context.Context, addr string, up io.Reader, down io.Wri
 			case FrameClose:
 				return
 			default:
+				if typ > FrameClose {
+					continue // a frame type from a newer client: skip it, like PAD
+				}
 				cancel()
 				return
 			}
@@ -275,7 +340,8 @@ func (s *Server) udp(ctx context.Context, addr string, up io.Reader, down io.Wri
 	remote, err := s.dialer().DialContext(ctx, "udp", addr)
 	if err != nil {
 		s.log("dial udp %s: %v", addr, err)
-		WriteFrame(down, FrameClose, []byte{1})
+		s.Metrics.dialFail(closeCode(err))
+		WriteFrame(down, FrameClose, []byte{closeCode(err)})
 		return
 	}
 	defer remote.Close()
@@ -321,6 +387,9 @@ func (s *Server) udp(ctx context.Context, addr string, up io.Reader, down io.Wri
 				cancel() // UDP has no half-close: end both ways
 				return
 			default:
+				if typ > FrameClose {
+					continue // a frame type from a newer client: skip it, like PAD
+				}
 				cancel()
 				return
 			}

@@ -36,9 +36,10 @@ const (
 	// tagV2Size: version(1) + keyID(8) + unix seconds(8) + nonce(8) + MAC(16).
 	tagV2Size = 1 + KeyIDSize + 8 + 8 + 16
 
-	deriveInfo = "kilvater/key\x00" // HKDF info prefix for a client key
-	kidInfo    = "kilvater/kid\x00" // HMAC prefix for a key id
-	macV2Label = "kilvater/2\x00"   // domain of a v2 tag MAC
+	deriveInfo = "kilvater/key\x00"  // HKDF info prefix for a client key
+	kidInfo    = "kilvater/kid\x00"  // HMAC prefix for a key id
+	nodeInfo   = "kilvater/node\x00" // HMAC prefix for a node master
+	macV2Label = "kilvater/2\x00"    // domain of a v2 tag MAC
 )
 
 // DeriveKey computes a client key from the master and a key id:
@@ -73,6 +74,25 @@ func KeyIDFor(master Key, subscriber []byte) KeyID {
 	var id KeyID
 	copy(id[:], m.Sum(nil))
 	return id
+}
+
+// NodeMaster binds the master to one node:
+//
+//	nodeMaster = HMAC-SHA256(master, "kilvater/node\0" || node)
+//
+// A worker that derives a client's key from the node master (DeriveKey(
+// NodeMaster(master, node), id)) hands out a key that opens that node only, and
+// the node holds only its own node master: a key leaked from one node's
+// subscription line, or the key material taken from one node, opens no other.
+// The key id stays KeyIDFor(master, subscriber), the same on every node, so one
+// subscriber is one id across the fleet for accounting and revocation.
+func NodeMaster(master Key, node string) Key {
+	m := hmac.New(sha256.New, master[:])
+	m.Write([]byte(nodeInfo))
+	m.Write([]byte(node))
+	var k Key
+	copy(k[:], m.Sum(nil))
+	return k
 }
 
 func macV2(k Key, id KeyID, ts, nonce []byte, path string) []byte {

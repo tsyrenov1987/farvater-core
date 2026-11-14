@@ -18,6 +18,10 @@ import (
 type Metrics struct {
 	mu   sync.Mutex
 	keys map[string]*keyStat
+	// fails counts refused v2 tags by claimed key id and reason. The id in a
+	// refused tag is unverified, so a scanner could mint endless ids: past
+	// maxFailLabels distinct ids the rest fold into key="other".
+	fails map[failLabel]int64
 
 	connsTotal    atomic.Int64
 	connsOpen     atomic.Int64
@@ -27,6 +31,8 @@ type Metrics struct {
 	authFailures  atomic.Int64
 	limitRejects  atomic.Int64
 	openTimeouts  atomic.Int64
+	dialFails     atomic.Int64
+	dialForbidden atomic.Int64
 	upBytes       atomic.Int64
 	downBytes     atomic.Int64
 
@@ -103,15 +109,67 @@ func (m *Metrics) closeStream(ks *keyStat) {
 	ks.streamsOpen.Add(-1)
 }
 
-func (m *Metrics) authFail() {
-	if m != nil {
-		m.authFailures.Add(1)
+// maxFailLabels caps the distinct key ids kept in the per-key failure counters.
+const maxFailLabels = 512
+
+type failLabel struct{ key, reason string }
+
+// authFailKey records a refused v2 tag under the key id it claimed and why it
+// was refused (a Fail* reason), on top of the global auth-failure count. A
+// subscriber whose own key is refused on many nodes, or one id piling up "mac"
+// failures, is a key being used where it does not belong.
+func (m *Metrics) authFailKey(id Identity, reason string) {
+	if m == nil {
+		return
 	}
+	m.authFailures.Add(1)
+	if !id.V2 || reason == "" {
+		return
+	}
+	l := failLabel{id.Label(), reason}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.fails == nil {
+		m.fails = map[failLabel]int64{}
+	}
+	if _, ok := m.fails[l]; !ok && len(m.fails) >= maxFailLabels {
+		l.key = "other"
+	}
+	m.fails[l]++
 }
 
 func (m *Metrics) limitReject() {
 	if m != nil {
 		m.limitRejects.Add(1)
+	}
+}
+
+// dialFail counts a target the server did not reach, by CLOSE code.
+func (m *Metrics) dialFail(code byte) {
+	if m == nil {
+		return
+	}
+	if code == CloseForbidden {
+		m.dialForbidden.Add(1)
+		return
+	}
+	m.dialFails.Add(1)
+}
+
+// ConnOpened and ConnClosed count a connection from the listener's side, for
+// a server whose connections net/http stops reporting once they are hijacked
+// (the h2c path): there ConnState sees StateNew and never StateClosed, and the
+// open gauge would only grow.
+func (m *Metrics) ConnOpened() {
+	if m != nil {
+		m.connsTotal.Add(1)
+		m.connsOpen.Add(1)
+	}
+}
+
+func (m *Metrics) ConnClosed() {
+	if m != nil {
+		m.connsOpen.Add(-1)
 	}
 }
 
@@ -178,10 +236,42 @@ func (m *Metrics) WritePrometheus(w io.Writer) {
 		{"kilvater_replay_hits_total", "counter", "tags rejected as replays", replays},
 		{"kilvater_open_timeouts_total", "counter", "authenticated streams that never sent OPEN in time", m.openTimeouts.Load()},
 		{"kilvater_limit_rejects_total", "counter", "streams refused by a per-key limit", m.limitRejects.Load()},
+		{"kilvater_dial_fails_total", "counter", "targets the server could not reach", m.dialFails.Load()},
+		{"kilvater_dial_forbidden_total", "counter", "targets the server refused to dial (private, denied address or port)", m.dialForbidden.Load()},
 		{"kilvater_up_bytes_total", "counter", "payload bytes from clients to targets", m.upBytes.Load()},
 		{"kilvater_down_bytes_total", "counter", "payload bytes from targets to clients", m.downBytes.Load()},
 	} {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %d\n", s.name, s.help, s.name, s.typ, s.name, s.val)
+	}
+
+	if m.verifier != nil {
+		fmt.Fprintf(w, "# HELP kilvater_master_accepts_total v2 tags verified, by the position of the master in the -master file\n# TYPE kilvater_master_accepts_total counter\n")
+		for i, n := range m.verifier.MasterHits() {
+			fmt.Fprintf(w, "kilvater_master_accepts_total{master=\"%d\"} %d\n", i, n)
+		}
+	}
+
+	// Per-key failures, sorted so the output is stable.
+	m.mu.Lock()
+	fl := make([]failLabel, 0, len(m.fails))
+	for l := range m.fails {
+		fl = append(fl, l)
+	}
+	sort.Slice(fl, func(i, j int) bool {
+		if fl[i].key != fl[j].key {
+			return fl[i].key < fl[j].key
+		}
+		return fl[i].reason < fl[j].reason
+	})
+	fv := make([]int64, len(fl))
+	for i, l := range fl {
+		fv[i] = m.fails[l]
+	}
+	m.mu.Unlock()
+	fmt.Fprintf(w, "# HELP kilvater_key_auth_failures_total refused v2 tags by the key id they claimed and the reason\n# TYPE kilvater_key_auth_failures_total counter\n")
+	for i, l := range fl {
+		// Labels are hex, "other" and fixed reason words: Prometheus-valid.
+		fmt.Fprintf(w, "kilvater_key_auth_failures_total{key=%q,reason=%q} %d\n", l.key, l.reason, fv[i])
 	}
 
 	// Per-key counters, sorted so the output is stable.

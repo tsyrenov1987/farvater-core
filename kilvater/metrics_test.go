@@ -191,3 +191,45 @@ func TestMetricsMaxBytesPerKeyRefusesNewStreams(t *testing.T) {
 		}
 	}
 }
+
+// A refused v2 tag is counted under the key id it claimed and the reason, so a
+// key used on a node it does not belong to shows up by id; the labels are
+// capped, since the id in a refused tag is whatever the sender wrote.
+func TestMetricsCountsAuthFailuresByKeyID(t *testing.T) {
+	master := testMaster(t)
+	v := kilvater.NewVerifierConfig(kilvater.VerifierConfig{Master: &master})
+	m := kilvater.NewMetrics(v)
+	srv := &kilvater.Server{Verifier: v, Decoy: http.NotFoundHandler(), AllowPrivate: true, Metrics: m}
+	send := func(tag string) {
+		req := httptest.NewRequest("POST", "https://kv.test/connect", nil)
+		req.AddCookie(&http.Cookie{Name: kilvater.CookieName, Value: tag})
+		srv.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	id := kilvater.KeyIDFor(master, []byte("roamer"))
+	foreign := kilvater.DeriveKey(kilvater.NodeMaster(master, "elsewhere"), id)
+	send(kilvater.NewTagV2(id, foreign, "/connect", time.Now()))
+	send(kilvater.NewTagV2(id, foreign, "/connect", time.Now()))
+	send("garbage")
+
+	out := promText(m)
+	for _, want := range []string{
+		"\nkilvater_auth_failures_total 3\n",
+		"\nkilvater_key_auth_failures_total{key=\"" + id.String() + "\",reason=\"mac\"} 2\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics missing %q\n---\n%s", want, out)
+		}
+	}
+
+	for i := 0; i < 600; i++ {
+		x := kilvater.KeyIDFor(master, []byte{byte(i), byte(i >> 8), 's'})
+		send(kilvater.NewTagV2(x, foreign, "/connect", time.Now()))
+	}
+	out = promText(m)
+	if n := strings.Count(out, "kilvater_key_auth_failures_total{"); n > 513 {
+		t.Errorf("%d failure label sets, want at most 512 + other", n)
+	}
+	if !strings.Contains(out, "kilvater_key_auth_failures_total{key=\"other\",reason=\"mac\"}") {
+		t.Error("overflow ids not folded into key=\"other\"")
+	}
+}
