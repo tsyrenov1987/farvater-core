@@ -34,6 +34,14 @@ const (
 	// so a silent connection is not plainly idle. It costs more frames and a
 	// little steady traffic while idle.
 	PadHeavy
+	// PadSite sends bulk the way the web server in front sends a file: all
+	// the frames of one write leave together, in full-size DATA frames, with
+	// no PAD between them. Behind nginx that comes out as runs of full TLS
+	// records with a short one now and then, which is what a download of the
+	// decoy's own files looks like (docs/KILVATER.md §8, measured); the spread
+	// of sizes PadModerate draws is not something that server ever emits. The
+	// opening of a stream is padded as in the other modes.
+	PadSite
 )
 
 func (m PadMode) String() string {
@@ -42,6 +50,8 @@ func (m PadMode) String() string {
 		return "off"
 	case PadHeavy:
 		return "heavy"
+	case PadSite:
+		return "site"
 	default:
 		return "moderate"
 	}
@@ -57,6 +67,8 @@ func ParsePadMode(s string) PadMode {
 		return PadOff
 	case "heavy", "max", "high":
 		return PadHeavy
+	case "site":
+		return PadSite
 	default:
 		return PadModerate
 	}
@@ -119,6 +131,22 @@ func (s *Shaper) WriteData(p []byte) error {
 			return s.writeEarlyLocked(nil, p)
 		}
 	}
+	if s.mode == PadSite {
+		b := make([]byte, 0, len(p)+4*(len(p)/MaxFrame+1))
+		for len(p) > 0 {
+			n := min(len(p), MaxFrame)
+			b = AppendFrame(b, FrameData, p[:n])
+			p = p[n:]
+		}
+		for len(b) > 0 {
+			n := min(len(b), sitePiece)
+			if _, err := s.w.Write(b[:n]); err != nil {
+				return err
+			}
+			b = b[n:]
+		}
+		return nil
+	}
 	for len(p) > 0 {
 		n := s.nextChunk(len(p))
 		if err := WriteFrame(s.w, FrameData, p[:n]); err != nil {
@@ -149,6 +177,13 @@ const (
 	earlyMax    = 4096
 	earlyFloor  = 900
 )
+
+// sitePiece is how much of the frame stream PadSite hands down in one write.
+// nginx sends a file as HTTP/2 DATA frames of 8192 bytes; a write of that
+// size, flushed, reaches the proxy in front as one DATA frame of the same
+// size, and leaves it the way a piece of a file does. Where a kilvater frame
+// starts and ends has nothing to do with it.
+const sitePiece = 8192
 
 func earlyPadSize(n int) int {
 	if n < earlyFloor {
@@ -259,7 +294,7 @@ func (s *Shaper) jitterIdle() time.Duration {
 func (s *Shaper) nextChunk(remaining int) int {
 	var sz int
 	switch s.mode {
-	case PadOff:
+	case PadOff, PadSite:
 		sz = MaxFrame
 	case PadHeavy:
 		sz = heavyChunk()

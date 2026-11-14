@@ -36,6 +36,10 @@ type kilWire struct {
 	cache   map[string]validator // by path
 	assets  []pageAsset          // the page's, from its last full fetch
 	skew    atomic.Int64         // the server's clock minus ours, from the last page fetched
+
+	// resumeNo is when (UnixNano) a server last showed it does not keep
+	// sessions; 0 is never (kilvater_resume.go).
+	resumeNo atomic.Int64
 }
 
 func newKilvater(s PathSpec) (Wire, error) {
@@ -104,6 +108,7 @@ func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilW
 	w.mux.held = w.gateHeld
 	w.mux.maxAge, w.mux.maxBytes = kilConnMaxAge, kilConnMaxBytes
 	w.mux.spread, w.mux.ahead = kilConnSpread, kilConnAhead
+	w.joinPeers()
 	return w, nil
 }
 
@@ -124,7 +129,11 @@ func (w *kilWire) gateHeld() bool {
 	return handshakes.held(w.spec.ServerSNI(), w.spec.Fingerprint)
 }
 
-func (w *kilWire) Close() error        { return w.mux.Close() }
+func (w *kilWire) Close() error {
+	w.leavePeers()
+	return w.mux.Close()
+}
+
 func (w *kilWire) Refresh(t time.Time) { w.mux.refresh(t) }
 
 // WatchConns hands the ends of the wire's connections to f (see ConnWatcher).
@@ -184,7 +193,7 @@ func (w *kilWire) Dial(ctx context.Context) (Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &kilSession{conn: st, pad: w.pad}, nil
+	return &kilSession{conn: st, pad: w.pad, w: w}, nil
 }
 
 // DialPacket opens a UDP association over a tunnel stream. Kilvater binds one
@@ -419,6 +428,7 @@ func newGet(ctx context.Context, rawURL string, h http.Header) (*http.Request, e
 type kilSession struct {
 	conn net.Conn
 	pad  kilvater.PadMode
+	w    *kilWire // nil: the flow is never resumed
 }
 
 func (s *kilSession) Close() error { return s.conn.Close() }
@@ -429,6 +439,9 @@ func (s *kilSession) Run(ctx context.Context, target Target, prelude []byte, up 
 	if err != nil {
 		s.conn.Close()
 		return OutcomeError, err
+	}
+	if s.w != nil && s.w.resumeWanted() {
+		return s.runResumable(ctx, body, prelude, up, down, m)
 	}
 	// OPEN, what the app already sent and a PAD go out as one record, so the
 	// OPEN's size (the length of the target's name) never shows on its own.
@@ -443,6 +456,29 @@ func (s *kilSession) Run(ctx context.Context, target Target, prelude []byte, up 
 	if err == nil && fr.refused {
 		// The node answered, and said it could not reach the target: the flow
 		// ends as before, and the error tells the caller the path is not to blame.
+		return out, ErrTargetUnreachable
+	}
+	return out, kilRefusal(err)
+}
+
+// runResumable is Run for a flow that names a session in its OPEN, so that
+// it can go on over another stream if this one is lost.
+func (s *kilSession) runResumable(ctx context.Context, body, prelude []byte, up <-chan []byte, down io.Writer, m Meter) (Outcome, error) {
+	sh := kilvater.NewShaper(s.conn, s.pad)
+	rs, err := newKilResume(s.w, s.conn, sh)
+	if err != nil {
+		sh.Close()
+		s.conn.Close()
+		return OutcomeError, err
+	}
+	body = kilvater.AppendSessionExt(body, rs.sid)
+	rs.up.Append(prelude)
+	if err := sh.WriteOpening(kilvater.AppendFrame(nil, kilvater.FrameOpen, body), prelude); err != nil {
+		rs.Close()
+		return OutcomeError, kilRefusal(err)
+	}
+	out, err := runStream(ctx, rs, rs, rs, up, down, m)
+	if err == nil && rs.refused {
 		return out, ErrTargetUnreachable
 	}
 	return out, kilRefusal(err)

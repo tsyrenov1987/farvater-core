@@ -126,9 +126,11 @@ After authentication the server answers `200`. Both directions of the stream the
 | 2 | DATA | payload (a TCP byte stream) |
 | 3 | PAD | ignored; varies record sizes and fills pauses (see padding) |
 | 4 | DGRAM | one UDP datagram; the frame length is the datagram boundary |
-| 5 | CLOSE | one code byte: `0` normal end, `1` the target could not be reached, `2` the target is not allowed |
+| 5 | CLOSE | one code byte: `0` normal end, `1` the target could not be reached, `2` the target is not allowed, `3` no such session (resume) |
+| 6 | ACK | 8 bytes, big-endian: how many DATA bytes of this flow the sender has taken (resume) |
+| 7 | END | empty; client only: the flow is over, keep nothing for it (resume) |
 
-A frame of a type above 5 is skipped, body and all, so a newer peer can add frame types without breaking
+A frame of a type this build does not know is skipped, body and all, so a newer peer can add frame types without breaking
 an older one.
 
 A length above 16384 is a protocol error. It is never turned into an allocation.
@@ -145,8 +147,13 @@ A length above 16384 is a protocol error. It is never turned into an allocation.
 maximum-size records, and PAD frames ride between them; a sender may also send a PAD during a pause. This
 is one-sided and needs no agreement: a peer joins DATA frames back together and ignores PAD regardless, so
 any padding mode interoperates with any other, in both directions. Both ends pad. The mode — `off`,
-`moderate` (default), or `heavy` — is set per server (`kilvaterd -pad`) and per client (the link's optional
+`moderate` (default), `heavy`, or `site` — is set per server (`kilvaterd -pad`) and per client (the link's optional
 `pad` parameter); it only changes how many frames of what sizes are sent, never the bytes delivered.
+
+`site` does not draw sizes at all. It hands bulk down in pieces of 8192 bytes, the size of the DATA frames
+nginx cuts a file into, so that behind an nginx front (KILVATERD.md §9) a transfer leaves as the same few
+record lengths a download of the decoy's own file does (§8). It is meant for that deployment; a build that
+does not know the name runs `moderate`.
 
 Unless the mode is `off`, the first eight writes of a stream are padded harder, each as one record: a write
 shorter than 900 bytes is filled up to 900–1400, a longer one (up to 4096) gets 0–255 more. Those records are
@@ -159,6 +166,26 @@ one named in OPEN — which is how a per-socket, per-destination association map
 onto a stream; a different destination opens its own stream. DNS (a datagram to
 `:53`) and other UDP, such as Nyutag's calls, ride kilvater this way. UDP/443
 (QUIC) is not used.
+
+**Resuming a flow.** A TCP flow can outlive the stream that carries it, so a connection that is reset or
+goes silent does not end the app's connection. It is optional on both sides and off for UDP.
+
+- The client adds an option after the address in OPEN: `[1][16][session id: 16 random bytes]`. A server
+  that predates it ignores everything after the address and serves the flow as before.
+- A server that keeps sessions answers with ACK `0` before it dials, and with an ACK on every stream of
+  the flow. No ACK before the first DATA or CLOSE means the server does not keep sessions; the client
+  then treats the flow as an ordinary one.
+- Each side counts the DATA bytes it has taken and sends an ACK every 64 KiB. Each side keeps what it
+  sent until it is confirmed, and stops reading its own source while 1 MiB is unconfirmed.
+- When the stream is lost, the client opens a new one — on the same connection, a new connection, or
+  another entry of the same server process — with OPEN `[3][session id][8 bytes: DATA bytes taken]`.
+  The server answers ACK (how many of the client's bytes it has taken) and sends on from the client's
+  count; the client sends on from the server's. If the server has no such session it answers CLOSE `3`.
+- A session answers only the key that opened it. The last stream to attach owns the flow; an earlier
+  one can no longer write to the target.
+- The server cannot tell a stream the client dropped from one the network took, so a client that is
+  done sends END. Without it the server holds the target for a grace period (30 s by default) and
+  closes it if no stream comes back. Sessions live in the server process: a restart ends them.
 
 ## 5. Server behaviour
 
@@ -243,6 +270,15 @@ These are known limits, not plans:
   respectively, and `heavy` also puts a small frame on the wire during a pause. What this does *not* hide:
   the overall volume of a long transfer, and the fine timing correlation between the two directions. It
   raises the cost of size-and-shape classification; it is not an unobservable channel.
+  Measured on a stand (`tools/kv-wirelab.sh`: kilvaterd behind nginx on loopback, 8 MiB each way, a Go
+  client), a spread of sizes is also not what the web server in front sends. A download of a static file
+  from that nginx is 8–15 distinct record lengths, mostly 16401 and 8218 bytes; the same download through
+  the tunnel is 470–660 distinct lengths in `moderate` and 35–48 in `site`. As a distance between the two
+  length distributions (0 the same, 1 nothing in common; two static downloads are 0.00–0.57 apart, most
+  often under 0.4): `off` 0.57, `moderate` 0.51–0.66, `heavy` 0.68, `site` 0.15–0.29. That is record
+  lengths downstream on loopback only — not timing, not a real path, not the upstream direction, and not a
+  classifier's verdict. A decoy that has no large files gives a long transfer nothing to resemble in any
+  mode.
 - **Server fingerprint.** On its own the server uses Go's `crypto/tls` and Go's HTTP/2: its ServerHello and
   its HTTP/2 SETTINGS are a Go server's, not nginx or a CDN. That is common on the web, but it is a
   fingerprint. An nginx `stream` proxy in front (see KILVATERD.md §9) turns the TLS layer into OpenSSL's, and

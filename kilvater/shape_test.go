@@ -129,7 +129,7 @@ func TestShaperModerateVariesRecordSizes(t *testing.T) {
 // transparent: this is the v1-compatibility guarantee.
 func TestShaperReassemblesEveryMode(t *testing.T) {
 	payload := bytes.Repeat([]byte("abcdefgh"), 200000) // 1.6 MiB, not frame-aligned
-	for _, mode := range []PadMode{PadOff, PadModerate, PadHeavy} {
+	for _, mode := range []PadMode{PadOff, PadModerate, PadHeavy, PadSite} {
 		var buf syncBuf
 		sh := newShaper(&buf, mode, time.Hour) // long idle: no idle PAD interferes
 		if err := sh.WriteData(payload); err != nil {
@@ -175,10 +175,47 @@ func TestParsePadMode(t *testing.T) {
 		"OFF":      PadOff,
 		" heavy ":  PadHeavy,
 		"max":      PadHeavy,
+		"site":     PadSite,
 	}
 	for in, want := range cases {
 		if got := ParsePadMode(in); got != want {
 			t.Errorf("ParsePadMode(%q) = %v, want %v", in, got, want)
 		}
+	}
+}
+
+// sizeLog notes the size of every write.
+type sizeLog struct{ sizes []int }
+
+func (l *sizeLog) Write(p []byte) (int, error) { l.sizes = append(l.sizes, len(p)); return len(p), nil }
+
+// PadSite hands bulk down in pieces the size of the DATA frames nginx cuts a
+// file into, with at most one shorter piece closing each write.
+func TestShaperSitePieces(t *testing.T) {
+	var l sizeLog
+	sh := newShaper(&l, PadSite, time.Hour)
+	defer sh.Close()
+	for i := 0; i < earlyWrites; i++ {
+		sh.WriteData(make([]byte, 100)) // the opening is padded as in other modes
+	}
+	l.sizes = nil
+	for i := 0; i < 50; i++ {
+		if err := sh.WriteData(make([]byte, 32<<10)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	full, short := 0, 0
+	for _, n := range l.sizes {
+		switch {
+		case n == sitePiece:
+			full++
+		case n < sitePiece:
+			short++
+		default:
+			t.Fatalf("a write of %d bytes, above %d", n, sitePiece)
+		}
+	}
+	if full != 50*4 || short != 50 {
+		t.Fatalf("%d full pieces and %d short ones, want 200 and 50", full, short)
 	}
 }
