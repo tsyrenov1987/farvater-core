@@ -156,7 +156,7 @@ func TestCatalogueFails(t *testing.T) {
 	if st.Reason != reasonCatalogue || !strings.Contains(st.Detail, "502") {
 		t.Fatalf("%+v", st)
 	}
-	want := []string{"https://viporden.online/hsub/ORDEN-AAAAA-BBBBB", "https://myorden.ru/hsub/ORDEN-AAAAA-BBBBB", "https://joinorden.com/hsub/ORDEN-AAAAA-BBBBB"}
+	want := []string{"https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/ORDEN-AAAAA-BBBBB", "https://viporden.online/hsub/ORDEN-AAAAA-BBBBB", "https://myorden.ru/hsub/ORDEN-AAAAA-BBBBB", "https://joinorden.com/hsub/ORDEN-AAAAA-BBBBB"}
 	if strings.Join(w.fetched, " ") != strings.Join(want, " ") {
 		t.Fatalf("mirrors %v", w.fetched)
 	}
@@ -168,7 +168,8 @@ func TestSettledAnswerStopsMirrors(t *testing.T) {
 	s := session(t, w, true)
 	s.Connect()
 	st := waitState(t, s, "failed")
-	if len(w.fetched) != 1 || !strings.Contains(st.Detail, "Такого кода нет") {
+	// The plain door's 404 is not taken for the answer; the next mirror's is.
+	if len(w.fetched) != 2 || !strings.Contains(st.Detail, "Такого кода нет") {
 		t.Fatalf("%v %+v", w.fetched, st)
 	}
 }

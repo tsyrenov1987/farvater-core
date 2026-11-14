@@ -46,7 +46,8 @@ var catalogueHosts = []string{"viporden.online", "myorden.ru", "joinorden.com"}
 func catalogueURLs(s string) ([]string, error) {
 	s = strings.TrimSpace(s)
 	if u := strings.ToUpper(s); codeRE.MatchString(u) {
-		var out []string
+		// First a door whose name does not carry the brand (service.plainDoor).
+		out := []string{"https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/" + u}
 		for _, h := range catalogueHosts {
 			out = append(out, "https://"+h+"/hsub/"+u)
 		}
