@@ -24,11 +24,18 @@ import (
 // sent again on a second leg (hedging), and the copy that arrives last is
 // dropped. FIN gives the final offset of a direction.
 //
+// An ACK may also carry [leg]: how many payload bytes of SEQ the far end has
+// read off the leg the ACK travels on. With it the sender knows what each leg
+// itself delivered, whatever is still missing in between, so it measures each
+// route's own speed and delay, keeps no more on a route than it needs, and
+// sees at once a route that stopped delivering. An end that does not send it
+// is served the old way, by the in-order point alone.
+//
 // Frames (after the 4-byte frame header):
 //
 //	JOIN  [session id 16][flags 1][network 1][addr]  first frame of a leg
 //	SEQ   [offset 8][payload]
-//	ACK   [received in order 8][read 8]
+//	ACK   [received in order 8][read 8]([leg 8])
 //	FIN   [final offset 8]
 //	CLOSE [code 1]  0: the bond is done; else it failed
 //
@@ -58,8 +65,8 @@ var (
 
 // Tuning. A var so tests can shrink the times.
 var (
-	bondWindow     = 1 << 20          // unread bytes one side may have in flight
-	bondChunk      = MaxFrame - 8     // payload of one SEQ
+	bondWindow     = 1 << 20      // unread bytes one side may have in flight
+	bondChunk      = MaxFrame - 8 // payload of one SEQ
 	bondHedgeAfter = 400 * time.Millisecond
 	bondTick       = 20 * time.Millisecond
 	bondRateEvery  = 250 * time.Millisecond
@@ -68,6 +75,13 @@ var (
 	bondLegQueue   = 600 * time.Millisecond // a leg's cap is this much of its delivery rate
 	bondAckEvery   = 32 << 10
 	bondCloseGrace = 2 * time.Second
+	// A leg whose oldest chunk holds up the flow for this long (or for twice
+	// its usual delay, if that is longer) is taken to have stalled: everything
+	// on it goes out on the others and it rests, longer each time it stalls.
+	bondStallMin  = 700 * time.Millisecond
+	bondRestFirst = time.Second
+	bondRestMax   = 8 * time.Second
+	bondRestProbe = 300 * time.Millisecond
 )
 
 type bondChunkT struct {
@@ -76,6 +90,8 @@ type bondChunkT struct {
 	n        int
 	leg      *bondLeg // the leg it was last given to (its bytes count there); nil when queued again
 	hedgedAt time.Time
+	sentAt   time.Time // when it was last given to a leg
+	got      bool      // the far end has it (said by a leg's count)
 }
 
 func (c *bondChunkT) end() uint64 { return c.off + uint64(c.n) }
@@ -92,6 +108,28 @@ type bondLeg struct {
 	dead     bool
 	accepted bool // the far end answered on it
 	done     chan struct{}
+	delay    time.Duration // smoothed time from a chunk going out to the far end having it in order
+	restTill time.Time     // a stalled leg takes no chunks until then
+	rest     time.Duration // how long it rested last; 0 once it delivers again
+
+	// per-leg counts (see ACK [leg])
+	sent      uint64 // payload bytes of SEQ given to this leg
+	rcvd      uint64 // payload bytes of SEQ read off this leg
+	rcvdAcked uint64 // rcvd as last told the far end
+	peerGot   uint64 // the far end's rcvd for this leg
+	counts    bool   // the far end sends [leg]
+	marks     []legMark
+	minRTT    time.Duration
+	restAt    time.Time // when it last began to rest
+	probeAt   time.Time // a resting leg's last probe
+}
+
+// legMark is a chunk given to a leg, and where it ends in the leg's count.
+type legMark struct {
+	end uint64
+	at  time.Time
+	c   *bondChunkT
+	n   int
 }
 
 // Bond is one end of a bonded flow. Write sends, Read receives in order,
@@ -101,6 +139,8 @@ type Bond struct {
 	mu   sync.Mutex
 	cond *sync.Cond
 	legs map[*bondLeg]struct{}
+
+	ackNoLeg bool // tests: ACK as an end without [leg] does
 
 	// sending
 	pending  []*bondChunkT // never sent
@@ -114,17 +154,17 @@ type Bond struct {
 	finOff   uint64
 
 	// receiving
-	rcvNext     uint64
-	ooo         map[uint64][]byte
-	oooBytes    int
-	ready       [][]byte
-	read        uint64
-	peerFinSet  bool
-	peerFin     uint64
-	ackRcv      uint64 // what the last ACK said
-	ackRead     uint64
-	lastRx      *bondLeg
-	ackForce    bool
+	rcvNext    uint64
+	ooo        map[uint64][]byte
+	oooBytes   int
+	ready      [][]byte
+	read       uint64
+	peerFinSet bool
+	peerFin    uint64
+	ackRcv     uint64 // what the last ACK said
+	ackRead    uint64
+	lastRx     *bondLeg
+	ackForce   bool
 
 	closed    bool
 	closeCode byte
@@ -337,10 +377,13 @@ func (b *Bond) legDeadLocked(l *bondLeg) {
 	l.dead = true
 	delete(b.legs, l)
 	l.inflight = 0
+	l.marks = nil
 	for _, c := range b.unacked {
 		if c.leg == l {
 			c.leg = nil
-			b.retx = append(b.retx, c)
+			if !c.got {
+				b.retx = append(b.retx, c)
+			}
 		}
 	}
 	sort.Slice(b.retx, func(i, j int) bool { return b.retx[i].off < b.retx[j].off })
@@ -375,6 +418,9 @@ func (b *Bond) reader(l *bondLeg) {
 				return
 			}
 			b.ack(l, binary.BigEndian.Uint64(body), binary.BigEndian.Uint64(body[8:]))
+			if len(body) >= 24 {
+				b.legAck(l, binary.BigEndian.Uint64(body[16:]))
+			}
 		case FrameFin:
 			if len(body) < 8 {
 				return
@@ -410,6 +456,11 @@ func (b *Bond) recv(l *bondLeg, off uint64, data []byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	l.accepted = true
+	l.rcvd += uint64(len(data))
+	if l.rcvd-l.rcvdAcked >= uint64(bondAckEvery) {
+		l.ackDue = true
+		b.cond.Broadcast()
+	}
 	b.lastRx = l
 	end := off + uint64(len(data))
 	if end <= b.rcvNext || len(data) == 0 {
@@ -461,9 +512,23 @@ func (b *Bond) ack(l *bondLeg, rcv, read uint64) {
 	i := 0
 	for ; i < len(b.unacked) && b.unacked[i].end() <= rcv; i++ {
 		c := b.unacked[i]
+		c.got = true
 		if c.leg != nil {
-			c.leg.inflight -= c.n
-			c.leg.acked += c.n
+			l := c.leg
+			c.leg = nil
+			l.inflight -= c.n
+			if l.counts {
+				continue // its own count already said
+			}
+			l.acked += c.n
+			if d := b.progress.Sub(c.sentAt); l.delay == 0 {
+				l.delay = d
+			} else {
+				l.delay = (7*l.delay + d) / 8
+			}
+			if l.rest > 0 && !b.progress.Before(l.restTill) {
+				l.rest = 0 // it delivers again
+			}
 		}
 		b.unacked[i] = nil
 	}
@@ -473,6 +538,59 @@ func (b *Bond) ack(l *bondLeg, rcv, read uint64) {
 	}
 	b.retx = b.retx[j:]
 	b.cond.Broadcast()
+}
+
+// legAck takes the far end's count for leg l: the chunks it brought are had,
+// and each gives a sample of the leg's own delay.
+func (b *Bond) legAck(l *bondLeg, got uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	l.counts = true
+	if got > l.sent {
+		got = l.sent
+	}
+	if got <= l.peerGot {
+		return
+	}
+	l.peerGot = got
+	now := b.now()
+	i, back := 0, false
+	for ; i < len(l.marks) && l.marks[i].end <= got; i++ {
+		m := l.marks[i]
+		l.acked += m.n
+		back = back || !m.at.Before(l.restAt)           // sent since the rest began, and got through
+		if d := now.Sub(m.at); !m.at.Before(l.restAt) { // what sat through a stall says nothing of the leg's delay
+			if l.delay == 0 {
+				l.delay = d
+			} else {
+				l.delay = (7*l.delay + d) / 8
+			}
+			if l.minRTT == 0 || d < l.minRTT {
+				l.minRTT = d
+			}
+		}
+		if c := m.c; !c.got {
+			c.got = true
+			if c.leg != nil {
+				c.leg.inflight -= c.n
+				c.leg = nil
+			}
+		}
+		l.marks[i] = legMark{}
+	}
+	l.marks = l.marks[i:]
+	if back && l.rest > 0 {
+		l.rest, l.restTill = 0, now
+	}
+	b.cond.Broadcast()
+}
+
+// room is how much more the leg may take now.
+func (l *bondLeg) room() int {
+	if l.counts {
+		return l.cap - int(l.sent-l.peerGot)
+	}
+	return l.cap - l.inflight
 }
 
 // wantAckLocked marks a leg to carry an ACK: the one that last brought data,
@@ -492,20 +610,39 @@ func (b *Bond) wantAckLocked() {
 // pickLocked finds the next chunk for a leg with room: one to send again, the
 // head held up too long (sent on a second leg), or a new one.
 func (b *Bond) pickLocked(l *bondLeg, now time.Time) *bondChunkT {
-	if l.inflight >= l.cap {
+	if now.Before(l.restTill) {
+		// Resting: once per rest, a little in, it carries a copy of the head,
+		// which ends the rest as soon as it gets through. One only: whatever
+		// a stalled route holds is delivered first, and more would only add
+		// to that.
+		if l.counts && len(b.unacked) > 0 && l.probeAt.Before(l.restAt) && now.Sub(l.restAt) >= bondRestProbe {
+			if h := b.unacked[0]; !h.got && h.leg != l {
+				l.probeAt = now
+				l.mark(h, now)
+				return h
+			}
+		}
 		return nil
+	}
+	if l.room() <= 0 {
+		return nil
+	}
+	for len(b.retx) > 0 && b.retx[0].got {
+		b.retx = b.retx[1:]
 	}
 	if len(b.retx) > 0 {
 		c := b.retx[0]
 		b.retx = b.retx[1:]
-		c.leg = l
+		c.leg, c.sentAt = l, now
 		l.inflight += c.n
+		l.mark(c, now)
 		return c
 	}
 	if len(b.unacked) > 0 && len(b.legs) > 1 {
 		h := b.unacked[0]
-		if h.leg != l && now.Sub(b.progress) >= bondHedgeAfter && now.Sub(h.hedgedAt) >= bondHedgeAfter {
+		if h.leg != l && !h.got && now.Sub(b.progress) >= bondHedgeAfter && now.Sub(h.hedgedAt) >= bondHedgeAfter {
 			h.hedgedAt = now
+			l.mark(h, now)
 			return h
 		}
 	}
@@ -513,17 +650,23 @@ func (b *Bond) pickLocked(l *bondLeg, now time.Time) *bondChunkT {
 		c := b.pending[0]
 		b.pending[0] = nil
 		b.pending = b.pending[1:]
-		c.leg = l
+		c.leg, c.sentAt = l, now
 		l.inflight += c.n
+		l.mark(c, now)
 		b.unacked = append(b.unacked, c)
 		return c
 	}
 	return nil
 }
 
+func (l *bondLeg) mark(c *bondChunkT, now time.Time) {
+	l.sent += uint64(c.n)
+	l.marks = append(l.marks, legMark{end: l.sent, at: now, c: c, n: c.n})
+}
+
 func (b *Bond) writer(l *bondLeg) {
 	defer l.rw.Close()
-	var ackBody [16]byte
+	var ackBody [24]byte
 	var finBody [8]byte
 	for {
 		b.mu.Lock()
@@ -545,7 +688,12 @@ func (b *Bond) writer(l *bondLeg) {
 				b.ackRcv, b.ackRead = b.rcvNext, b.read
 				binary.BigEndian.PutUint64(ackBody[:], b.rcvNext)
 				binary.BigEndian.PutUint64(ackBody[8:], b.read)
+				binary.BigEndian.PutUint64(ackBody[16:], l.rcvd)
+				l.rcvdAcked = l.rcvd
 				typ, body = FrameAck, ackBody[:]
+				if b.ackNoLeg {
+					body = ackBody[:16]
+				}
 				break
 			}
 			if c := b.pickLocked(l, b.now()); c != nil {
@@ -571,6 +719,78 @@ func (b *Bond) writer(l *bondLeg) {
 	}
 }
 
+// stallCheckLocked rests the leg that holds the head of the flow up for far
+// longer than it usually takes, and sends what it carries on the others. A
+// leg that merely hiccups would otherwise give the chunks back one at a time,
+// each after the hedge wait, and the whole flow would crawl at that pace.
+func (b *Bond) stallCheckLocked(now time.Time) {
+	for l := range b.legs {
+		if !l.counts || len(l.marks) == 0 || now.Before(l.restTill) {
+			continue
+		}
+		limit := bondStallMin
+		if d := 2*l.delay + 200*time.Millisecond; d > limit {
+			limit = d
+		}
+		since := l.marks[0].at
+		if since.Before(l.restTill) {
+			since = l.restTill // what it held before its rest is judged from the rest's end
+		}
+		if now.Sub(since) >= limit {
+			b.restLocked(l, now)
+		}
+	}
+	if len(b.unacked) == 0 || now.Sub(b.progress) < bondHedgeAfter {
+		return
+	}
+	l := b.unacked[0].leg
+	if l == nil || l.dead || l.counts {
+		return
+	}
+	limit := bondStallMin
+	if d := 2 * l.delay; d > limit {
+		limit = d
+	}
+	if now.Sub(b.unacked[0].sentAt) < limit {
+		return
+	}
+	b.restLocked(l, now)
+	b.progress = now // give the others a full wait before judging them
+}
+
+// restLocked rests a stalled leg and queues what it holds for the others,
+// unless there are no others to take it.
+func (b *Bond) restLocked(l *bondLeg, now time.Time) {
+	other := false
+	for o := range b.legs {
+		if o != l && !now.Before(o.restTill) {
+			other = true
+			break
+		}
+	}
+	if !other {
+		return // nowhere better to send it
+	}
+	if l.rest == 0 {
+		l.rest = bondRestFirst
+	} else if l.rest *= 2; l.rest > bondRestMax {
+		l.rest = bondRestMax
+	}
+	l.restTill, l.restAt = now.Add(l.rest), now
+	l.cap, l.rate = bondLegCapMin, l.rate/2
+	for _, c := range b.unacked {
+		if c.leg == l {
+			l.inflight -= c.n
+			c.leg = nil
+			if !c.got {
+				b.retx = append(b.retx, c)
+			}
+		}
+	}
+	sort.Slice(b.retx, func(i, j int) bool { return b.retx[i].off < b.retx[j].off })
+	b.cond.Broadcast()
+}
+
 // ticker wakes the writers for hedging, sends ACKs nothing else carried, and
 // sizes each leg's share from what it delivered.
 func (b *Bond) ticker() {
@@ -588,6 +808,12 @@ func (b *Bond) ticker() {
 			b.ackForce = false
 			b.wantAckLocked()
 		}
+		for l := range b.legs {
+			if l.rcvd != l.rcvdAcked {
+				l.ackDue = true
+			}
+		}
+		b.stallCheckLocked(b.now())
 		if now := b.now(); now.Sub(lastRate) >= bondRateEvery {
 			dt := now.Sub(lastRate).Seconds()
 			lastRate = now
@@ -600,9 +826,23 @@ func (b *Bond) ticker() {
 						l.rate = 0.7*l.rate + 0.3*r
 					}
 					c := int(l.rate * bondLegQueue.Seconds())
-					// A leg that filled its cap may be held back by it: let
-					// it grow, so the cap follows the leg up as well as down.
-					if l.inflight >= l.cap && c < l.cap*5/4 {
+					if l.counts && l.minRTT > 0 {
+						// Its own delay is known: keep about two round trips
+						// on it, and let it grow only while no queue builds
+						// (the delay stays near the least seen), so a chunk
+						// given to it now is not stuck behind a long line.
+						q := 2 * l.minRTT
+						if q < l.minRTT+150*time.Millisecond {
+							q = l.minRTT + 150*time.Millisecond
+						}
+						c = int(l.rate * q.Seconds())
+						if l.room() <= l.cap/8 && l.delay < l.minRTT*3/2+50*time.Millisecond && c < l.cap*5/4 {
+							c = l.cap * 5 / 4
+						}
+						l.minRTT += l.minRTT / 128 // forget an old least, slowly
+					} else if l.inflight >= l.cap && c < l.cap*5/4 {
+						// A leg that filled its cap may be held back by it: let
+						// it grow, so the cap follows the leg up as well as down.
 						c = l.cap * 5 / 4
 					}
 					if c < bondLegCapMin {
@@ -613,7 +853,7 @@ func (b *Bond) ticker() {
 					}
 					l.cap = c
 				}
-				l.acked, l.busy = 0, l.inflight > 0
+				l.acked, l.busy = 0, l.inflight > 0 || (l.counts && l.sent > l.peerGot)
 			}
 		}
 		b.cond.Broadcast()
