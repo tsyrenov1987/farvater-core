@@ -296,7 +296,9 @@ These are known limits, not plans:
   an unbuffered request body (430–540 small records downstream per 8 MiB uploaded, Chrome's POST draws 12),
   and upload speed — nginx gives an unbuffered body a window of `http2_body_preread_size` (64 KiB by
   default), so a stream uploads at most that much per round trip: 8 MiB took 21–22 s at 130 ms where Chrome's
-  POST took 1.9 s (4–9 s with the setting at 1 MiB, which costs a buffer of that size per stream). One vantage
+  POST took 1.9 s (4–9 s with the setting at 1 MiB). `client_body_buffer_size 512k` in the front does the same without
+  changing the SETTINGS nginx advertises: 6–9 s for 8 MiB, at a 512 KiB buffer per tunnel stream; 1 MiB was
+  no faster. One vantage
   point outside Russia, record lengths only, no classifier.
 - **Server fingerprint.** On its own the server uses Go's `crypto/tls` and Go's HTTP/2: its ServerHello and
   its HTTP/2 SETTINGS are a Go server's, not nginx or a CDN. That is common on the web, but it is a

@@ -18,7 +18,7 @@ def sink(c):
     try:
         while c.recv(65536): pass
     finally: c.close()
-for p, f in ((18080, src(8 << 20)), (18082, src(1166826)), (18081, sink)):
+for p, f in ((19080, src(8 << 20)), (19082, src(1166826)), (19081, sink)):
     threading.Thread(target=serve, args=(p, f), daemon=True).start()
 from http.server import BaseHTTPRequestHandler, HTTPServer
 class H(BaseHTTPRequestHandler):
@@ -30,4 +30,4 @@ class H(BaseHTTPRequestHandler):
             left -= len(b)
         self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"ok")
     def log_message(self, *a): pass
-HTTPServer(("127.0.0.1", 18083), H).serve_forever()
+HTTPServer(("127.0.0.1", 19083), H).serve_forever()
