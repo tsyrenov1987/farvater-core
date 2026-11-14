@@ -116,6 +116,7 @@ type Brain struct {
 	leader      string
 	leaderSince int64
 	lastPick    map[string]int64
+	floorAt     map[string]int64 // entry address → when the floor last sent a flow there
 	picks       []pickRec
 	spreadN     int              // flows shared out by spread, for taking turns
 	trialAt     map[string]int64 // when a path on trial as a mate got its last flow
@@ -158,7 +159,7 @@ type Brain struct {
 
 // New creates a brain for one network context.
 func New(cfg Config, ctx string, paths []PathInfo, seed uint64) *Brain {
-	b := &Brain{cfg: cfg, ctx: ctx, paths: paths, st: map[string]*PathState{}, lastPick: map[string]int64{},
+	b := &Brain{cfg: cfg, ctx: ctx, paths: paths, st: map[string]*PathState{}, lastPick: map[string]int64{}, floorAt: map[string]int64{},
 		Gov: NewGovernor(), Diag: NewDiagnoser(paths), Breaker: NewBreaker(cfg.Breaker), J: NewJournal(1000), rng: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
 		saved: map[string]ctxState{}, switchedAt: math.MinInt64, asleep: map[string]bool{}, demoted: map[string]int64{}, probeLost: map[string]int64{}}
 	for _, p := range paths {
@@ -559,6 +560,16 @@ func (b *Brain) exploreShare(now int64) float64 {
 // evidence that a path still gets through.
 const LeadFreshMs = 10000
 
+// FloorGapMs spaces the floor's flows to one entry address. Every path is
+// seeded at the first pick and comes due for the floor in the same instant
+// FloorMs later; the next flows then went one to each path, each a fresh
+// handshake. The CDN entry carries some forty paths on one address: a page's
+// burst of flows made forty ClientHellos to it within half a second, every
+// FloorMs (wl5 capture 14.11.2026: one MTS client, 37 SYNs in 0.5 s, the
+// answers to the first 24 never reached it). Spaced, the paths of one address
+// still get their floor flow each, a few seconds apart.
+const FloorGapMs = 3000
+
 // answeredNow returns, of the available paths answered within LeadFreshMs of
 // now, the one whose answers come quickest (one with no answer time known
 // after those with one, the latest answered first); "" when none answered.
@@ -662,8 +673,15 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		if b.offNet(b.info(p)) {
 			floor *= OffNetFloorFactor
 		}
+		ip := b.info(p).IP
+		if ip != "" && now-b.floorAt[ip] < FloorGapMs {
+			continue
+		}
 		if now-b.lastPick[p] >= floor {
 			primary, explore, reason = p, true, "explore_floor"
+			if ip != "" {
+				b.floorAt[ip] = now
+			}
 			break
 		}
 	}
