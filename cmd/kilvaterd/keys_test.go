@@ -32,7 +32,7 @@ func TestLoadVerifierConfig(t *testing.T) {
 	writeFile(t, keysPath, "# a key\n"+hex.EncodeToString(flat[:])+"\n")
 
 	// Master and a missing keys file: fine, v2-only.
-	cfg, err := loadVerifierConfig(filepath.Join(dir, "absent.txt"), masterPath, "")
+	cfg, err := loadVerifierConfig(filepath.Join(dir, "absent.txt"), masterPath, "", "")
 	if err != nil {
 		t.Fatalf("master-only config: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestLoadVerifierConfig(t *testing.T) {
 	}
 
 	// Keys and no master: fine, v1-only.
-	cfg, err = loadVerifierConfig(keysPath, "", "")
+	cfg, err = loadVerifierConfig(keysPath, "", "", "")
 	if err != nil {
 		t.Fatalf("keys-only config: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestLoadVerifierConfig(t *testing.T) {
 	}
 
 	// Neither: an error, nobody could authenticate.
-	if _, err := loadVerifierConfig(filepath.Join(dir, "absent.txt"), "", ""); err == nil {
+	if _, err := loadVerifierConfig(filepath.Join(dir, "absent.txt"), "", "", ""); err == nil {
 		t.Fatal("empty config should be an error")
 	}
 
@@ -58,7 +58,7 @@ func TestLoadVerifierConfig(t *testing.T) {
 	id := kilvater.KeyIDFor(master, []byte("gone"))
 	revPath := filepath.Join(dir, "revoked.txt")
 	writeFile(t, revPath, "# revoked\n"+id.String()+"\n")
-	cfg, err = loadVerifierConfig(keysPath, masterPath, revPath)
+	cfg, err = loadVerifierConfig(keysPath, masterPath, revPath, "")
 	if err != nil {
 		t.Fatalf("full config: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestInstallReloadOnSIGHUP(t *testing.T) {
 	keysPath := filepath.Join(dir, "absent.txt")
 
 	load := func() (kilvater.VerifierConfig, error) {
-		return loadVerifierConfig(keysPath, masterPath, revPath)
+		return loadVerifierConfig(keysPath, masterPath, revPath, "")
 	}
 	cfg, err := load()
 	if err != nil {
@@ -108,5 +108,36 @@ func TestInstallReloadOnSIGHUP(t *testing.T) {
 			t.Fatal("SIGHUP did not apply the revocation")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The allow list is kept by another program: until its file exists there is
+// no list; once it does, its ids are the list, an empty file included.
+func TestLoadVerifierConfigAllowList(t *testing.T) {
+	dir := t.TempDir()
+	var master kilvater.Key
+	rand.Read(master[:])
+	masterPath := filepath.Join(dir, "master.txt")
+	writeFile(t, masterPath, hex.EncodeToString(master[:])+"\n")
+	allowed := filepath.Join(dir, "allowed.txt")
+
+	cfg, err := loadVerifierConfig("", masterPath, "", allowed)
+	if err != nil || cfg.AllowList {
+		t.Fatalf("no file: err=%v list=%v", err, cfg.AllowList)
+	}
+	id := kilvater.KeyIDFor(master, []byte("someone"))
+	writeFile(t, allowed, "# from the roster\n"+id.String()+"\n")
+	cfg, err = loadVerifierConfig("", masterPath, "", allowed)
+	if err != nil || !cfg.AllowList || len(cfg.Allowed) != 1 || cfg.Allowed[0] != id {
+		t.Fatalf("one id: err=%v cfg=%+v", err, cfg.Allowed)
+	}
+	writeFile(t, allowed, "")
+	cfg, err = loadVerifierConfig("", masterPath, "", allowed)
+	if err != nil || !cfg.AllowList || len(cfg.Allowed) != 0 {
+		t.Fatalf("empty file: err=%v list=%v n=%d", err, cfg.AllowList, len(cfg.Allowed))
+	}
+	writeFile(t, allowed, "not hex\n")
+	if _, err = loadVerifierConfig("", masterPath, "", allowed); err == nil {
+		t.Fatal("a broken list was accepted")
 	}
 }

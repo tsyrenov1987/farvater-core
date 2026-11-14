@@ -207,6 +207,9 @@ onto a stream; a different destination opens its own stream. DNS (a datagram to
 
 - **Per-client keys.** Each key is independent. Give one key per client or per group, so one leak can be
   revoked without touching the others.
+- A server may also hold an allow list of key ids (`-allowed`): an id that is derivable but not listed is refused
+  like an unknown one. The list is how account removal and expiry reach the tunnel; revocation alone cannot do it,
+  because nobody can compute the id of a token that no longer exists.
 - **Two key schemes.** *v1:* a flat list of 32-byte keys the server holds in a file; a client's tag is matched
   against the whole list. *v2:* each client's key is **derived from one master**, so the server stores only the
   master and derives the client key on demand from the key id in the tag. Both are accepted at once; v2 is the

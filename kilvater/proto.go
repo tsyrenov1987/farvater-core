@@ -176,6 +176,7 @@ type keySet struct {
 	keys    []Key          // v1 flat keys, tried for a v1 tag
 	masters []Key          // masters a v2 key may be derived from (none disables v2)
 	revoked map[KeyID]bool // revoked v2 key ids
+	allowed map[KeyID]bool // the only v2 key ids accepted; nil accepts any
 }
 
 // Verifier checks tags against its key material and refuses a tag seen before.
@@ -212,6 +213,12 @@ type VerifierConfig struct {
 	// (NodeMaster) and, while clients move over, from the fleet master too.
 	Masters []Key
 	Revoked []KeyID // revoked v2 key ids
+	// Allowed, when AllowList is set, are the only v2 key ids accepted: an id
+	// a master would derive a key for is refused unless it is listed. This is
+	// how a subscriber who is gone, deleted or paused loses the tunnel without
+	// anyone having to remember the id to revoke. v1 keys are not affected.
+	Allowed   []KeyID
+	AllowList bool
 }
 
 // NewVerifierConfig builds a verifier from full key material (v1 keys, an
@@ -235,7 +242,14 @@ func (v *Verifier) Reload(cfg VerifierConfig) {
 		masters = append(masters, *cfg.Master)
 	}
 	masters = append(masters, cfg.Masters...)
-	v.set.Store(&keySet{keys: cfg.Keys, masters: masters, revoked: rev})
+	var allowed map[KeyID]bool
+	if cfg.AllowList {
+		allowed = make(map[KeyID]bool, len(cfg.Allowed))
+		for _, id := range cfg.Allowed {
+			allowed[id] = true
+		}
+	}
+	v.set.Store(&keySet{keys: cfg.Keys, masters: masters, revoked: rev, allowed: allowed})
 }
 
 // Identity names the key a tag authenticated as, for per-key accounting and
@@ -298,6 +312,7 @@ const (
 	FailNoV2    = "nov2"    // the server has no master
 	FailWindow  = "window"  // the timestamp is outside TagWindow
 	FailRevoked = "revoked" // the key id is revoked
+	FailUnknown = "unknown" // the key id is not on the allow list
 	FailMAC     = "mac"     // the MAC matches no master: a wrong or foreign key
 	FailReplay  = "replay"  // the tag was seen before
 )
@@ -357,6 +372,9 @@ func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (
 	}
 	if set.revoked[id] {
 		return -1, claimed, FailRevoked
+	}
+	if set.allowed != nil && !set.allowed[id] {
+		return -1, claimed, FailUnknown
 	}
 	tagMAC := b[off+16:]
 	hit := -1

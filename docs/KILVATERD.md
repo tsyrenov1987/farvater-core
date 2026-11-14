@@ -100,6 +100,7 @@ Open the port in your firewall, for example `sudo ufw allow 443/tcp`.
 | `-keys` | `keys.txt` | v1 client keys, one 64-hex key per line, `#` comments allowed (optional if `-master` is set) |
 | `-master` | — | master key file (64 hex); enables v2 derived keys (§10). Empty disables v2 |
 | `-revoked` | — | revoked v2 key ids, one 16-hex line each, `#` comments; reloaded on `SIGHUP` |
+| `-allowed` | — | allow list of v2 key ids, same format as `-revoked`; file absent → every derivable id is accepted, file present (even empty) → only the listed ids; reloaded on `SIGHUP`. Needed because the server derives a key for *any* token ever issued: without the list a deleted or expired account keeps working |
 | `-decoy` | `/var/www/html` | static files served to everyone without a key |
 | `-allow-private` | off | let clients reach loopback/private/link-local addresses |
 | `-h2c` | off | serve cleartext HTTP/2 for a TLS-terminating proxy in front (§9); `-listen` may be `unix:/path` |

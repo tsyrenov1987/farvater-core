@@ -34,6 +34,7 @@ func main() {
 	keysFile := flag.String("keys", "keys.txt", "v1 client keys, one 64-hex line per key (optional if -master is set)")
 	masterFile := flag.String("master", "", "master key file enabling v2 derived keys: one 64-hex master per line, '#' comments, each accepted (a node's own master from -nodemaster, and the fleet master while clients move over); empty disables v2")
 	revokedFile := flag.String("revoked", "", "revoked v2 key ids, one 16-hex line each, '#' comments (reloaded on SIGHUP)")
+	allowedFile := flag.String("allowed", "", "the only v2 key ids accepted, one 16-hex line each, '#' comments (reloaded on SIGHUP); while the file does not exist every id a master derives is accepted")
 	decoyDir := flag.String("decoy", "/var/www/html", "static files served to non-tunnel visitors")
 	acmeDomain := flag.String("acme", "", "domain to get a Let's Encrypt certificate for (TLS-ALPN-01); empty uses -cert/-key")
 	acmeCache := flag.String("acme-cache", "/var/lib/kilvaterd/acme", "directory where autocert stores certificates")
@@ -98,11 +99,11 @@ func main() {
 		return
 	}
 
-	cfg, err := loadVerifierConfig(*keysFile, *masterFile, *revokedFile)
+	cfg, err := loadVerifierConfig(*keysFile, *masterFile, *revokedFile, *allowedFile)
 	if err != nil {
 		log.Fatalf("keys: %v", err)
 	}
-	log.Printf("loaded %d v1 key(s), %d master(s), %d revoked", len(cfg.Keys), nMasters(cfg), len(cfg.Revoked))
+	log.Printf("loaded %d v1 key(s), %d master(s), %d revoked, %s", len(cfg.Keys), nMasters(cfg), len(cfg.Revoked), allowNote(cfg))
 
 	if entries, derr := os.ReadDir(*decoyDir); derr != nil || len(entries) == 0 {
 		log.Printf("warning: decoy dir %q is empty or unreadable (%v); visitors without a key see only 404s, which looks nothing like a real site", *decoyDir, derr)
@@ -144,7 +145,7 @@ func main() {
 	// revocation takes effect for the next authentication and never cuts an
 	// open tunnel.
 	installReload(srv.Verifier, func() (kilvater.VerifierConfig, error) {
-		return loadVerifierConfig(*keysFile, *masterFile, *revokedFile)
+		return loadVerifierConfig(*keysFile, *masterFile, *revokedFile, *allowedFile)
 	})
 
 	httpSrv := &http.Server{
@@ -229,7 +230,7 @@ func tlsConfig(domain, cache, certFile, keyFile string) (*tls.Config, error) {
 // does at start and again on SIGHUP. A missing keys file is not an error when a
 // master is set (a v2-only server keeps no key file); it is an error if neither
 // keys nor a master would let anyone authenticate.
-func loadVerifierConfig(keysFile, masterFile, revokedFile string) (kilvater.VerifierConfig, error) {
+func loadVerifierConfig(keysFile, masterFile, revokedFile, allowedFile string) (kilvater.VerifierConfig, error) {
 	var cfg kilvater.VerifierConfig
 	keys, err := readKeysOptional(keysFile)
 	if err != nil {
@@ -250,6 +251,20 @@ func loadVerifierConfig(keysFile, masterFile, revokedFile string) (kilvater.Veri
 			return cfg, fmt.Errorf("revoked: %w", err)
 		}
 		cfg.Revoked = rev
+	}
+	if allowedFile != "" {
+		// The list is a file another program keeps (the node agent, from the
+		// roster). Until it has written one there is no list, not an empty one:
+		// an empty list would lock every subscriber out.
+		if _, err := os.Stat(allowedFile); err == nil {
+			ids, err := readRevoked(allowedFile)
+			if err != nil {
+				return cfg, fmt.Errorf("allowed: %w", err)
+			}
+			cfg.Allowed, cfg.AllowList = ids, true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return cfg, fmt.Errorf("allowed: %w", err)
+		}
 	}
 	if len(cfg.Keys) == 0 && cfg.Master == nil {
 		return cfg, fmt.Errorf("no keys in %s and no master: nothing can authenticate", keysFile)
@@ -315,6 +330,13 @@ func readMasters(path string) ([]kilvater.Key, error) {
 	return ms, nil
 }
 
+func allowNote(cfg kilvater.VerifierConfig) string {
+	if !cfg.AllowList {
+		return "no allow list"
+	}
+	return fmt.Sprintf("%d allowed", len(cfg.Allowed))
+}
+
 // readRevoked reads revoked key ids, one 16-hex line each, '#' comments.
 func readRevoked(path string) ([]kilvater.KeyID, error) {
 	data, err := os.ReadFile(path)
@@ -373,7 +395,7 @@ func installReload(v *kilvater.Verifier, load func() (kilvater.VerifierConfig, e
 				continue
 			}
 			v.Reload(cfg)
-			log.Printf("reloaded: %d v1 key(s), %d master(s), %d revoked", len(cfg.Keys), nMasters(cfg), len(cfg.Revoked))
+			log.Printf("reloaded: %d v1 key(s), %d master(s), %d revoked, %s", len(cfg.Keys), nMasters(cfg), len(cfg.Revoked), allowNote(cfg))
 		}
 	}()
 }
