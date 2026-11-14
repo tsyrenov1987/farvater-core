@@ -160,6 +160,33 @@ onto a stream; a different destination opens its own stream. DNS (a datagram to
 `:53`) and other UDP, such as Nyutag's calls, ride kilvater this way. UDP/443
 (QUIC) is not used.
 
+**Bonds (multipath).** One TCP flow may ride several streams at once, each
+reaching the same server by its own route (a CDN relay, VK's call relays, ...).
+The client opens each stream as usual but sends JOIN instead of OPEN; streams
+whose JOIN names the same 16-byte session id under the same key are one bond.
+The server's kilvater (`kilvater/bondserver.go`) dials the target once and
+spreads the target's bytes over all of the bond's streams; the client does the
+same upstream (`wire/bond.go`, link `kilbond://`). Each side puts the byte
+stream back in order by offset.
+
+| Type | Name | Body |
+|---|---|---|
+| 6 | JOIN | `[session id:16][flags:1][network:1][len:1]["host:port"]`; flag `1` = create the bond (the first stream), otherwise attach to it |
+| 7 | SEQ | `[offset:8]` then payload: bytes `offset…offset+n` of the flow |
+| 8 | ACK | `[received in order:8][read by the app:8]`: frees the sender's copies and opens its window (1 MiB) |
+| 9 | FIN | `[final offset:8]`: the sender's direction ends there |
+
+A chunk a stream lost when it died is sent again on another; a chunk stuck on a
+slow stream is sent again on a fast one after 400 ms (copies are dropped by
+offset). Each stream may hold about 600 ms of its measured rate in flight, so a
+slow route takes a small share instead of setting the pace. CLOSE on any stream
+ends the bond: `0` both directions done, `1` the target failed, `2` no such bond
+(a JOIN without the create flag after the bond is gone). The server answers a
+JOIN with an ACK once the target is up; a bond with no streams for 30 s is
+dropped. An older server skips JOIN as an unknown type and drops the stream when
+no OPEN arrives within 15 s, so the client's legs fail and the path is seen as
+dead. Only TCP bonds: UDP takes the first leg's plain stream.
+
 ## 5. Server behaviour
 
 **Dialing the target:**

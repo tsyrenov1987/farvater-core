@@ -134,6 +134,8 @@ func Build(spec PathSpec) (Wire, error) {
 		return newHosted(spec), nil
 	case KindKilvater:
 		return newKilvater(spec)
+	case KindBond:
+		return newBond(spec)
 	case KindShadowsocks:
 		return newShadowsocks(spec)
 	}

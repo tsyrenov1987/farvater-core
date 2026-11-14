@@ -171,7 +171,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.Metrics.closeStream(ks)
-	s.tunnel(w, r, ks)
+	s.tunnel(w, r, id.Label(), ks)
 }
 
 // admit counts a new stream for the key, unless the key has reached a
@@ -193,7 +193,7 @@ func (s *Server) admit(id Identity, now time.Time) (*keyStat, bool) {
 	return s.Metrics.openStream(id.Label(), maxStreams)
 }
 
-func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat) {
+func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, label string, ks *keyStat) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -225,6 +225,10 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat) {
 		s.Metrics.openTimeout()
 		return
 	case <-r.Context().Done():
+		return
+	}
+	if f.err == nil && f.typ == FrameJoin {
+		s.join(label, f.body, r.Body, down, ks) // one leg of a bond (bond.go)
 		return
 	}
 	if f.err != nil || f.typ != FrameOpen || len(f.body) < 2 {
