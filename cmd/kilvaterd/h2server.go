@@ -103,6 +103,15 @@ func (s *settingsShaper) Write(p []byte) (int, error) {
 		return s.Conn.Write(p)
 	}
 	s.buf = append(s.buf, p...)
+	if s.buf[0] != 0 {
+		// Not an HTTP/2 server preface, whose SETTINGS length is far below
+		// 64 KiB so its first byte is 0: an HTTP/1.1 response ("HTTP/1.1 ..."),
+		// since h2c.NewHandler serves HTTP/1.1 too when the proxy offers ALPN
+		// http/1.1. Read as a frame header, those bytes give a multi-megabyte
+		// length, and waiting for "the whole frame" would hold the response
+		// forever. Send it as is.
+		return s.passThrough(p)
+	}
 	if len(s.buf) < 9 {
 		return len(p), nil // not even a frame header yet
 	}
@@ -118,6 +127,18 @@ func (s *settingsShaper) Write(p []byte) (int, error) {
 		out = append(out, s.buf[:9+n]...) // not what we expected: leave it be
 	}
 	out = append(out, s.buf[9+n:]...) // anything coalesced after it, unchanged
+	s.buf = nil
+	s.done = true
+	if _, err := s.Conn.Write(out); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// passThrough flushes what has been buffered and stops shaping; called with
+// s.mu held.
+func (s *settingsShaper) passThrough(p []byte) (int, error) {
+	out := s.buf
 	s.buf = nil
 	s.done = true
 	if _, err := s.Conn.Write(out); err != nil {
