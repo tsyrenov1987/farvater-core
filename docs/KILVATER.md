@@ -178,7 +178,8 @@ goes silent does not end the app's connection. It is optional on both sides and 
 - A server that keeps sessions answers with ACK `0` before it dials, and with an ACK on every stream of
   the flow. No ACK before the first DATA or CLOSE means the server does not keep sessions; the client
   then treats the flow as an ordinary one.
-- Each side counts the DATA bytes it has taken and sends an ACK every 64 KiB. Each side keeps what it
+- Each side counts the DATA bytes it has taken and sends an ACK every 256 KiB (builds before 14.11.2026:
+  every 64 KiB; the step is the receiver's choice and either side accepts any). Each side keeps what it
   sent until it is confirmed, and stops reading its own source while 1 MiB is unconfirmed.
 - When the stream is lost, the client opens a new one — on the same connection, a new connection, or
   another entry of the same server process — with OPEN `[3][session id][8 bytes: DATA bytes taken]`.
@@ -291,15 +292,17 @@ These are known limits, not plans:
   pieces in `site` (0.36 and 0.26), and on the way up the gathering request body (an 8 MiB upload against
   Chrome's POST of the same size: 0.98–0.99 before, 0.20–0.23 after). The client's HTTP/2 layer also used to
   refill its window every few kilobytes — about 850 small records against Chrome's 10 over an 8 MiB download;
-  it now waits for half the window, as Chrome does. What still differs, measured and not fixed: the resume
-  ACK every 64 KiB (about 130 small records upstream per 8 MiB), nginx's own WINDOW_UPDATE for every chunk of
-  an unbuffered request body (430–540 small records downstream per 8 MiB uploaded, Chrome's POST draws 12),
-  and upload speed — nginx gives an unbuffered body a window of `http2_body_preread_size` (64 KiB by
-  default), so a stream uploads at most that much per round trip: 8 MiB took 21–22 s at 130 ms where Chrome's
-  POST took 1.9 s (4–9 s with the setting at 1 MiB). `client_body_buffer_size 512k` in the front does the same without
-  changing the SETTINGS nginx advertises: 6–9 s for 8 MiB, at a 512 KiB buffer per tunnel stream; 1 MiB was
-  no faster. One vantage
-  point outside Russia, record lengths only, no classifier.
+  it now waits for half the window, as Chrome does. Upload speed: nginx gives an unbuffered request body a
+  window of `http2_body_preread_size` (64 KiB by default), so a stream uploads at most that much per round
+  trip: 8 MiB took 21–22 s at 130 ms where Chrome's POST took 1.9 s. `client_body_buffer_size` in the front
+  raises that window without changing the SETTINGS nginx advertises (the buffer is per tunnel stream, its
+  pages taken as they are written). Timed to the target's answer, 8 MiB up: 3.0 s at 512k, 2.0 s at 1m,
+  1.6–2.0 s at 2m; the fronts run 1m. (Earlier figures of 4–9 s counted the 2 s the client waits on a
+  silent stream after its source ends, not the upload.) What still differs, measured and not fixed: the
+  resume ACK (about 135 small records upstream per 8 MiB downloaded at a 64 KiB step, 44 at 256 KiB; about
+  115 against 28 while uploading), and nginx's own WINDOW_UPDATE for every chunk of an unbuffered request
+  body (420–580 small records downstream per 8 MiB uploaded, Chrome's POST draws 12; no nginx setting
+  removes it). One vantage point outside Russia, record lengths only, no classifier.
 - **Server fingerprint.** On its own the server uses Go's `crypto/tls` and Go's HTTP/2: its ServerHello and
   its HTTP/2 SETTINGS are a Go server's, not nginx or a CDN. That is common on the web, but it is a
   fingerprint. An nginx `stream` proxy in front (see KILVATERD.md §9) turns the TLS layer into OpenSSL's, and

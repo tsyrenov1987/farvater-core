@@ -42,8 +42,12 @@ const (
 
 	// ResumeAckStep is how many bytes a side takes before it confirms them.
 	// A sender's window must be several steps, or it waits on a confirmation
-	// the receiver is not yet due to send.
-	ResumeAckStep = 64 << 10
+	// the receiver is not yet due to send. A quarter of the window: every
+	// confirmation is a short record against the flow, and at 64 KiB a
+	// download of 8 MiB sent ~130 of them where a browser's WINDOW_UPDATEs
+	// come to ~10 (docs/KILVATER.md §8). The step is the receiver's alone, so
+	// a peer on either step works with one on the other.
+	ResumeAckStep = 256 << 10
 	// ResumeWindow is how many unconfirmed bytes a side holds per direction
 	// before it stops sending.
 	ResumeWindow = 1 << 20
