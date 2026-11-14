@@ -162,6 +162,14 @@ func (b *Breaker) NoteSig(path string, sig BlockSig, now int64) (bool, BlockSig)
 		rb.soft = rb.soft[:0]
 		return false, SigNone
 	}
+	if now < rb.trippedUntil {
+		// Already tripped: one more signature is the same event. The flows a
+		// wire carries on one connection (xhttp's and grpc's sixteen streams
+		// on one h2) end together when it dies, each with its own receipt;
+		// counted as trips, one rail's dead socket made a storm (StormRails
+		// counts rails) and storm mode dialled more cold paths.
+		return false, sig
+	}
 	trip := false
 	if sig.Hard() {
 		trip = true
@@ -274,8 +282,7 @@ func (b *Breaker) Storm(now int64) bool {
 		return false
 	}
 	b.pruneTrips(now)
-	// Count distinct rails among recent trips by timestamp clustering is not
-	// needed: trips are already fleet-wide events; distinctness is enforced by
-	// callers tripping each rail at most once per cooldown.
+	// A rail trips at most once per cooldown (NoteSig), so the trips in the
+	// window are distinct rails, but for one whose cooldown ran out inside it.
 	return len(b.trips) >= b.cfg.StormRails
 }
