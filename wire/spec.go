@@ -212,7 +212,7 @@ func ParseURI(raw string) (PathSpec, error) {
 		}
 		spec.Key = u.User.Username()
 		spec.SNI = q.Get("sni")
-		spec.Fingerprint = first(q.Get("fp"), "chrome")
+		spec.Fingerprint = first(kilvaterProfile(q.Get("fpc")), first(q.Get("fp"), "chrome"))
 		spec.Pad = q.Get("pad")
 		spec.KeyID = q.Get("kid")
 		spec.Path = u.Path

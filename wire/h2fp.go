@@ -551,3 +551,21 @@ func (s *h2Shaper) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
+
+// kilvaterProfile reads fpc, the browser profile the catalogue hands this
+// subscriber for kilvater: one of several, so that everybody behind one door
+// does not show it the same ClientHello. It is a parameter of its own, not a
+// new value of fp, because a core that predates the current profiles reads
+// fp=edge as a browser of years ago; such a core never looks at fpc and stays
+// on fp. A name is taken only if this core can be that browser at both
+// layers, TLS and HTTP/2 (firefox has no HTTP/2 profile yet); anything else
+// is "" and the link's fp stands.
+func kilvaterProfile(name string) string {
+	switch n := strings.ToLower(strings.TrimSpace(name)); n {
+	case "chrome", "edge":
+		if h2ProfileFor(n) != nil {
+			return n
+		}
+	}
+	return ""
+}
