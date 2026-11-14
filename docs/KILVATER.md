@@ -147,8 +147,13 @@ A length above 16384 is a protocol error. It is never turned into an allocation.
 maximum-size records, and PAD frames ride between them; a sender may also send a PAD during a pause. This
 is one-sided and needs no agreement: a peer joins DATA frames back together and ignores PAD regardless, so
 any padding mode interoperates with any other, in both directions. Both ends pad. The mode — `off`,
-`moderate` (default), or `heavy` — is set per server (`kilvaterd -pad`) and per client (the link's optional
+`moderate` (default), `heavy`, or `site` — is set per server (`kilvaterd -pad`) and per client (the link's optional
 `pad` parameter); it only changes how many frames of what sizes are sent, never the bytes delivered.
+
+`site` does not draw sizes at all. It hands bulk down in pieces of 8192 bytes, the size of the DATA frames
+nginx cuts a file into, so that behind an nginx front (KILVATERD.md §9) a transfer leaves as the same few
+record lengths a download of the decoy's own file does (§8). It is meant for that deployment; a build that
+does not know the name runs `moderate`.
 
 Unless the mode is `off`, the first eight writes of a stream are padded harder, each as one record: a write
 shorter than 900 bytes is filled up to 900–1400, a longer one (up to 4096) gets 0–255 more. Those records are
@@ -265,6 +270,15 @@ These are known limits, not plans:
   respectively, and `heavy` also puts a small frame on the wire during a pause. What this does *not* hide:
   the overall volume of a long transfer, and the fine timing correlation between the two directions. It
   raises the cost of size-and-shape classification; it is not an unobservable channel.
+  Measured on a stand (`tools/kv-wirelab.sh`: kilvaterd behind nginx on loopback, 8 MiB each way, a Go
+  client), a spread of sizes is also not what the web server in front sends. A download of a static file
+  from that nginx is 8–15 distinct record lengths, mostly 16401 and 8218 bytes; the same download through
+  the tunnel is 470–660 distinct lengths in `moderate` and 35–48 in `site`. As a distance between the two
+  length distributions (0 the same, 1 nothing in common; two static downloads are 0.00–0.57 apart, most
+  often under 0.4): `off` 0.57, `moderate` 0.51–0.66, `heavy` 0.68, `site` 0.15–0.29. That is record
+  lengths downstream on loopback only — not timing, not a real path, not the upstream direction, and not a
+  classifier's verdict. A decoy that has no large files gives a long transfer nothing to resemble in any
+  mode.
 - **Server fingerprint.** On its own the server uses Go's `crypto/tls` and Go's HTTP/2: its ServerHello and
   its HTTP/2 SETTINGS are a Go server's, not nginx or a CDN. That is common on the web, but it is a
   fingerprint. An nginx `stream` proxy in front (see KILVATERD.md §9) turns the TLS layer into OpenSSL's, and

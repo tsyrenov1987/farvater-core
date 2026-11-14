@@ -39,7 +39,7 @@ func main() {
 	acmeDomain := flag.String("acme", "", "domain to get a Let's Encrypt certificate for (TLS-ALPN-01); empty uses -cert/-key")
 	acmeCache := flag.String("acme-cache", "/var/lib/kilvaterd/acme", "directory where autocert stores certificates")
 	allowPrivate := flag.Bool("allow-private", false, "let clients reach loopback, private and link-local addresses (off: only public addresses)")
-	padMode := flag.String("pad", "moderate", "downstream traffic padding: off | moderate | heavy (shapes record sizes so a tunnel looks less like one bulk transfer)")
+	padMode := flag.String("pad", "moderate", "downstream traffic padding: off | moderate | heavy | site (site: behind nginx, bulk leaves in the record lengths of nginx's own file downloads)")
 	h2cMode := flag.Bool("h2c", false, "serve cleartext HTTP/2 for a TLS-terminating proxy (nginx/Caddy) in front; -listen may be unix:/path, and -cert/-key/-acme are ignored")
 	genKey := flag.Bool("genkey", false, "print a new random client key and exit")
 	genMaster := flag.Bool("genmaster", false, "print a new random master key and exit")

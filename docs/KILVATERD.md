@@ -104,7 +104,7 @@ Open the port in your firewall, for example `sudo ufw allow 443/tcp`.
 | `-decoy` | `/var/www/html` | static files served to everyone without a key |
 | `-allow-private` | off | let clients reach loopback/private/link-local addresses |
 | `-h2c` | off | serve cleartext HTTP/2 for a TLS-terminating proxy in front (§9); `-listen` may be `unix:/path` |
-| `-pad` | `moderate` | downstream padding: `off` \| `moderate` \| `heavy`. Shapes record sizes so a tunnel looks less like one bulk transfer (KILVATER.md §4, §8). `moderate` adds well under 1 % of bytes and no goroutine; `heavy` adds ~1.4 % and keeps a pause from looking idle; `off` is v1 framing. One-sided — old clients read any mode the same way. |
+| `-pad` | `moderate` | downstream padding: `off` \| `moderate` \| `heavy` \| `site`. Shapes record sizes so a tunnel looks less like one bulk transfer (KILVATER.md §4, §8). `moderate` adds well under 1 % of bytes and no goroutine; `heavy` adds ~1.4 % and keeps a pause from looking idle; `off` is v1 framing; `site` is for a server behind nginx (§9): bulk leaves in the record lengths of that nginx's own file downloads, with no extra bytes (KILVATER.md §8 has the measurement). One-sided — old clients read any mode the same way. |
 | `-metrics` | — | serve Prometheus metrics on this address, e.g. `127.0.0.1:9900`; empty disables it. Keep it on the loopback (§11) |
 | `-max-bytes-per-key` | `0` | refuse a key's new streams once it has carried this many payload bytes up+down; `0` is no limit (§11) |
 | `-max-bytes-window` | `0` | with `-max-bytes-per-key`: count a key's bytes per window of this length (e.g. `24h`) instead of for the life of the process; `0` is no window (§11) |
