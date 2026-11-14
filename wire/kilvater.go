@@ -40,7 +40,10 @@ type kilWire struct {
 
 func newKilvater(s PathSpec) (Wire, error) {
 	w, err := newKilWire(s, func(ctx context.Context) (net.Conn, error) {
-		return dialSecure(ctx, s, false)
+		// One connection carries all the flows, so every handshake here is
+		// a reconnect a filter can count: a flow's dial, a rotation's spare,
+		// a resumed session all take their turn (hsgate.go).
+		return dialSecurePaced(ctx, s, false)
 	})
 	if err != nil {
 		return nil, err
@@ -98,6 +101,7 @@ func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilW
 	// warms a fresh one.
 	w.mux.tr.IdleConnTimeout = h2IdleClose
 	w.mux.warm = w.warm
+	w.mux.held = w.gateHeld
 	w.mux.maxAge, w.mux.maxBytes = kilConnMaxAge, kilConnMaxBytes
 	w.mux.spread, w.mux.ahead = kilConnSpread, kilConnAhead
 	return w, nil
@@ -110,6 +114,15 @@ func (w *kilWire) Spec() PathSpec { return w.spec }
 // held until the next openStream replaces it; the next Dial over it
 // handshakes, so the governor must count it as one (h2Mux.needsDial).
 func (w *kilWire) NeedsHandshake() bool { return w.mux.needsDial() }
+
+// HandshakeHeld: the next Dial would be refused by the handshake pacing
+// (PacedWire). Not while a connection past its rotation limit can still take
+// the flow: the mux stays on it until a fresh one may be made.
+func (w *kilWire) HandshakeHeld() bool { return w.gateHeld() && !w.mux.usable() }
+
+func (w *kilWire) gateHeld() bool {
+	return handshakes.held(w.spec.ServerSNI(), w.spec.Fingerprint)
+}
 
 func (w *kilWire) Close() error        { return w.mux.Close() }
 func (w *kilWire) Refresh(t time.Time) { w.mux.refresh(t) }

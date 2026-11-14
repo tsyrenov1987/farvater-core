@@ -94,6 +94,13 @@ const (
 	ConnEndDead                 // silent: a PING was never answered
 )
 
+// PacedWire is a wire whose handshakes take turns by server name (hsgate.go).
+// HandshakeHeld reports that a dial needing a handshake would be refused
+// with ErrHandshakePaced right now, so the caller need not queue for it.
+type PacedWire interface {
+	HandshakeHeld() bool
+}
+
 // ConnWatcher is a wire that rides its flows on shared connections and can
 // tell how each of them ended: with how many bytes carried, both ways, and
 // when it was made. WatchConns is called once, before the wire's first flow;

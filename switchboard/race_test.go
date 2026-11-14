@@ -3,6 +3,7 @@ package switchboard
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/tsyrenov1987/farvater-core/brain"
 	"github.com/tsyrenov1987/farvater-core/catalogue"
@@ -56,5 +57,63 @@ func TestALeaderThatLosesTheConnectRaceIsInDoubt(t *testing.T) {
 	defer s.mu.Unlock()
 	if p := s.b.SweepDue(nowMs()); len(p) == 0 || p[0] != lead {
 		t.Fatalf("swept %v after the leader %s lost two connect races in a row, want it probed first", p, lead)
+	}
+}
+
+// heldWire's handshake is held back by the wire's own pacing.
+type heldWire struct {
+	id    string
+	dials int
+}
+
+func (w *heldWire) ID() string           { return w.id }
+func (w *heldWire) Spec() wire.PathSpec  { return wire.PathSpec{ID: w.id} }
+func (w *heldWire) NeedsHandshake() bool { return true }
+func (w *heldWire) HandshakeHeld() bool  { return true }
+func (w *heldWire) Close() error         { return nil }
+func (w *heldWire) Dial(ctx context.Context) (wire.Session, error) {
+	w.dials++
+	return nil, wire.ErrHandshakePaced
+}
+
+// A leader whose handshake the pacing holds back is passed over at once, with
+// no dial, no slot of the governor's and no receipt against it: the runner-up
+// takes the flow well inside the stagger.
+func TestALeaderWithAHeldHandshakeIsPassedOver(t *testing.T) {
+	cat, err := catalogue.Parse([]byte("vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?security=tls&sni=a.example.com&type=tcp#a\n" +
+		"vless://00000000-0000-0000-0000-000000000000@127.0.0.2:1?security=tls&sni=b.example.com&type=tcp#b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(DefaultConfig(), cat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead, other := s.Paths()[0], s.Paths()[1]
+	held := &heldWire{id: lead}
+	s.wires[lead] = held
+	s.wires[other] = &streamWire{id: other, n: 100}
+	s.mu.Lock()
+	before := s.b.State(lead).Receipts
+	s.mu.Unlock()
+	start := time.Now()
+	for i := 0; i < 20; i++ {
+		f := &flow{s: s}
+		sess, a, err := f.dialRace(context.Background(), []string{lead, other}, 5000, false)
+		if err != nil || a.path != other {
+			t.Fatalf("race %d: %v over %v, want the runner-up %s", i, err, a, other)
+		}
+		sess.Close()
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("20 flows past a held leader took %v: they queued or waited the stagger", d)
+	}
+	if held.dials != 0 {
+		t.Fatalf("the held wire was dialed %d times", held.dials)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if got := s.b.State(lead).Receipts; got != before {
+		t.Fatalf("%d receipts filed against the held leader", got-before)
 	}
 }

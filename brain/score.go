@@ -36,6 +36,9 @@ type PathState struct {
 	// Connections the path's flows shared, by the bytes they had carried when
 	// they ended, and how (ConnEnd).
 	ConnOurs, ConnFin, ConnReset, ConnDead VolHist
+	// TLS handshakes made for the path, by the time since the previous one
+	// to the same server name, and how they ended (handshake.go).
+	HsOK, HsFail, HsTimeout HsHist
 }
 
 // MaxPriorWeight caps prior pseudo-counts so that five fresh receipts outweigh them.

@@ -199,6 +199,9 @@ func (s *Switchboard) openUDP(ctx context.Context, a *udpAssoc, d datagram) bool
 		}
 		tries++
 		if err := s.pace(ctx, id); err != nil {
+			if errors.Is(err, wire.ErrHandshakePaced) {
+				continue // held back, not failed: the next path takes it
+			}
 			return false
 		}
 		dctx, cancel := context.WithTimeout(ctx, s.cfg.DialTimeout)

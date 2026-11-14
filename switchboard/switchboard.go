@@ -232,6 +232,9 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 		}
 	}
 	s.b.UseMemory(s.loadMemory(), priors, nowMs())
+	// The handshakes are the process's, not one switchboard's: the newest
+	// switchboard files them. Off the dial's goroutine, as with WatchConns.
+	wire.WatchHandshakes(func(path string, gapMs int64, end wire.HandshakeEnd) { go s.noteHandshake(path, gapMs, end) })
 	return s, nil
 }
 
@@ -320,6 +323,8 @@ func (s *Switchboard) SetNetwork(ctx string) {
 	s.mu.Unlock()
 	s.logf("network %s → %s (leader %s)", old, ctx, leader)
 	_ = s.writeMemory(data, seq)
+	// A filter counts handshakes by the client's address, and that is new.
+	wire.ForgetHandshakes()
 	// Connections shared across flows were made on the network left behind.
 	at := time.Now()
 	for _, id := range s.order {
@@ -663,6 +668,10 @@ func (s *Switchboard) pace(ctx context.Context, path string) error {
 	if !s.wires[path].NeedsHandshake() {
 		return nil
 	}
+	// A handshake the wire's own pacing would refuse takes no slot here.
+	if p, ok := s.wires[path].(wire.PacedWire); ok && p.HandshakeHeld() {
+		return wire.ErrHandshakePaced
+	}
 	at := s.acquire(path)
 	if wait := at - nowMs(); wait > 0 {
 		select {
@@ -786,6 +795,24 @@ func (s *Switchboard) noteConnEnd(path string, end wire.ConnEnd, bytes int64, ma
 	s.b.NoteConnEnd(path, how, bytes, made.UnixMilli(), slept, nowMs())
 }
 
+// noteHandshake tells the brain of a TLS handshake made for path: how long
+// after the previous one to the same name, and how it ended.
+func (s *Switchboard) noteHandshake(path string, gapMs int64, end wire.HandshakeEnd) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.b == nil {
+		return
+	}
+	how := brain.HsOK
+	switch end {
+	case wire.HandshakeFail:
+		how = brain.HsFail
+	case wire.HandshakeTimeout:
+		how = brain.HsTimeout
+	}
+	s.b.NoteHandshake(path, gapMs, how, nowMs())
+}
+
 func (s *Switchboard) observe(r brain.Receipt) {
 	s.mu.Lock()
 	r.Ctx = s.b.Ctx()
@@ -884,10 +911,17 @@ type Volume struct {
 	ConnFin   []int `json:"conn_fin,omitempty"`
 	ConnReset []int `json:"conn_reset,omitempty"`
 	ConnDead  []int `json:"conn_dead,omitempty"`
+	// TLS handshakes made for the path, by the time since the previous one to
+	// the same server name (none before it, under 1 s, 2 s, 10 s, 1 min,
+	// 2 min, 10 min, and beyond): completed, failed, unanswered. A filter
+	// that counts handshakes to a name shows as failures on the short steps.
+	HsOK      []int `json:"hs_ok,omitempty"`
+	HsFail    []int `json:"hs_fail,omitempty"`
+	HsTimeout []int `json:"hs_timeout,omitempty"`
 }
 
 func volStatus(ps brain.PathState) *Volume {
-	list := func(h brain.VolHist) []int {
+	list := func(h [brain.VolSteps]int) []int {
 		n := len(h)
 		for n > 0 && h[n-1] == 0 {
 			n--
@@ -900,8 +934,9 @@ func volStatus(ps brain.PathState) *Volume {
 	v := Volume{
 		FlowReset: list(ps.CutReset), FlowStall: list(ps.CutStall), FlowEnded: list(ps.Ended),
 		ConnOurs: list(ps.ConnOurs), ConnFin: list(ps.ConnFin), ConnReset: list(ps.ConnReset), ConnDead: list(ps.ConnDead),
+		HsOK: list(ps.HsOK), HsFail: list(ps.HsFail), HsTimeout: list(ps.HsTimeout),
 	}
-	if v.FlowReset == nil && v.FlowStall == nil && v.FlowEnded == nil && v.ConnOurs == nil && v.ConnFin == nil && v.ConnReset == nil && v.ConnDead == nil {
+	if v.HsOK == nil && v.HsFail == nil && v.HsTimeout == nil && v.FlowReset == nil && v.FlowStall == nil && v.FlowEnded == nil && v.ConnOurs == nil && v.ConnFin == nil && v.ConnReset == nil && v.ConnDead == nil {
 		return nil
 	}
 	return &v

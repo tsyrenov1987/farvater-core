@@ -73,6 +73,12 @@ type h2Mux struct {
 	onEnd    func(end ConnEnd, bytes int64, made time.Time)
 	lostPing atomic.Int64
 
+	// held, when set, reports that a handshake made now would be refused by
+	// the wire's pacing (hsgate.go). While it is, a connection is not given
+	// up for a fresh one that cannot be made: refresh checks the current one
+	// with a PING instead of retiring it.
+	held func() bool
+
 	mu   sync.Mutex
 	cc   *http2.ClientConn
 	conn *countConn
@@ -264,6 +270,11 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 	}
 	c, err := m.newConn(ctx)
 	if err != nil {
+		// Past a rotation limit and the handshake for the next connection is
+		// held back: the current one goes on taking streams until it is not.
+		if errors.Is(err, ErrHandshakePaced) && m.cc != nil && m.cc.ReserveNewRequest() {
+			return m.cc, m.conn, nil
+		}
 		return nil, nil, err
 	}
 	if !c.cc.ReserveNewRequest() {
@@ -303,6 +314,14 @@ func (m *h2Mux) needsDial() bool {
 	}
 	// A connection made ahead takes the stream with no handshake.
 	return m.spare == nil || !m.spare.cc.CanTakeNewRequest()
+}
+
+// usable reports whether the current connection can take a stream, past a
+// rotation limit or not.
+func (m *h2Mux) usable() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cc != nil && m.cc.CanTakeNewRequest()
 }
 
 // retire lets a connection that takes no new streams finish the ones it
@@ -347,9 +366,32 @@ func (m *h2Mux) refresh(t time.Time) {
 		m.mu.Unlock()
 		return
 	}
+	if m.held != nil && m.held() {
+		// No fresh connection can be made now: keep this one if it answers.
+		m.mu.Unlock()
+		m.check(old, oldConn)
+		return
+	}
 	m.cc, m.conn = nil, nil
 	m.mu.Unlock()
 	m.retire(old, oldConn)
+}
+
+// check closes a connection that does not answer a PING and leaves a live one
+// as it is.
+func (m *h2Mux) check(cc *http2.ClientConn, conn *countConn) {
+	ping := m.retirePing
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), ping)
+		err := cc.Ping(ctx)
+		cancel()
+		if err != nil {
+			if conn != nil {
+				conn.ended(ConnEndDead)
+			}
+			cc.Close()
+		}
+	}()
 }
 
 // openStream starts one request/response stream on the shared connection. The

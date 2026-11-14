@@ -50,3 +50,32 @@ func TestStatusCarriesVolumeAtEnd(t *testing.T) {
 		t.Fatalf("path a in Status:\n%s\nwant it to hold\n%s", raw, want)
 	}
 }
+
+// Status carries the handshakes made for a path by the time since the
+// previous one to the same name, and a dial the pacing refused files no
+// receipt against the path.
+func TestStatusCarriesHandshakeGaps(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Ctx = "cell"
+	s, err := New(cfg, threeDead(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.probe = func(context.Context, []string) bool { return false }
+	s.noteHandshake("a", -1, wire.HandshakeOK)
+	s.noteHandshake("a", 400, wire.HandshakeFail)
+	s.noteHandshake("a", 1500, wire.HandshakeTimeout)
+	for _, p := range s.Status().Paths {
+		if p.ID != "a" {
+			continue
+		}
+		raw, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `"hs_ok":[1],"hs_fail":[0,1],"hs_timeout":[0,0,1]`
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("path a in Status:\n%s\nwant it to hold\n%s", raw, want)
+		}
+	}
+}

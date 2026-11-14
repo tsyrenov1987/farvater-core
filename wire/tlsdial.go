@@ -144,22 +144,45 @@ func handshakeTLS(ctx context.Context, c net.Conn, s PathSpec, http11 bool) (*ut
 // dialSecure connects to the path's server and runs its TLS or REALITY
 // handshake.
 func dialSecure(ctx context.Context, s PathSpec, http11 bool) (*utls.UConn, error) {
-	var c net.Conn
+	return dialSecureVia(ctx, handshakes, s, http11, false)
+}
+
+// dialSecurePaced is dialSecure for a wire that keeps one connection for all
+// its flows: the handshake waits its turn among those to the same server
+// name, or is refused with ErrHandshakePaced (hsgate.go).
+func dialSecurePaced(ctx context.Context, s PathSpec, http11 bool) (*utls.UConn, error) {
+	return dialSecureVia(ctx, handshakes, s, http11, true)
+}
+
+func dialSecureVia(ctx context.Context, g *hsGate, s PathSpec, http11, paced bool) (*utls.UConn, error) {
+	name := s.ServerSNI()
+	var slot time.Time
 	var err error
+	if paced {
+		if slot, err = g.reserve(ctx, name, s.Fingerprint); err != nil {
+			return nil, err
+		}
+	}
+	var c net.Conn
 	if s.TURN != nil {
 		c, err = dialTURN(ctx, s)
 	} else {
 		c, err = dialTCP(ctx, s.Host, s.Port)
 	}
 	if err != nil {
+		if paced {
+			g.cancel(name, slot) // no ClientHello went out
+		}
 		return nil, err
 	}
+	gap := g.begin(name)
 	var u *utls.UConn
 	if s.Security == "reality" {
 		u, err = handshakeREALITY(ctx, c, s)
 	} else {
 		u, err = handshakeTLS(ctx, c, s, http11)
 	}
+	g.done(ctx, s.ID, name, s.Fingerprint, gap, err)
 	if err != nil {
 		c.Close()
 		return nil, err
