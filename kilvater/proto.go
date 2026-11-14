@@ -56,6 +56,21 @@ func WriteFrame(w io.Writer, typ byte, body []byte) error {
 	return err
 }
 
+// AppendFrame appends one frame to b. The caller keeps body within MaxFrame.
+// It lets several frames go out in one Write, and so in one TLS record.
+func AppendFrame(b []byte, typ byte, body []byte) []byte {
+	b = append(b, typ, byte(len(body)>>16), byte(len(body)>>8), byte(len(body)))
+	return append(b, body...)
+}
+
+// Codes a CLOSE frame carries. A reader that knows none of them treats every
+// CLOSE as the end of the stream, as v1 did.
+const (
+	CloseOK        byte = 0 // the target finished
+	CloseDialFail  byte = 1 // the server could not reach the target
+	CloseForbidden byte = 2 // the server will not dial this target
+)
+
 // WritePad writes a PAD frame of a random length, so the size of the first
 // records a session puts on the wire varies run to run. The body is ignored
 // on read; only its length, which TLS passes through to the record size,

@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -47,6 +48,9 @@ func main() {
 	metricsAddr := flag.String("metrics", "", "serve Prometheus metrics on this address (e.g. 127.0.0.1:9900); empty disables it; keep it on the loopback or a management overlay, never public")
 	maxBytesPerKey := flag.Int64("max-bytes-per-key", 0, "refuse a key's new streams once it has carried this many payload bytes up+down; 0 is no limit")
 	maxStreamsPerKey := flag.Int64("max-streams-per-key", 0, "cap a key's concurrent streams; 0 is no limit")
+	denyDst := flag.String("deny-dst", "", "comma-separated addresses or prefixes (the sister nodes) clients may reach only on -self-ports; the server's own addresses are always in the list")
+	selfPorts := flag.String("self-ports", "80,443", "target ports left open on the server's own addresses and on -deny-dst")
+	denyPorts := flag.String("deny-ports", "25", "target ports no client may reach, comma-separated; empty allows all")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -118,6 +122,16 @@ func main() {
 		MaxBytesPerKey:   *maxBytesPerKey,
 		MaxStreamsPerKey: *maxStreamsPerKey,
 	}
+	if srv.DenyDst, err = denyPrefixes(*denyDst); err != nil {
+		log.Fatalf("-deny-dst: %v", err)
+	}
+	if srv.SelfPorts, err = parsePorts(*selfPorts); err != nil {
+		log.Fatalf("-self-ports: %v", err)
+	}
+	if srv.DenyPorts, err = parsePorts(*denyPorts); err != nil {
+		log.Fatalf("-deny-ports: %v", err)
+	}
+	log.Printf("targets: %d own/sister prefix(es) open on ports %v only, ports %v closed", len(srv.DenyDst), srv.SelfPorts, srv.DenyPorts)
 	log.Printf("downstream padding: %s", srv.Pad)
 	if *maxBytesPerKey > 0 || *maxStreamsPerKey > 0 {
 		log.Printf("per-key limits: max_bytes=%d max_streams=%d", *maxBytesPerKey, *maxStreamsPerKey)
@@ -155,7 +169,10 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		ln = shapeServerSettings(ln)
+		// net/http never reports a hijacked (h2c) connection closed, so count
+		// connections at the listener instead of through ConnState.
+		httpSrv.ConnState = nil
+		ln = shapeServerSettings(countConns(ln, metrics))
 		// On this path TLS (the front proxy's OpenSSL) and the HTTP/2 above are
 		// nginx's, so the decoy's HTTP responses must be nginx's too, not Go's
 		// FileServer (decoy.go). The direct-TLS path below keeps the plain Go
@@ -359,4 +376,58 @@ func installReload(v *kilvater.Verifier, load func() (kilvater.VerifierConfig, e
 			log.Printf("reloaded: %d v1 key(s), %d master(s), %d revoked", len(cfg.Keys), nMasters(cfg), len(cfg.Revoked))
 		}
 	}()
+}
+
+// denyPrefixes is the -deny-dst list plus every address on the host's own
+// interfaces (loopback and private ones are refused elsewhere; listing them
+// again is harmless).
+func denyPrefixes(list string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, f := range strings.Split(list, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(f); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(f)
+		if err != nil {
+			return nil, fmt.Errorf("%q is neither an address nor a prefix", f)
+		}
+		a = a.Unmap()
+		out = append(out, netip.PrefixFrom(a, a.BitLen()))
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	for _, ia := range addrs {
+		ipn, ok := ia.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if a, ok := netip.AddrFromSlice(ipn.IP); ok {
+			a = a.Unmap()
+			out = append(out, netip.PrefixFrom(a, a.BitLen()))
+		}
+	}
+	return out, nil
+}
+
+func parsePorts(list string) ([]uint16, error) {
+	var out []uint16
+	for _, f := range strings.Split(list, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		n, err := strconv.ParseUint(f, 10, 16)
+		if err != nil || n == 0 {
+			return nil, fmt.Errorf("bad port %q", f)
+		}
+		out = append(out, uint16(n))
+	}
+	return out, nil
 }

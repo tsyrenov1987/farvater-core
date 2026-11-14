@@ -79,6 +79,7 @@ type Shaper struct {
 
 	mu     sync.Mutex
 	active bool // data written since the last idle tick
+	early  int  // writes still padded as the opening of a stream (earlyWrites)
 
 	stop      chan struct{}
 	done      chan struct{}
@@ -93,6 +94,9 @@ func NewShaper(w io.Writer, mode PadMode) *Shaper {
 
 func newShaper(w io.Writer, mode PadMode, idle time.Duration) *Shaper {
 	s := &Shaper{w: w, mode: mode, idle: idle}
+	if mode != PadOff {
+		s.early = earlyWrites
+	}
 	if mode == PadHeavy {
 		s.stop = make(chan struct{})
 		s.done = make(chan struct{})
@@ -109,6 +113,12 @@ func (s *Shaper) WriteData(p []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.active = true
+	if s.early > 0 {
+		s.early--
+		if len(p) > 0 && len(p) <= earlyMax {
+			return s.writeEarlyLocked(nil, p)
+		}
+	}
 	for len(p) > 0 {
 		n := s.nextChunk(len(p))
 		if err := WriteFrame(s.w, FrameData, p[:n]); err != nil {
@@ -120,6 +130,71 @@ func (s *Shaper) WriteData(p []byte) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// The first writes of a stream are what gives a tunnelled TLS session away: an
+// inner ClientHello, ServerHello and Finished have sizes of their own, and a
+// record that is "that size plus a constant" still shows them. So each of a
+// stream's first earlyWrites writes (per direction), when it is small, goes
+// out as DATA and a PAD together in one Write — one TLS record — whose PAD is
+// sized the way XTLS Vision sizes its own: a short write is brought up to
+// 900 bytes plus a random 0–499, a longer one gets a random 0–255. A write
+// above earlyMax is bulk already and is left to the chunker. A reader that
+// predates this skips the PAD like any other, so either side may turn it on
+// alone. PadOff sends none.
+const (
+	earlyWrites = 8
+	earlyMax    = 4096
+	earlyFloor  = 900
+)
+
+func earlyPadSize(n int) int {
+	if n < earlyFloor {
+		return earlyFloor - n + rand.IntN(500)
+	}
+	return rand.IntN(256)
+}
+
+// writeEarlyLocked writes head (frames already encoded, may be nil), p as one
+// DATA frame (if any) and an early PAD in a single Write.
+func (s *Shaper) writeEarlyLocked(head, p []byte) error {
+	pad := earlyPadSize(len(head) + len(p))
+	b := make([]byte, 0, len(head)+len(p)+pad+8)
+	b = append(b, head...)
+	if len(p) > 0 {
+		b = AppendFrame(b, FrameData, p)
+	}
+	b = AppendFrame(b, FramePad, make([]byte, pad))
+	_, err := s.w.Write(b)
+	return err
+}
+
+// WriteOpening writes a stream's first record: head (the encoded OPEN frame),
+// then p (the bytes the app already sent, if any), then a PAD, all in one
+// Write, so the size of the OPEN — which follows the length of the target's
+// name — never stands alone on the wire. In PadOff, or with p above earlyMax,
+// head, the opening PAD and p go out one after another as v1 sent them.
+func (s *Shaper) WriteOpening(head, p []byte) error {
+	s.mu.Lock()
+	if s.mode != PadOff && len(p) <= earlyMax {
+		defer s.mu.Unlock()
+		s.active = true
+		if s.early > 0 {
+			s.early--
+		}
+		return s.writeEarlyLocked(head, p)
+	}
+	s.mu.Unlock()
+	if _, err := s.w.Write(head); err != nil {
+		return err
+	}
+	if err := s.WritePad(); err != nil {
+		return err
+	}
+	if len(p) > 0 {
+		return s.WriteData(p)
 	}
 	return nil
 }

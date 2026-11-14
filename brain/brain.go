@@ -851,6 +851,14 @@ func (b *Brain) count(r Receipt, now int64) {
 			return
 		}
 		b.Diag.NoteDst(r.Dst, r.Path, false, now)
+		if r.DstRefused {
+			// The node answered that the destination is out of its reach: the
+			// path works, and the flow says nothing against it.
+			b.Dropped++
+			b.Drops.Dst++
+			b.J.Add(now, "drop_dst", "the node could not reach the destination and said so: not evidence against the path", r.Path)
+			return
+		}
 	} else if r.FirstByte() {
 		b.Diag.NoteDst(r.Dst, r.Path, true, now)
 	}

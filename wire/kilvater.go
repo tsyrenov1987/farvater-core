@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -337,27 +338,29 @@ func (s *kilSession) Run(ctx context.Context, target Target, prelude []byte, up 
 		s.conn.Close()
 		return OutcomeError, err
 	}
-	// OPEN is a control frame, sent before the shaper so the idle goroutine
-	// (PadHeavy) never races it; the shaper carries everything after.
-	if err := kilvater.WriteFrame(s.conn, kilvater.FrameOpen, body); err != nil {
-		s.conn.Close()
-		return OutcomeError, err
-	}
+	// OPEN, what the app already sent and a PAD go out as one record, so the
+	// OPEN's size (the length of the target's name) never shows on its own.
 	sh := kilvater.NewShaper(s.conn, s.pad)
 	defer sh.Close()
-	// Vary the size of the first record we put on the wire.
-	if err := sh.WritePad(); err != nil {
+	if err := sh.WriteOpening(kilvater.AppendFrame(nil, kilvater.FrameOpen, body), prelude); err != nil {
 		s.conn.Close()
 		return OutcomeError, err
 	}
-	if len(prelude) > 0 {
-		if err := sh.WriteData(prelude); err != nil {
-			s.conn.Close()
-			return OutcomeError, err
-		}
+	fr := &kilFrameReader{r: s.conn}
+	out, err := runStream(ctx, s.conn, &kilFrameWriter{sh: sh}, fr, up, down, m)
+	if err == nil && fr.refused {
+		// The node answered, and said it could not reach the target: the flow
+		// ends as before, and the error tells the caller the path is not to blame.
+		return out, ErrTargetUnreachable
 	}
-	return runStream(ctx, s.conn, &kilFrameWriter{sh: sh}, &kilFrameReader{r: s.conn}, up, down, m)
+	return out, err
 }
+
+// ErrTargetUnreachable comes with OutcomeRemoteFin from a transport whose
+// server said, before any byte of an answer, that it could not reach the
+// target. The path carried the question and the server's reply, so the
+// failure is the destination's (or the node's route to it), not the path's.
+var ErrTargetUnreachable = errors.New("wire: the server could not reach the target")
 
 type kilFrameWriter struct{ sh *kilvater.Shaper }
 
@@ -372,6 +375,9 @@ type kilFrameReader struct {
 	r   io.Reader
 	buf []byte
 	rem []byte
+
+	got     bool // a DATA frame has arrived
+	refused bool // CLOSE with a failure code came before any DATA
 }
 
 func (fr *kilFrameReader) Read(p []byte) (int, error) {
@@ -384,11 +390,18 @@ func (fr *kilFrameReader) Read(p []byte) (int, error) {
 		switch typ {
 		case kilvater.FrameData:
 			fr.rem = body
+			fr.got = true
 		case kilvater.FramePad:
 			continue
 		case kilvater.FrameClose:
+			if !fr.got && len(body) > 0 && body[0] != kilvater.CloseOK {
+				fr.refused = true
+			}
 			return 0, io.EOF
 		default:
+			if typ > kilvater.FrameClose {
+				continue // a frame type from a newer server: skip it, like PAD
+			}
 			return 0, fmt.Errorf("kilvater: unexpected frame type %d", typ)
 		}
 	}
@@ -426,15 +439,16 @@ func (s *kilPacketSession) WritePacket(p []byte, target Target) error {
 		if err != nil {
 			return err
 		}
-		if err := kilvater.WriteFrame(s.conn, kilvater.FrameOpen, body); err != nil {
-			return err
-		}
-		// Vary the first record, as the TCP side's OPEN → PAD → data does, so a
-		// UDP stream opens like a TCP one on the wire.
-		if err := kilvater.WritePad(s.conn); err != nil {
-			return err
+		// OPEN, a PAD and the first datagram go out as one record, so the OPEN's
+		// size (the length of the target's name) never shows on its own.
+		b := kilvater.AppendFrame(nil, kilvater.FrameOpen, body)
+		b = kilvater.AppendFrame(b, kilvater.FramePad, make([]byte, 16+rand.IntN(256)))
+		if len(p) <= kilvater.MaxFrame {
+			b = kilvater.AppendFrame(b, kilvater.FrameDgram, p)
 		}
 		s.opened, s.target = true, target
+		_, err = s.conn.Write(b)
+		return err
 	} else if target != s.target {
 		return errKilUDPTarget
 	}
@@ -461,6 +475,9 @@ func (s *kilPacketSession) ReadPacket() ([]byte, Target, error) {
 		case kilvater.FrameClose:
 			return nil, Target{}, io.EOF
 		default:
+			if typ > kilvater.FrameClose {
+				continue // a frame type from a newer server: skip it, like PAD
+			}
 			return nil, Target{}, fmt.Errorf("kilvater: unexpected frame type %d", typ)
 		}
 	}

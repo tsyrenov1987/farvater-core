@@ -164,6 +164,7 @@ func (a *attempt) runReceipt(f *flow, preludeLen int, out wire.Outcome, err erro
 	case brain.EndWireReset, brain.EndTimeout, brain.EndStallAbandon:
 		r.DownAtFail = r.Down
 	}
+	r.DstRefused = errors.Is(err, wire.ErrTargetUnreachable)
 	return r
 }
 

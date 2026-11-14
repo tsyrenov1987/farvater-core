@@ -34,8 +34,8 @@ func TestTCPRefusesPrivateTargetByDefault(t *testing.T) {
 		(&Server{}).tcp(context.Background(), target, upR, &down, nil)
 
 		typ, body, err := ReadFrame(&down, nil)
-		if err != nil || typ != FrameClose || len(body) != 1 || body[0] != 1 {
-			t.Fatalf("%s: want CLOSE(1), got type=%d body=%v err=%v", target, typ, body, err)
+		if err != nil || typ != FrameClose || len(body) != 1 || body[0] != CloseForbidden {
+			t.Fatalf("%s: want CLOSE(2), got type=%d body=%v err=%v", target, typ, body, err)
 		}
 	}
 	select {

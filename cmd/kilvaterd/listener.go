@@ -145,3 +145,40 @@ func (l *handshakeListener) Close() error {
 	l.closing.Do(func() { close(l.done) })
 	return l.Listener.Close()
 }
+
+// countConns counts each accepted connection open until it is closed, on the
+// listener's side (see Metrics.ConnOpened).
+func countConns(ln net.Listener, m interface {
+	ConnOpened()
+	ConnClosed()
+}) net.Listener {
+	return &countingListener{Listener: ln, m: m}
+}
+
+type countingListener struct {
+	net.Listener
+	m interface {
+		ConnOpened()
+		ConnClosed()
+	}
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	l.m.ConnOpened()
+	return &countedConn{Conn: c, closed: l.m.ConnClosed}, nil
+}
+
+type countedConn struct {
+	net.Conn
+	once   sync.Once
+	closed func()
+}
+
+func (c *countedConn) Close() error {
+	c.once.Do(c.closed)
+	return c.Conn.Close()
+}

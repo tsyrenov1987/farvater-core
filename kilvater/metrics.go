@@ -31,6 +31,8 @@ type Metrics struct {
 	authFailures  atomic.Int64
 	limitRejects  atomic.Int64
 	openTimeouts  atomic.Int64
+	dialFails     atomic.Int64
+	dialForbidden atomic.Int64
 	upBytes       atomic.Int64
 	downBytes     atomic.Int64
 
@@ -142,6 +144,35 @@ func (m *Metrics) limitReject() {
 	}
 }
 
+// dialFail counts a target the server did not reach, by CLOSE code.
+func (m *Metrics) dialFail(code byte) {
+	if m == nil {
+		return
+	}
+	if code == CloseForbidden {
+		m.dialForbidden.Add(1)
+		return
+	}
+	m.dialFails.Add(1)
+}
+
+// ConnOpened and ConnClosed count a connection from the listener's side, for
+// a server whose connections net/http stops reporting once they are hijacked
+// (the h2c path): there ConnState sees StateNew and never StateClosed, and the
+// open gauge would only grow.
+func (m *Metrics) ConnOpened() {
+	if m != nil {
+		m.connsTotal.Add(1)
+		m.connsOpen.Add(1)
+	}
+}
+
+func (m *Metrics) ConnClosed() {
+	if m != nil {
+		m.connsOpen.Add(-1)
+	}
+}
+
 func (m *Metrics) openTimeout() {
 	if m != nil {
 		m.openTimeouts.Add(1)
@@ -205,6 +236,8 @@ func (m *Metrics) WritePrometheus(w io.Writer) {
 		{"kilvater_replay_hits_total", "counter", "tags rejected as replays", replays},
 		{"kilvater_open_timeouts_total", "counter", "authenticated streams that never sent OPEN in time", m.openTimeouts.Load()},
 		{"kilvater_limit_rejects_total", "counter", "streams refused by a per-key limit", m.limitRejects.Load()},
+		{"kilvater_dial_fails_total", "counter", "targets the server could not reach", m.dialFails.Load()},
+		{"kilvater_dial_forbidden_total", "counter", "targets the server refused to dial (private, denied address or port)", m.dialForbidden.Load()},
 		{"kilvater_up_bytes_total", "counter", "payload bytes from clients to targets", m.upBytes.Load()},
 		{"kilvater_down_bytes_total", "counter", "payload bytes from targets to clients", m.downBytes.Load()},
 	} {
