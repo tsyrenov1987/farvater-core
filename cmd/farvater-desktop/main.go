@@ -25,6 +25,7 @@ import (
 
 	"github.com/tsyrenov1987/farvater-core/catalogue"
 	"github.com/tsyrenov1987/farvater-core/desktop"
+	"github.com/tsyrenov1987/farvater-core/service"
 	"github.com/tsyrenov1987/farvater-core/switchboard"
 )
 
@@ -37,22 +38,14 @@ func usage() {
 	os.Exit(2)
 }
 
-// catalogueHosts serve the same /hsub catalogue. joinorden.com is cut off
-// inside Russia (TLS reset), the other two are reachable from there and from abroad.
-var catalogueHosts = []string{"viporden.online", "myorden.ru", "joinorden.com"}
-
 // catalogueURLs turns an access code into the catalogue's addresses, in the
 // order to try them; a URL the user gave is the only address.
 func catalogueURLs(s string) ([]string, error) {
 	s = strings.TrimSpace(s)
 	if u := strings.ToUpper(s); codeRE.MatchString(u) {
-		// First a door whose name does not carry the brand (service.plainDoor).
-		// Then a second such door on other relays (service.spareDoor).
-		out := []string{"https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/" + u, "https://my.larkfield.top/api/hsub/" + u}
-		for _, h := range catalogueHosts {
-			out = append(out, "https://"+h+"/hsub/"+u)
-		}
-		return out, nil
+		// The service's order: the doors the build was given (service.DoorSpec),
+		// then the brand's names.
+		return service.Mirrors("https://joinorden.com/hsub/" + u), nil
 	}
 	if strings.HasPrefix(s, "https://") {
 		return []string{s}, nil

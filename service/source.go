@@ -22,7 +22,6 @@ var (
 		"\u041E", "O", "\u0420", "P", "\u0421", "C", "\u0422", "T", "\u0423", "Y", "\u0425", "X",
 	)
 	aloneCode = regexp.MustCompile(`^(?:ORDEN[-_ ]*)?([0-9A-Z]{5})[-_ ]*([0-9A-Z]{5})$`)
-	ordenURL  = regexp.MustCompile(`(?i)^https://(?:www\.)?(?:joinorden\.com|myorden\.ru|viporden\.online)(/\S*)$`)
 	subPath   = regexp.MustCompile(`(?i)^/(?:hsub|sub)/[^/?#\s]+$`)
 	anySub    = regexp.MustCompile(`(?i)^/(?:hsub|sub)/`)
 	httpCode  = regexp.MustCompile(`HTTP (\d{3})`)
@@ -44,20 +43,22 @@ func Source(input string) (string, error) {
 	return "", errNotOrden
 }
 
-// plainDoor serves the same catalogue under a name without the brand in it, so
-// the first hostname a client shows the network does not say whose client it is.
-const plainDoor = "https://cdn2.cdn-tvzvezda-ru.ru/api"
-
-// spareDoor is a second unbranded name for the same catalogue on other relays
-// (A → НСК-1, НСК-2, wl2), for when the first one is cut by name.
-const spareDoor = "https://my.larkfield.top/api"
-
+// isDoor says u is at one of the doors (DoorSpec): names without the brand in
+// them, so the first hostname a client shows the network does not say whose
+// client it is.
 func isDoor(u string) bool {
-	return strings.HasPrefix(u, plainDoor) || strings.HasPrefix(u, spareDoor)
+	for _, d := range plainDoors {
+		if strings.HasPrefix(u, d+"/") {
+			return true
+		}
+	}
+	return false
 }
 
-// mirrors lists where to fetch a subscription from, in order (AccessCode.mirrors
+// Mirrors lists where to fetch a subscription from, in order (AccessCode.mirrors
 // on the phones).
+func Mirrors(source string) []string { return mirrors(source) }
+
 func mirrors(source string) []string {
 	m := ordenURL.FindStringSubmatch(strings.TrimSpace(source))
 	if m == nil {
@@ -65,7 +66,12 @@ func mirrors(source string) []string {
 	}
 	var out []string
 	if anySub.MatchString(m[1]) {
-		out = append(out, plainDoor+m[1], spareDoor+m[1], "https://viporden.online"+m[1])
+		for _, d := range plainDoors {
+			out = append(out, d+m[1])
+		}
+		for _, h := range serviceHosts {
+			out = append(out, "https://"+h+m[1])
+		}
 	}
 	return append(out, "https://myorden.ru"+m[1], "https://joinorden.com"+m[1])
 }

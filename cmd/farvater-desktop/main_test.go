@@ -12,8 +12,14 @@ import (
 
 func TestCatalogueURLs(t *testing.T) {
 	u, err := catalogueURLs(" orden-ABCDE-12345 ")
-	if err != nil || len(u) != len(catalogueHosts)+2 || u[0] != "https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/ORDEN-ABCDE-12345" || u[1] != "https://my.larkfield.top/api/hsub/ORDEN-ABCDE-12345" || u[2] != "https://viporden.online/hsub/ORDEN-ABCDE-12345" {
+	n := len(u)
+	if err != nil || n < 2 || u[n-2] != "https://myorden.ru/hsub/ORDEN-ABCDE-12345" || u[n-1] != "https://joinorden.com/hsub/ORDEN-ABCDE-12345" {
 		t.Fatalf("code: %v %v", u, err)
+	}
+	for _, x := range u {
+		if !strings.HasSuffix(x, "/hsub/ORDEN-ABCDE-12345") {
+			t.Fatalf("code: %v", u)
+		}
 	}
 	if u, err = catalogueURLs("https://x.example/sub/1"); err != nil || len(u) != 1 {
 		t.Fatalf("url: %v %v", u, err)

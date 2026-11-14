@@ -132,8 +132,12 @@ func session(t *testing.T, w *world, code bool) *Session {
 	return s
 }
 
+// testDoors stands for the doors a release build is given (DoorSpec).
+const testDoors = "door=https://door-a.example/api,door=https://door-b.example/api/,host=Service.example"
+
 func TestMain(m *testing.M) {
 	drainTick = 10 * time.Millisecond
+	setDoors(testDoors)
 	os.Exit(m.Run())
 }
 
@@ -156,7 +160,7 @@ func TestCatalogueFails(t *testing.T) {
 	if st.Reason != reasonCatalogue || !strings.Contains(st.Detail, "502") {
 		t.Fatalf("%+v", st)
 	}
-	want := []string{"https://cdn2.cdn-tvzvezda-ru.ru/api/hsub/ORDEN-AAAAA-BBBBB", "https://my.larkfield.top/api/hsub/ORDEN-AAAAA-BBBBB", "https://viporden.online/hsub/ORDEN-AAAAA-BBBBB", "https://myorden.ru/hsub/ORDEN-AAAAA-BBBBB", "https://joinorden.com/hsub/ORDEN-AAAAA-BBBBB"}
+	want := []string{"https://door-a.example/api/hsub/ORDEN-AAAAA-BBBBB", "https://door-b.example/api/hsub/ORDEN-AAAAA-BBBBB", "https://service.example/hsub/ORDEN-AAAAA-BBBBB", "https://myorden.ru/hsub/ORDEN-AAAAA-BBBBB", "https://joinorden.com/hsub/ORDEN-AAAAA-BBBBB"}
 	if strings.Join(w.fetched, " ") != strings.Join(want, " ") {
 		t.Fatalf("mirrors %v", w.fetched)
 	}
@@ -169,7 +173,7 @@ func TestSettledAnswerStopsMirrors(t *testing.T) {
 	s.Connect()
 	st := waitState(t, s, "failed")
 	// The doors' 404s are not taken for the answer; the next mirror's is.
-	if len(w.fetched) != 3 || !strings.HasPrefix(w.fetched[2], "https://viporden.online/") || !strings.Contains(st.Detail, "Такого кода нет") {
+	if len(w.fetched) != 3 || !strings.HasPrefix(w.fetched[2], "https://service.example/") || !strings.Contains(st.Detail, "Такого кода нет") {
 		t.Fatalf("%v %+v", w.fetched, st)
 	}
 }
@@ -403,7 +407,7 @@ func TestSourceForms(t *testing.T) {
 			t.Errorf("%q = %q, %v", in, got, err)
 		}
 	}
-	for _, in := range []string{"https://myorden.ru/hsub/ORDEN-AB1CD-23EFG", "https://www.viporden.online/sub/abc"} {
+	for _, in := range []string{"https://myorden.ru/hsub/ORDEN-AB1CD-23EFG", "https://www.service.example/sub/abc"} {
 		if got, err := Source(in); err != nil || got != in {
 			t.Errorf("%q = %q, %v", in, got, err)
 		}

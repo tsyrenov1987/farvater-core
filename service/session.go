@@ -119,6 +119,9 @@ type Hooks struct {
 	Sleep func(ctx context.Context, d time.Duration) bool
 	// After, when set, replaces the timer between catalogue refreshes.
 	After func(d time.Duration) <-chan time.Time
+	// Doors, when set, gives the origins of Orden's signed list of doors
+	// (SignedDoors); it is asked only when every built-in mirror failed.
+	Doors func() []string
 }
 
 // RealHooks routes the actual machine.
@@ -136,6 +139,7 @@ func RealHooks() Hooks {
 			_, err := desktop.Start(ctx, sys, serve, user, pass, logf)
 			return err
 		},
+		Doors: SignedDoors,
 	}
 }
 
@@ -357,16 +361,31 @@ func (s *Session) fetch(ctx context.Context, source string) (*fetched, error) {
 	ch := make(chan result, 1)
 	go func() {
 		var r result
-		for _, u := range mirrors(source) {
-			if ctx.Err() != nil {
-				break
+		// walk tells whether it got the catalogue or the server's answer
+		// about the code (or was stopped).
+		walk := func(urls []string, door func(string) bool) bool {
+			for _, u := range urls {
+				if ctx.Err() != nil {
+					return true
+				}
+				r.f, r.err = s.fetchOne(u)
+				// A door's refusal is not final: it is a path on a relay's
+				// site, and a 404 there may be the site's, not the server's
+				// answer about the code.
+				if r.err == nil || settled(r.err) && !door(u) {
+					return true
+				}
 			}
-			r.f, r.err = s.fetchOne(u)
-			// A door's refusal is not final: it is a path on a relay's site,
-			// and a 404 there may be the site's, not the server's answer about
-			// the code.
-			if r.err == nil || settled(r.err) && !isDoor(u) {
-				break
+			return false
+		}
+		tried := mirrors(source)
+		if !walk(tried, isDoor) && s.hooks.Doors != nil {
+			// Every built-in name failed: the doors Orden signed since may
+			// stand where these were cut. Their refusals are doors' too, and
+			// when none of them answers, the built-in names' failure is told.
+			built := r
+			if more := signedMirrors(source, s.hooks.Doors, tried); len(more) > 0 && !walk(more, func(string) bool { return true }) {
+				r = built
 			}
 		}
 		ch <- r
