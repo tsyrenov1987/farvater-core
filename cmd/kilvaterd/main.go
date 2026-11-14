@@ -31,7 +31,7 @@ func main() {
 	certFile := flag.String("cert", "cert.pem", "TLS certificate file (ignored with -acme)")
 	keyFile := flag.String("key", "key.pem", "TLS private key file (ignored with -acme)")
 	keysFile := flag.String("keys", "keys.txt", "v1 client keys, one 64-hex line per key (optional if -master is set)")
-	masterFile := flag.String("master", "", "master key file (64 hex) enabling v2 derived keys; empty disables v2")
+	masterFile := flag.String("master", "", "master key file enabling v2 derived keys: one 64-hex master per line, '#' comments, each accepted (a node's own master from -nodemaster, and the fleet master while clients move over); empty disables v2")
 	revokedFile := flag.String("revoked", "", "revoked v2 key ids, one 16-hex line each, '#' comments (reloaded on SIGHUP)")
 	decoyDir := flag.String("decoy", "/var/www/html", "static files served to non-tunnel visitors")
 	acmeDomain := flag.String("acme", "", "domain to get a Let's Encrypt certificate for (TLS-ALPN-01); empty uses -cert/-key")
@@ -41,7 +41,9 @@ func main() {
 	h2cMode := flag.Bool("h2c", false, "serve cleartext HTTP/2 for a TLS-terminating proxy (nginx/Caddy) in front; -listen may be unix:/path, and -cert/-key/-acme are ignored")
 	genKey := flag.Bool("genkey", false, "print a new random client key and exit")
 	genMaster := flag.Bool("genmaster", false, "print a new random master key and exit")
-	issue := flag.String("issue", "", "with -master: print the key id and derived key for this subscriber id, and exit")
+	issue := flag.String("issue", "", "with -master (the fleet master on the first line): print the key id and derived key for this subscriber id, and exit")
+	node := flag.String("node", "", "with -issue: derive the key bound to this node (from its node master), as the worker does; with -nodemaster: the node to bind")
+	nodeMaster := flag.Bool("nodemaster", false, "with -master (the fleet master, first line) and -node: print that node's master, for the node's -master file, and exit")
 	metricsAddr := flag.String("metrics", "", "serve Prometheus metrics on this address (e.g. 127.0.0.1:9900); empty disables it; keep it on the loopback or a management overlay, never public")
 	maxBytesPerKey := flag.Int64("max-bytes-per-key", 0, "refuse a key's new streams once it has carried this many payload bytes up+down; 0 is no limit")
 	maxStreamsPerKey := flag.Int64("max-streams-per-key", 0, "cap a key's concurrent streams; 0 is no limit")
@@ -60,15 +62,31 @@ func main() {
 		fmt.Println(hex.EncodeToString(b))
 		return
 	}
+	if *nodeMaster {
+		if *masterFile == "" || *node == "" {
+			log.Fatal("-nodemaster needs -master and -node")
+		}
+		masters, err := readMasters(*masterFile)
+		if err != nil {
+			log.Fatalf("master: %v", err)
+		}
+		nm := kilvater.NodeMaster(masters[0], *node)
+		fmt.Println(hex.EncodeToString(nm[:]))
+		return
+	}
 	if *issue != "" {
 		if *masterFile == "" {
 			log.Fatal("-issue needs -master")
 		}
-		master, err := readMaster(*masterFile)
+		masters, err := readMasters(*masterFile)
 		if err != nil {
 			log.Fatalf("master: %v", err)
 		}
+		master := masters[0]
 		id := kilvater.KeyIDFor(master, []byte(*issue))
+		if *node != "" {
+			master = kilvater.NodeMaster(master, *node)
+		}
 		k := kilvater.DeriveKey(master, id)
 		// k[:] prints the real key bytes; %x on a Key would hit its redacting
 		// String, which is exactly what we must bypass here to hand out the key.
@@ -80,7 +98,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("keys: %v", err)
 	}
-	log.Printf("loaded %d v1 key(s), master=%v, %d revoked", len(cfg.Keys), cfg.Master != nil, len(cfg.Revoked))
+	log.Printf("loaded %d v1 key(s), %d master(s), %d revoked", len(cfg.Keys), nMasters(cfg), len(cfg.Revoked))
 
 	if entries, derr := os.ReadDir(*decoyDir); derr != nil || len(entries) == 0 {
 		log.Printf("warning: decoy dir %q is empty or unreadable (%v); visitors without a key see only 404s, which looks nothing like a real site", *decoyDir, derr)
@@ -202,11 +220,12 @@ func loadVerifierConfig(keysFile, masterFile, revokedFile string) (kilvater.Veri
 	}
 	cfg.Keys = keys
 	if masterFile != "" {
-		m, err := readMaster(masterFile)
+		ms, err := readMasters(masterFile)
 		if err != nil {
 			return cfg, fmt.Errorf("master: %w", err)
 		}
-		cfg.Master = &m
+		cfg.Master = &ms[0]
+		cfg.Masters = ms[1:]
 	}
 	if revokedFile != "" {
 		rev, err := readRevoked(revokedFile)
@@ -246,13 +265,37 @@ func readKeysOptional(path string) ([]kilvater.Key, error) {
 	return keys, nil
 }
 
-// readMaster reads a single 64-hex master key.
-func readMaster(path string) (kilvater.Key, error) {
+// nMasters counts the masters a config accepts v2 keys under, for the log.
+func nMasters(cfg kilvater.VerifierConfig) int {
+	if cfg.Master == nil {
+		return 0
+	}
+	return 1 + len(cfg.Masters)
+}
+
+// readMasters reads master keys, one 64-hex line each, '#' comments allowed;
+// at least one. A one-line file (the old format) reads as before.
+func readMasters(path string) ([]kilvater.Key, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return kilvater.Key{}, err
+		return nil, err
 	}
-	return kilvater.ParseKey(strings.TrimSpace(string(data)))
+	var ms []kilvater.Key
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		k, err := kilvater.ParseKey(line)
+		if err != nil {
+			return nil, err
+		}
+		ms = append(ms, k)
+	}
+	if len(ms) == 0 {
+		return nil, errors.New("no master key in file")
+	}
+	return ms, nil
 }
 
 // readRevoked reads revoked key ids, one 16-hex line each, '#' comments.
@@ -313,7 +356,7 @@ func installReload(v *kilvater.Verifier, load func() (kilvater.VerifierConfig, e
 				continue
 			}
 			v.Reload(cfg)
-			log.Printf("reloaded: %d v1 key(s), master=%v, %d revoked", len(cfg.Keys), cfg.Master != nil, len(cfg.Revoked))
+			log.Printf("reloaded: %d v1 key(s), %d master(s), %d revoked", len(cfg.Keys), nMasters(cfg), len(cfg.Revoked))
 		}
 	}()
 }
