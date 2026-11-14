@@ -51,6 +51,11 @@ type h2Mux struct {
 	// (retire), so no single connection is the whole tunnel, in time or in
 	// volume. needsDial reports the coming dial, so the handshake governor
 	// paces a rotation like any other handshake.
+	// gather makes a stream's request body an h2Body: writes are joined into
+	// full DATA frames while the connection is the slower side (kilvater's
+	// pad=site sets it). Off, each write is a frame of its own, as before.
+	gather bool
+
 	maxAge   time.Duration
 	maxBytes int64
 
@@ -376,12 +381,16 @@ func (m *h2Mux) openStreamFunc(ctx context.Context, method, reqURL string, heade
 	// soon as Dial returns, but a flow runs for minutes); its own cancel, fired
 	// by Close, governs its life from here.
 	sctx, cancel := context.WithCancel(context.Background())
-	pr, pw := io.Pipe()
-	up := pw
-	var body io.ReadCloser = pr
-	if method == http.MethodGet {
-		pr.Close()
-		body, up = nil, nil
+	var up h2Upstream
+	var body io.ReadCloser
+	if method != http.MethodGet {
+		if m.gather {
+			b := newH2Body(h2BodyPiece)
+			up, body = b, h2BodyReader{b}
+		} else {
+			pr, pw := io.Pipe()
+			up, body = pw, pr
+		}
 	}
 	req := (&http.Request{Method: method, URL: u, Host: u.Host, Header: header()}).WithContext(sctx)
 	if body != nil {
@@ -393,14 +402,18 @@ func (m *h2Mux) openStreamFunc(ctx context.Context, method, reqURL string, heade
 		if err != nil {
 			s.downErr = err
 			close(s.ready)
-			pw.CloseWithError(err)
+			if up != nil {
+				up.CloseWithError(err)
+			}
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
 			s.downErr = &H2StatusError{Code: resp.StatusCode, Status: resp.Status}
 			resp.Body.Close()
 			close(s.ready)
-			pw.CloseWithError(s.downErr)
+			if up != nil {
+				up.CloseWithError(s.downErr)
+			}
 			return
 		}
 		s.down = resp.Body
@@ -508,11 +521,18 @@ func (c *countConn) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// h2Upstream is the writing end of a stream's request body: io.Pipe's, or an
+// h2Body when the mux gathers writes.
+type h2Upstream interface {
+	io.WriteCloser
+	CloseWithError(error) error
+}
+
 // h2MuxStream is one stream on a shared h2Mux connection, presented as a
 // net.Conn. It does not own the connection: Close ends the stream alone,
 // leaving the shared connection and its other streams running.
 type h2MuxStream struct {
-	up     *io.PipeWriter
+	up     h2Upstream // nil on a GET
 	down   io.ReadCloser
 	conn   net.Conn // the shared connection, for addresses only; never closed here
 	cancel context.CancelFunc

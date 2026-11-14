@@ -95,6 +95,7 @@ func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilW
 	} else {
 		w.mux = newH2Mux(dial, pingAfterIdle, pingTimeout)
 	}
+	w.mux.gather = w.pad == kilvater.PadSite
 	// A connection left with no streams is closed after h2IdleClose, as on the
 	// other HTTP/2 transports and as a browser drops a site it left: without
 	// it an idle phone PINGs every pingAfterIdle for as long as the tunnel is

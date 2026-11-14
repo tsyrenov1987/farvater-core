@@ -124,6 +124,7 @@ const (
 	h2FrameHeaders      = 0x1
 	h2FrameRSTStream    = 0x3
 	h2FrameSettings     = 0x4
+	h2FrameWindowUpdate = 0x8
 	h2FrameContinuation = 0x9
 
 	h2FlagEndStream  = 0x1
@@ -165,7 +166,8 @@ type h2Shaper struct {
 	// server end them.
 	mu      sync.Mutex
 	streams map[uint32]*h2ShapedStream
-	open    [8][]uint32 // open stream IDs by urgency, oldest first
+	held    map[uint32]uint32 // WINDOW_UPDATE increments not yet sent, by stream (0: the connection)
+	open    [8][]uint32       // open stream IDs by urgency, oldest first
 	rhdr    []byte
 	rskip   int
 }
@@ -176,7 +178,7 @@ type h2ShapedStream struct {
 }
 
 func newH2Shaper(c net.Conn, p *h2Profile) *h2Shaper {
-	s := &h2Shaper{Conn: c, p: p, streams: map[uint32]*h2ShapedStream{}}
+	s := &h2Shaper{Conn: c, p: p, streams: map[uint32]*h2ShapedStream{}, held: map[uint32]uint32{}}
 	// The Transport's encoder never goes past the spec's 4096-byte table
 	// (http2.Transport.MaxEncoderHeaderTableSize unset), nor does ours.
 	s.dec = hpack.NewDecoder(4096, nil)
@@ -221,6 +223,8 @@ func (s *h2Shaper) Write(p []byte) (int, error) {
 			out = s.settings(out, payload)
 		case typ == h2FrameHeaders || typ == h2FrameContinuation:
 			out, err = s.headers(out, typ, flags, id, payload)
+		case typ == h2FrameWindowUpdate && n == 4:
+			out = s.window(out, id, binary.BigEndian.Uint32(payload)&(1<<31-1))
 		default:
 			out = append(out, b[:9+n]...)
 			s.clientFrame(typ, flags, id)
@@ -483,6 +487,37 @@ func (s *h2Shaper) newStream(id uint32, fields []hpack.HeaderField, ended bool) 
 	return dep, int(255.9/7*float64(7-u)) + 1
 }
 
+// window holds the Transport's WINDOW_UPDATEs back until they add up to half
+// the window they refill, and then sends the sum as one frame. Go refills a
+// window every 4 KiB it reads, so a download draws a steady stream of tiny
+// records the other way; Chrome waits for half the window, which over a file
+// of a few megabytes is a handful of frames (measured, docs/KILVATER.md §8).
+// What is held is always less than half the window, so the server is never
+// left without room to send, and it is only ever told less than the Transport
+// allows, never more.
+func (s *h2Shaper) window(out []byte, id, inc uint32) []byte {
+	limit := s.p.streamWindow / 2
+	if id == 0 {
+		limit = (s.p.connWindow + 65535) / 2
+	}
+	s.mu.Lock()
+	if id != 0 && s.streams[id] == nil {
+		// Not a stream the shaper follows: pass it as it is.
+		s.mu.Unlock()
+	} else {
+		inc += s.held[id]
+		if inc < limit {
+			s.held[id] = inc
+			s.mu.Unlock()
+			return out
+		}
+		delete(s.held, id)
+		s.mu.Unlock()
+	}
+	out = appendFrameHeader(out, 4, h2FrameWindowUpdate, 0, id)
+	return binary.BigEndian.AppendUint32(out, inc)
+}
+
 func (s *h2Shaper) clientFrame(typ, flags byte, id uint32) {
 	switch {
 	case typ == h2FrameRSTStream:
@@ -511,6 +546,7 @@ func (s *h2Shaper) ended(id uint32, client, reset bool) {
 		return
 	}
 	delete(s.streams, id)
+	delete(s.held, id)
 	l := s.open[st.urgency]
 	for i, v := range l {
 		if v == id {

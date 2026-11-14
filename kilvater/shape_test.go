@@ -189,8 +189,8 @@ type sizeLog struct{ sizes []int }
 
 func (l *sizeLog) Write(p []byte) (int, error) { l.sizes = append(l.sizes, len(p)); return len(p), nil }
 
-// PadSite hands bulk down in pieces the size of the DATA frames nginx cuts a
-// file into, with at most one shorter piece closing each write.
+// PadSite hands bulk down in pieces that fill one TLS record with their HTTP/2
+// frame header, with at most one shorter piece closing each write.
 func TestShaperSitePieces(t *testing.T) {
 	var l sizeLog
 	sh := newShaper(&l, PadSite, time.Hour)
@@ -215,7 +215,7 @@ func TestShaperSitePieces(t *testing.T) {
 			t.Fatalf("a write of %d bytes, above %d", n, sitePiece)
 		}
 	}
-	if full != 50*4 || short != 50 {
-		t.Fatalf("%d full pieces and %d short ones, want 200 and 50", full, short)
+	if full != 50*2 || short != 50 {
+		t.Fatalf("%d full pieces and %d short ones, want 100 and 50", full, short)
 	}
 }

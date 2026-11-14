@@ -150,10 +150,13 @@ any padding mode interoperates with any other, in both directions. Both ends pad
 `moderate` (default), `heavy`, or `site` — is set per server (`kilvaterd -pad`) and per client (the link's optional
 `pad` parameter); it only changes how many frames of what sizes are sent, never the bytes delivered.
 
-`site` does not draw sizes at all. It hands bulk down in pieces of 8192 bytes, the size of the DATA frames
-nginx cuts a file into, so that behind an nginx front (KILVATERD.md §9) a transfer leaves as the same few
-record lengths a download of the decoy's own file does (§8). It is meant for that deployment; a build that
-does not know the name runs `moderate`.
+`site` does not draw sizes at all. It hands bulk down in pieces of 16375 bytes: with the 9 bytes of an
+HTTP/2 frame header that is 16384, one full TLS record, which is what most of a file from the nginx in front
+is made of (§8). On the client the request body also gathers writes made while the connection is the slower
+side, so an upload leaves in full records as a browser's does. It is meant for the deployment behind an
+nginx front (KILVATERD.md §9), and needs `grpc_buffer_size 16k` there: with the default buffer nginx cuts
+the tunnel into records of about 4.1 KB whatever the mode. A build that does not know the name runs
+`moderate`.
 
 Unless the mode is `off`, the first eight writes of a stream are padded harder, each as one record: a write
 shorter than 900 bytes is filled up to 900–1400, a longer one (up to 4096) gets 0–255 more. Those records are
@@ -279,6 +282,22 @@ These are known limits, not plans:
   lengths downstream on loopback only — not timing, not a real path, not the upstream direction, and not a
   classifier's verdict. A decoy that has no large files gives a long transfer nothing to resemble in any
   mode.
+  The loopback figures did not hold on a live entry (14.11.2026: a copy of the production nginx front on a
+  node, a client and headless Chrome 157 across the Atlantic, tcpdump on the node, `tools/kvshape`). There
+  nginx sent a static file as 16401-byte records (79 % of them) and the tunnel, through `grpc_pass` with its
+  default buffer, as records of 4122/4113 bytes in every mode: the distance to Chrome's download of the same
+  8 MiB was 0.93–0.95 in `moderate` and 0.87–0.88 in the `site` of that day (8192-byte pieces). Three things
+  moved it: `grpc_buffer_size 16k` in the front (`moderate` 0.52, and 0.32 on a 1.2 MB file), 16375-byte
+  pieces in `site` (0.36 and 0.26), and on the way up the gathering request body (an 8 MiB upload against
+  Chrome's POST of the same size: 0.98–0.99 before, 0.20–0.23 after). The client's HTTP/2 layer also used to
+  refill its window every few kilobytes — about 850 small records against Chrome's 10 over an 8 MiB download;
+  it now waits for half the window, as Chrome does. What still differs, measured and not fixed: the resume
+  ACK every 64 KiB (about 130 small records upstream per 8 MiB), nginx's own WINDOW_UPDATE for every chunk of
+  an unbuffered request body (430–540 small records downstream per 8 MiB uploaded, Chrome's POST draws 12),
+  and upload speed — nginx gives an unbuffered body a window of `http2_body_preread_size` (64 KiB by
+  default), so a stream uploads at most that much per round trip: 8 MiB took 21–22 s at 130 ms where Chrome's
+  POST took 1.9 s (4–9 s with the setting at 1 MiB, which costs a buffer of that size per stream). One vantage
+  point outside Russia, record lengths only, no classifier.
 - **Server fingerprint.** On its own the server uses Go's `crypto/tls` and Go's HTTP/2: its ServerHello and
   its HTTP/2 SETTINGS are a Go server's, not nginx or a CDN. That is common on the web, but it is a
   fingerprint. An nginx `stream` proxy in front (see KILVATERD.md §9) turns the TLS layer into OpenSSL's, and

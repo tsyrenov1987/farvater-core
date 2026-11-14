@@ -178,12 +178,13 @@ const (
 	earlyFloor  = 900
 )
 
-// sitePiece is how much of the frame stream PadSite hands down in one write.
-// nginx sends a file as HTTP/2 DATA frames of 8192 bytes; a write of that
-// size, flushed, reaches the proxy in front as one DATA frame of the same
-// size, and leaves it the way a piece of a file does. Where a kilvater frame
-// starts and ends has nothing to do with it.
-const sitePiece = 8192
+// sitePiece is how much of the frame stream PadSite hands down in one write:
+// with the 9 bytes of an HTTP/2 frame header it is 16384, one full TLS record.
+// A write of that size, flushed, reaches the proxy in front as one DATA frame
+// and leaves it as one full record, which is what most of a file sent by that
+// server is made of (measured on a live entry, docs/KILVATER.md §8). Where a
+// kilvater frame starts and ends has nothing to do with it.
+const sitePiece = 16384 - 9
 
 func earlyPadSize(n int) int {
 	if n < earlyFloor {
