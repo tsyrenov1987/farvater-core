@@ -10,7 +10,6 @@ package mobile
 import (
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -440,7 +439,7 @@ func JournalJSON() string {
 // response headers carried it. The app stores text as the last good copy and
 // starts from it when the URL is unreachable.
 func FetchCatalogue(catalogueURL string) string {
-	body, prov, err := catalogue.FetchWithProvider(strings.TrimSpace(catalogueURL))
+	body, prov, err := fetchCatalogue(strings.TrimSpace(catalogueURL))
 	if err != nil {
 		return toJSON(map[string]any{"ok": false, "error": err.Error()})
 	}
@@ -449,6 +448,30 @@ func FetchCatalogue(catalogueURL string) string {
 		return toJSON(map[string]any{"ok": false, "error": err.Error()})
 	}
 	return toJSON(withProvider(map[string]any{"ok": true, "text": string(body), "paths": runnable(cat), "title": cat.Title}, prov))
+}
+
+// tunnelFetchTimeout bounds a catalogue fetch through the running tunnel;
+// past it FetchCatalogue tries directly.
+var tunnelFetchTimeout = 12 * time.Second
+
+// fetchCatalogue gets a catalogue through the running tunnel first, by its
+// SOCKS door as ProveDelivery does, so the request is not seen on the network
+// beside the tunnel; directly when no tunnel runs here or it did not bring the
+// catalogue (F-125). Either way the connection is Chrome's (catalogue.Transport).
+func fetchCatalogue(u string) ([]byte, *catalogue.Provider, error) {
+	s := current()
+	mu.Lock()
+	addr, su, sp := listen, user, pass
+	mu.Unlock()
+	if s != nil && addr != "" {
+		body, prov, err := catalogue.FetchVia(u, func(ctx context.Context, _, hostport string) (net.Conn, error) {
+			return socksConnect(ctx, addr, su, sp, hostport)
+		}, tunnelFetchTimeout)
+		if err == nil {
+			return body, prov, nil
+		}
+	}
+	return catalogue.FetchWithProvider(u)
 }
 
 func withProvider(m map[string]any, p *catalogue.Provider) map[string]any {
@@ -470,7 +493,7 @@ func ImportCatalogue(input string) string {
 	text := src
 	var prov *catalogue.Provider
 	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
-		body, p, err := catalogue.FetchWithProvider(src)
+		body, p, err := fetchCatalogue(src)
 		if err != nil {
 			return toJSON(map[string]any{"ok": false, "error": err.Error()})
 		}
@@ -578,12 +601,12 @@ func ProveDelivery(probeURL string, timeoutMs int) string {
 	}
 	ctx, c := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
 	defer c()
-	tr := &http.Transport{
-		DialContext: func(ctx context.Context, _, hostport string) (net.Conn, error) {
+	// Chrome's TLS inside the tunnel too, not Go's (F-133); the connection
+	// closes with the body, which ends the flow so its receipt is written.
+	tr := &wire.BrowserTransport{
+		Dial: func(ctx context.Context, _, hostport string) (net.Conn, error) {
 			return socksConnect(ctx, addr, su, sp, hostport)
 		},
-		TLSClientConfig:   &tls.Config{ServerName: u.Hostname()},
-		DisableKeepAlives: true,
 	}
 	start := time.Now()
 	var first time.Duration
@@ -597,7 +620,6 @@ func ProveDelivery(probeURL string, timeoutMs int) string {
 	probeSize.Store(resp.ContentLength)
 	n, rerr := io.Copy(countingDiscard{}, resp.Body)
 	resp.Body.Close()
-	tr.CloseIdleConnections() // end the flow now so its receipt is written
 	p := proof{Bytes: n, Ms: time.Since(start).Milliseconds(), FirstByteMs: first.Milliseconds()}
 	if rerr != nil {
 		p.Error = rerr.Error()

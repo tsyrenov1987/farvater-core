@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/tsyrenov1987/farvater-core/desktop"
 	"github.com/tsyrenov1987/farvater-core/switchboard"
+	"github.com/tsyrenov1987/farvater-core/wire"
 )
 
 type counter struct{ n *atomic.Int64 }
@@ -51,8 +51,12 @@ func (s *Session) proveOver(ctx context.Context, sb carrier, user, pass, probeUR
 	ctx, c := context.WithTimeout(ctx, proofTimeout)
 	defer c()
 	serve := desktop.Conns(func(ctx context.Context, c net.Conn) { sb.ServeConn(ctx, c) })
-	tr := &http.Transport{
-		DialContext: func(_ context.Context, _, hostport string) (net.Conn, error) {
+	// The probe's own TLS, inside the tunnel, is Chrome's too: Go's
+	// ClientHello there would give every session the same telltale sizes at
+	// its start, TLS inside TLS (F-133). Its connection closes with the body,
+	// which ends the flow so its receipt is written.
+	tr := &wire.BrowserTransport{
+		Dial: func(_ context.Context, _, hostport string) (net.Conn, error) {
 			host, p, err := net.SplitHostPort(hostport)
 			if err != nil {
 				return nil, err
@@ -63,8 +67,7 @@ func (s *Session) proveOver(ctx context.Context, sb carrier, user, pass, probeUR
 			}
 			return desktop.Dial(ctx, serve, user, pass, host, uint16(port))
 		},
-		TLSClientConfig:   &tls.Config{ServerName: u.Hostname(), RootCAs: probeRoots},
-		DisableKeepAlives: true,
+		RootCAs: probeRoots,
 	}
 	start := time.Now()
 	var first atomic.Int64
@@ -78,7 +81,6 @@ func (s *Session) proveOver(ctx context.Context, sb carrier, user, pass, probeUR
 	s.proofSize.Store(resp.ContentLength)
 	n, rerr := io.Copy(counter{&s.proofRead}, resp.Body)
 	resp.Body.Close()
-	tr.CloseIdleConnections() // end the flow now so its receipt is written
 	p := Proof{Bytes: n, Ms: time.Since(start).Milliseconds(), FirstByteMs: first.Load()}
 	if rerr != nil {
 		p.Error = rerr.Error()

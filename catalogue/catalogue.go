@@ -4,11 +4,13 @@ package catalogue
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"runtime"
@@ -98,7 +100,22 @@ var Device struct{ HWID, OS, OSVersion, Model string }
 // FetchWithProvider is Fetch that also reads what the provider says in the
 // response headers (see Provider); the provider is nil when it said nothing.
 func FetchWithProvider(u string) ([]byte, *Provider, error) {
-	cl := &http.Client{Timeout: 20 * time.Second}
+	return FetchVia(u, nil, 20*time.Second)
+}
+
+// Transport carries the catalogue fetch. Its connections read like Chrome's
+// (wire.BrowserTransport): Go's own ClientHello, every 30 minutes to the same
+// doors, would mark both the client and the doors' addresses (F-125). Tests
+// swap it.
+var Transport = func(dial func(ctx context.Context, network, addr string) (net.Conn, error)) http.RoundTripper {
+	return &wire.BrowserTransport{Dial: dial}
+}
+
+// FetchVia is FetchWithProvider whose connections dial through dial (nil:
+// directly), bounded by timeout: the apps fetch through their running tunnel
+// first this way.
+func FetchVia(u string, dial func(ctx context.Context, network, addr string) (net.Conn, error), timeout time.Duration) ([]byte, *Provider, error) {
+	cl := &http.Client{Timeout: timeout, Transport: Transport(dial)}
 	req, _ := http.NewRequest("GET", u, nil)
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Accept", "application/farvater-catalogue+json, text/plain;q=0.9, */*;q=0.5")

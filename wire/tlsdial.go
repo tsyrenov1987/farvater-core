@@ -111,8 +111,15 @@ func dialTCP(ctx context.Context, host string, port int) (net.Conn, error) {
 // the roots path certificates are verified against instead of the system's.
 var labRoots *x509.CertPool
 
+// tlsSessions keeps the sessions servers give the core's TLS connections
+// (paths with real TLS and BrowserTransport; REALITY never stores one), so
+// the next connection to the same name resumes with a pre_shared_key as a
+// browser coming back to a site does. Every connection a full handshake is
+// not what a browser does.
+var tlsSessions = utls.NewLRUClientSessionCache(256)
+
 func handshakeTLS(ctx context.Context, c net.Conn, s PathSpec, http11 bool) (*utls.UConn, error) {
-	cfg := &utls.Config{ServerName: s.ServerSNI(), InsecureSkipVerify: s.Insecure, SessionTicketsDisabled: true, RootCAs: labRoots}
+	cfg := &utls.Config{ServerName: s.ServerSNI(), InsecureSkipVerify: s.Insecure, ClientSessionCache: tlsSessions, RootCAs: labRoots}
 	u, err := uClient(c, cfg, s.Fingerprint)
 	if err != nil {
 		return nil, err

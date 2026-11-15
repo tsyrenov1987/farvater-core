@@ -199,32 +199,35 @@ func firefoxAutoSpec() utls.ClientHelloSpec {
 // Chrome via chromeAutoSpec, for fp=edge a current Edge via edgeAutoSpec, for
 // fp=firefox a current Firefox via firefoxAutoSpec; any other fp uses uTLS's
 // own profile for it.
+//
+// When cfg keeps sessions (a ClientSessionCache, tickets on), these three
+// end their ClientHello with pre_shared_key, as the browsers do, and offer
+// the session the server gave last time for the name; with none to offer the
+// extension is left out (OmitEmptyPsk), so the first ClientHello is the
+// browser's first one.
 func uClient(c net.Conn, cfg *utls.Config, fp string) (*utls.UConn, error) {
-	if strings.EqualFold(fp, "edge") {
-		spec, err := edgeAutoSpec()
-		if err != nil {
+	var spec utls.ClientHelloSpec
+	switch {
+	case strings.EqualFold(fp, "edge"):
+		var err error
+		if spec, err = edgeAutoSpec(); err != nil {
 			return nil, err
 		}
-		u := utls.UClient(c, cfg, utls.HelloCustom)
-		if err := u.ApplyPreset(&spec); err != nil {
+	case strings.EqualFold(fp, "firefox"):
+		spec = firefoxAutoSpec()
+	case isChromeAuto(fp):
+		var err error
+		if spec, err = chromeAutoSpec(); err != nil {
 			return nil, err
 		}
-		return u, nil
-	}
-	if strings.EqualFold(fp, "firefox") {
-		spec := firefoxAutoSpec()
-		u := utls.UClient(c, cfg, utls.HelloCustom)
-		if err := u.ApplyPreset(&spec); err != nil {
-			return nil, err
-		}
-		return u, nil
-	}
-	if !isChromeAuto(fp) {
+	default:
 		return utls.UClient(c, cfg, clientHello(fp)), nil
 	}
-	spec, err := chromeAutoSpec()
-	if err != nil {
-		return nil, err
+	if cfg.ClientSessionCache != nil && !cfg.SessionTicketsDisabled {
+		// pre_shared_key must be the last extension (RFC 8446 §4.2.11);
+		// Chromium and NSS put it there.
+		spec.Extensions = append(spec.Extensions, &utls.UtlsPreSharedKeyExtension{})
+		cfg.OmitEmptyPsk = true
 	}
 	u := utls.UClient(c, cfg, utls.HelloCustom)
 	if err := u.ApplyPreset(&spec); err != nil {
