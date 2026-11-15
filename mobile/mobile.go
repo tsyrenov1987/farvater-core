@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/tsyrenov1987/farvater-core/catalogue"
+	"github.com/tsyrenov1987/farvater-core/kilvater"
 	"github.com/tsyrenov1987/farvater-core/switchboard"
 	"github.com/tsyrenov1987/farvater-core/wire"
 	"golang.org/x/net/idna"
@@ -82,12 +83,24 @@ func MemoryJSON() string {
 		{Name: "/sched/goroutines:goroutines"},
 	}
 	metrics.Read(s)
-	return toJSON(map[string]uint64{
-		"total":      s[0].Value.Uint64() - s[1].Value.Uint64(),
-		"heap":       s[2].Value.Uint64(),
-		"stacks":     s[3].Value.Uint64(),
-		"goroutines": s[4].Value.Uint64(),
-		"valve":      uint64(valveFired.Load()),
+	// The breath timer calls this four times a second, Start and Stop hold mu
+	// for long: never wait on it. -1: not known now.
+	active := int64(-1)
+	if mu.TryLock() {
+		active = 0
+		if sb != nil {
+			active = sb.ActiveFlows()
+		}
+		mu.Unlock()
+	}
+	return toJSON(map[string]int64{
+		"total":      int64(s[0].Value.Uint64() - s[1].Value.Uint64()),
+		"heap":       int64(s[2].Value.Uint64()),
+		"stacks":     int64(s[3].Value.Uint64()),
+		"goroutines": int64(s[4].Value.Uint64()),
+		"valve":      int64(valveFired.Load()),
+		"active":     active,
+		"held":       kilvater.Held(),
 	})
 }
 

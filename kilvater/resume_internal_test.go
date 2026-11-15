@@ -300,3 +300,96 @@ func TestSessionExt(t *testing.T) {
 		t.Fatal("a cut-off option was taken")
 	}
 }
+
+// A target that does not read until it has answered must not stop the
+// stream's frame loop (FV-001): the client's bytes are taken into the
+// session's queue at once, FLOWACKs behind them are still read, and the
+// target gets every byte in order.
+func TestSessionWriteUpDoesNotWaitOnTarget(t *testing.T) {
+	srvEnd, target := net.Pipe() // no buffer: an unread write blocks
+	defer target.Close()
+	var tab sessions
+	se := tab.add(sessKey{label: "t"}, srvEnd, ResumeWindow)
+	defer se.close()
+	gen, _, err := se.attach(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := make([]byte, ResumeWindow)
+	for i := range want {
+		want[i] = byte(i * 7)
+	}
+	done := make(chan error, 1)
+	go func() {
+		for off := 0; off < len(want); off += 32 << 10 {
+			if _, err := se.writeUp(gen, want[off:off+32<<10]); err != nil {
+				done <- err
+				return
+			}
+		}
+		se.closeUp(gen)
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("writeUp waited on a target that was not reading")
+	}
+	if se.up != uint64(len(want)) {
+		t.Fatalf("up = %d, want %d", se.up, len(want))
+	}
+	target.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(target, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("target got %d bytes, not the bytes sent", len(got))
+	}
+}
+
+// A session that ends while bytes wait for the target lets go of them, and
+// a later writeUp fails instead of waiting.
+func TestSessionQueueDroppedOnClose(t *testing.T) {
+	srvEnd, target := net.Pipe()
+	defer target.Close()
+	var tab sessions
+	se := tab.add(sessKey{label: "t"}, srvEnd, ResumeWindow)
+	gen, _, _ := se.attach(0)
+	if _, err := se.writeUp(gen, make([]byte, 64<<10)); err != nil {
+		t.Fatal(err)
+	}
+	se.close()
+	if _, err := se.writeUp(gen, []byte("x")); err == nil {
+		t.Fatal("writeUp on a closed session succeeded")
+	}
+	se.qMu.Lock()
+	n := len(se.q)
+	se.qMu.Unlock()
+	if n != 0 {
+		t.Fatalf("closed session still queues %d chunks", n)
+	}
+}
+
+// Held follows what AckBufs hold through Append, Ack and Reset.
+func TestAckBufHeld(t *testing.T) {
+	before := Held()
+	var b AckBuf
+	b.Append(make([]byte, 1000))
+	b.Append(make([]byte, 500))
+	if got := Held() - before; got != 1500 {
+		t.Fatalf("after append: %d", got)
+	}
+	b.Ack(b.Base() + 600)
+	if got := Held() - before; got != 900 {
+		t.Fatalf("after ack: %d", got)
+	}
+	b.Ack(b.Base() + 10_000) // outside: ignored
+	b.Reset()
+	if got := Held() - before; got != 0 {
+		t.Fatalf("after reset: %d", got)
+	}
+}

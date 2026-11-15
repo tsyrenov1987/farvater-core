@@ -99,6 +99,13 @@ func ParseAck(body []byte) (uint64, bool) {
 	return binary.BigEndian.Uint64(body), true
 }
 
+// held counts the bytes every AckBuf in the process holds: the apps write it
+// into their last-breath record, to tell resume's memory from the rest.
+var held atomic.Int64
+
+// Held is the total of bytes held unconfirmed by all AckBufs in the process.
+func Held() int64 { return held.Load() }
+
 // AckBuf holds the bytes one side has sent and the other has not confirmed:
 // the stream from offset Base on. It is not safe for concurrent use.
 type AckBuf struct {
@@ -112,7 +119,10 @@ func (b *AckBuf) End() uint64  { return b.base + uint64(len(b.data)) }
 func (b *AckBuf) Len() int     { return len(b.data) }
 
 // Append adds p at End.
-func (b *AckBuf) Append(p []byte) { b.data = append(b.data, p...) }
+func (b *AckBuf) Append(p []byte) {
+	b.data = append(b.data, p...)
+	held.Add(int64(len(p)))
+}
 
 // Ack drops everything before off. An offset outside what is held is ignored
 // and reported.
@@ -122,6 +132,7 @@ func (b *AckBuf) Ack(off uint64) bool {
 	}
 	n := int(off - b.base)
 	b.base = off
+	held.Add(-int64(n))
 	if n == len(b.data) {
 		b.data = b.data[:0]
 		if cap(b.data) > 256<<10 {
@@ -144,7 +155,10 @@ func (b *AckBuf) From(off uint64) ([]byte, bool) {
 }
 
 // Reset empties the buffer and frees its memory.
-func (b *AckBuf) Reset() { b.base, b.data = b.End(), nil }
+func (b *AckBuf) Reset() {
+	held.Add(-int64(len(b.data)))
+	b.base, b.data = b.End(), nil
+}
 
 // WriteFrame writes one frame of any type through the shaper's lock, so it
 // never lands inside another frame the shaper is writing.
@@ -210,12 +224,27 @@ type session struct {
 	// stream that has been replaced can never write after its successor.
 	upMu  sync.Mutex
 	upGen uint64
-	up    uint64 // DATA bytes written to the target
+	up    uint64 // DATA bytes taken for the target (written or queued)
+
+	// The client's bytes reach the target through a queue and a writer of
+	// their own, so a target that is slow to read never stops the stream's
+	// frame loop: FLOWACKs behind the DATA are still read, the target's
+	// answer still flows down, and the two sides cannot wait on each other.
+	// The client keeps at most a window unconfirmed, so the queue stays
+	// within it; qMax is only a guard against a peer that does not.
+	qMu   sync.Mutex
+	qCond *sync.Cond
+	q     [][]byte // nil entry: the client finished sending (half-close)
+	qLen  int
+	qMax  int
+	qDead bool
 }
 
 func (t *sessions) add(key sessKey, remote net.Conn, window int) *session {
 	se := &session{tab: t, key: key, remote: remote, window: window}
 	se.cond = sync.NewCond(&se.mu)
+	se.qCond = sync.NewCond(&se.qMu)
+	se.qMax = 2*window + 256<<10
 	t.mu.Lock()
 	if t.m == nil {
 		t.m = map[sessKey]*session{}
@@ -227,7 +256,57 @@ func (t *sessions) add(key sessKey, remote net.Conn, window int) *session {
 		old.close() // a session id used twice: the earlier flow is over
 	}
 	go se.readRemote()
+	go se.writeRemote()
 	return se
+}
+
+// writeRemote gives the queued client bytes to the target in order. A failed
+// write ends the session: the target is gone and nothing can come back to it.
+func (se *session) writeRemote() {
+	for {
+		se.qMu.Lock()
+		for !se.qDead && len(se.q) == 0 {
+			se.qCond.Wait()
+		}
+		if se.qDead {
+			se.qMu.Unlock()
+			return
+		}
+		p := se.q[0]
+		se.q[0] = nil
+		se.q = se.q[1:]
+		se.qMu.Unlock()
+		if p == nil {
+			closeWrite(se.remote) // the client finished sending; the target may go on
+			continue
+		}
+		_, err := se.remote.Write(p)
+		se.qMu.Lock()
+		se.qLen -= len(p)
+		se.qCond.Broadcast()
+		se.qMu.Unlock()
+		if err != nil {
+			se.close()
+			return
+		}
+	}
+}
+
+// enqueue puts p (nil: half-close) in the target's queue, waiting while the
+// queue is over its guard. It fails once the session is over.
+func (se *session) enqueue(p []byte) error {
+	se.qMu.Lock()
+	defer se.qMu.Unlock()
+	for !se.qDead && p != nil && se.qLen > 0 && se.qLen+len(p) > se.qMax {
+		se.qCond.Wait()
+	}
+	if se.qDead {
+		return errSessionGone
+	}
+	se.q = append(se.q, p)
+	se.qLen += len(p)
+	se.qCond.Broadcast()
+	return nil
 }
 
 func (t *sessions) get(key sessKey) *session {
@@ -290,6 +369,11 @@ func (se *session) close() {
 	se.down.Reset()
 	se.cond.Broadcast()
 	se.mu.Unlock()
+	se.qMu.Lock()
+	se.qDead = true
+	se.q = nil
+	se.qCond.Broadcast()
+	se.qMu.Unlock()
 	se.remote.Close()
 	se.tab.mu.Lock()
 	if se.tab.m[se.key] == se {
@@ -344,19 +428,30 @@ func (se *session) ack(off uint64) {
 	se.mu.Unlock()
 }
 
-// writeUp gives the client's bytes to the target, unless the stream they came
-// on has been replaced. It returns the new count.
+// writeUp takes the client's bytes for the target, unless the stream they came
+// on has been replaced. It returns the new count. The bytes are queued, not
+// written here (see writeRemote): the session owns them from now on, and a
+// resumed stream continues after them.
 func (se *session) writeUp(gen uint64, p []byte) (uint64, error) {
 	se.upMu.Lock()
 	defer se.upMu.Unlock()
 	if se.upGen != gen {
 		return 0, errSessionGone
 	}
-	if _, err := se.remote.Write(p); err != nil {
+	if err := se.enqueue(append([]byte(nil), p...)); err != nil {
 		return 0, err
 	}
 	se.up += uint64(len(p))
 	return se.up, nil
+}
+
+// closeUp passes the client's half-close to the target after its queued bytes.
+func (se *session) closeUp(gen uint64) {
+	se.upMu.Lock()
+	defer se.upMu.Unlock()
+	if se.upGen == gen {
+		se.enqueue(nil)
+	}
 }
 
 // detach is the end of a stream that did not end the flow. The session waits
@@ -481,7 +576,7 @@ loop:
 			ended = true
 			break loop
 		case FrameClose:
-			closeWrite(se.remote) // the client finished sending; the target may go on
+			se.closeUp(gen) // after the queued bytes; the target may go on
 		default:
 			// PAD, and any type a newer client may send
 		}

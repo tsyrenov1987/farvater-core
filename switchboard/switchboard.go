@@ -444,18 +444,26 @@ func (s *Switchboard) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.own(ctx, ln)
 	go func() { _ = s.serveListener(ctx, ln) }()
 	return nil
 }
 
-func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error {
+// own makes ln the switchboard's listener before the accept loop starts, so a
+// Detach or EnsureListening right after Start (a catalogue reloaded at once)
+// finds it instead of "not listening".
+func (s *Switchboard) own(ctx context.Context, ln net.Listener) {
 	s.mu.Lock()
 	s.life = ctx
 	s.mu.Unlock()
-	addr := ln.Addr().String()
 	s.lnMu.Lock()
-	s.ln, s.lnAddr = ln, addr
+	s.ln, s.lnAddr = ln, ln.Addr().String()
 	s.lnMu.Unlock()
+}
+
+func (s *Switchboard) serveListener(ctx context.Context, ln net.Listener) error {
+	s.own(ctx, ln)
+	addr := ln.Addr().String()
 	go func() {
 		<-ctx.Done()
 		s.lnMu.Lock()
@@ -968,6 +976,9 @@ type Status struct {
 }
 
 // Status returns the current snapshot.
+// ActiveFlows is the number of flows open now; cheap, without the status lock.
+func (s *Switchboard) ActiveFlows() int64 { return s.active.Load() }
+
 func (s *Switchboard) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()

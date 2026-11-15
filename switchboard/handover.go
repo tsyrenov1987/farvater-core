@@ -68,6 +68,7 @@ func (s *Switchboard) Detach(wait time.Duration) (net.Listener, error) {
 // StartOn serves on a listener another switchboard let go (Detach) until ctx
 // ends.
 func (s *Switchboard) StartOn(ctx context.Context, ln net.Listener) {
+	s.own(ctx, ln)
 	go func() { _ = s.serveListener(ctx, ln) }()
 }
 

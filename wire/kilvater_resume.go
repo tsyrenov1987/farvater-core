@@ -371,16 +371,29 @@ func (r *kilResume) recover(gen uint64) error {
 
 // reattach tries the paths to the node, one after another, until the flow is
 // on a new stream and what the server lacked has been sent again.
+//
+// The cut that broke the stream usually broke the path's shared connection
+// too, and the mux may hand the first attempt that very connection before it
+// has noticed (a closed pipe). So an attempt that failed on the way, not by
+// the server's answer, is made once more on the same path over a fresh
+// connection (FV-002).
 func (r *kilResume) reattach() error {
 	ctx, cancel := context.WithTimeout(r.ctx, kilResumeTotal)
 	defer cancel()
 	err := errKilNoResume
 	for _, w := range r.w.resumePaths() {
-		if ctx.Err() != nil {
-			break
-		}
-		if err = r.reattachOn(ctx, w); err == nil {
-			return nil
+		for try := 0; try < 2; try++ {
+			if ctx.Err() != nil {
+				return err
+			}
+			began := time.Now()
+			if err = r.reattachOn(ctx, w); err == nil {
+				return nil
+			}
+			if errors.Is(err, errKilNoResume) {
+				break // the server answered: the session is not there
+			}
+			w.mux.refresh(began) // the next stream dials a fresh connection
 		}
 	}
 	return err
