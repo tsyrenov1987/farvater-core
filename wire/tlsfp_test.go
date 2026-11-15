@@ -73,7 +73,13 @@ func TestChromeAutoTLSProfile(t *testing.T) {
 			t.Fatalf("fp=%q: %d signature algorithms", fp, len(sa.SupportedSignatureAlgorithms))
 		}
 		lead := sa.SupportedSignatureAlgorithms[:len(chrome154SigAlgLead)]
+		if g := uint16(lead[0]); g&0x0f0f != 0x0a0a || g>>8 != g&0xff {
+			t.Errorf("fp=%q: signature_algorithms[0] = %#x, want a GREASE value", fp, g)
+		}
 		for i, want := range chrome154SigAlgLead {
+			if i == 0 {
+				continue
+			}
 			if lead[i] != want {
 				t.Errorf("fp=%q: signature_algorithms[%d] = %#x, want %#x", fp, i, lead[i], want)
 			}
@@ -86,6 +92,30 @@ func TestChromeAutoTLSProfile(t *testing.T) {
 
 		if u.HandshakeState.State13.KeyShareKeys == nil {
 			t.Errorf("fp=%q: no TLS 1.3 key share; REALITY would have nothing to derive from", fp)
+		}
+	}
+}
+
+// F-124: a live Chrome draws the GREASE value that leads signature_algorithms
+// afresh per connection; a client that sends the same one every time is not
+// Chrome. Over 64 ClientHellos (chrome and edge) the lead must take several
+// values, every one of them GREASE.
+func TestChromiumSigAlgGREASEVaries(t *testing.T) {
+	for _, fp := range []string{"chrome", "edge"} {
+		seen := map[utls.SignatureScheme]bool{}
+		for i := 0; i < 64; i++ {
+			sa, ok := findSigAlgs(buildUConn(t, fp))
+			if !ok {
+				t.Fatalf("fp=%s: no signature_algorithms", fp)
+			}
+			g := uint16(sa.SupportedSignatureAlgorithms[0])
+			if g&0x0f0f != 0x0a0a || g>>8 != g&0xff {
+				t.Fatalf("fp=%s: lead %#x is not GREASE", fp, g)
+			}
+			seen[sa.SupportedSignatureAlgorithms[0]] = true
+		}
+		if len(seen) < 6 {
+			t.Errorf("fp=%s: %d distinct GREASE leads in 64 hellos, want many (Chrome draws one per connection)", fp, len(seen))
 		}
 	}
 }

@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/hex"
+	"math/rand/v2"
 	"net"
 	"strings"
 
@@ -27,9 +28,11 @@ import (
 // is left exactly as asked.
 
 // Chrome 154's signature_algorithms leads with these before the Chrome 133
-// list. The GREASE placeholder is not tied to the connection's GREASE seed (it
-// sits in a field uTLS does not reseed), which a JA3/JA4 hash does not see: it
-// drops GREASE before hashing. ML-DSA codepoints are draft-tls-westerbaan-mldsa.
+// list. uTLS never reseeds GREASE in signature_algorithms, so the placeholder
+// would go out as 0x0a0a on every connection, where a live Chrome picks one of
+// the 16 GREASE values per connection (F-124: a JA3/JA4 hash drops GREASE and
+// misses it, a rule on the raw bytes does not). chromiumSpec swaps in a fresh
+// value per call. ML-DSA codepoints are draft-tls-westerbaan-mldsa.
 var chrome154SigAlgLead = []utls.SignatureScheme{
 	utls.GREASE_PLACEHOLDER,
 	0x0904, // mldsa44
@@ -81,9 +84,13 @@ func chromiumSpec(trustAnchors bool) (utls.ClientHelloSpec, error) {
 	}
 	for _, e := range spec.Extensions {
 		if sa, ok := e.(*utls.SignatureAlgorithmsExtension); ok {
-			sa.SupportedSignatureAlgorithms = append(
-				append([]utls.SignatureScheme{}, chrome154SigAlgLead...),
-				sa.SupportedSignatureAlgorithms...)
+			lead := append([]utls.SignatureScheme{}, chrome154SigAlgLead...)
+			for i, s := range lead {
+				if s == utls.GREASE_PLACEHOLDER {
+					lead[i] = randomGREASESigAlg()
+				}
+			}
+			sa.SupportedSignatureAlgorithms = append(lead, sa.SupportedSignatureAlgorithms...)
 		}
 	}
 	// trust_anchors goes in before the closing GREASE extension, never after it:
@@ -104,6 +111,13 @@ func chromiumSpec(trustAnchors bool) (utls.ClientHelloSpec, error) {
 	// places it (the shuffle leaves GREASE, padding and PSK where they are).
 	spec.Extensions = utls.ShuffleChromeTLSExtensions(exts)
 	return spec, nil
+}
+
+// randomGREASESigAlg is one of the 16 GREASE values (0x0a0a, 0x1a1a … 0xfafa),
+// drawn afresh for each ClientHello, as BoringSSL draws its GREASE.
+func randomGREASESigAlg() utls.SignatureScheme {
+	n := uint16(rand.IntN(16))
+	return utls.SignatureScheme(n<<12 | 0x0a00 | n<<4 | 0x000a)
 }
 
 // firefoxAutoSpec is the ClientHello of a current Firefox, for fp=firefox.
