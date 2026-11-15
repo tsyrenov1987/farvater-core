@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tsyrenov1987/farvater-core/wire"
 )
 
 // Orden's signed list of doors, the one its own apps read: a TXT record at
@@ -43,7 +45,8 @@ func SignedDoors() []string {
 	if err != nil || !ok {
 		return nil
 	}
-	cl := &http.Client{Timeout: 8 * time.Second}
+	// Chrome's TLS to the resolvers, not Go's (F-133).
+	cl := &http.Client{Timeout: 8 * time.Second, Transport: &wire.BrowserTransport{}}
 	for _, r := range signedResolvers {
 		if doors := verifyDoors(txt(cl, r, signedName), pub, time.Now()); len(doors) > 0 {
 			return doors

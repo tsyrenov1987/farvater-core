@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // This file gives our HTTP transports (WebSocket, gRPC, XHTTP) the request
@@ -12,33 +13,47 @@ import (
 // ordinary browser one. The values track Chrome; keep them current, or the
 // set drifts from real Chrome and stands out.
 
-var chromeMajor = sync.OnceValue(func() int {
-	// Chrome ships a major version every few weeks. Anchor to a known
-	// release and step forward by calendar, so the number stays plausible
-	// without a dependency on the exact day.
-	const base, baseYear, baseMonth = 133, 2026, 1
-	y, m := 2026, 1 // the knowledge cutoff; the host clock may be wrong, so do not trust it to go backward
-	months := (y-baseYear)*12 + (m - baseMonth)
-	if months < 0 {
-		months = 0
-	}
-	return base + months*2/3
-})
+// chromeMajor is the major version of Chrome stable by the host's clock.
+var chromeMajor = sync.OnceValue(func() int { return chromeMajorAt(time.Now()) })
+
+// chromeMajorAt: Chrome 157 reached stable on 2026-11-03, and a new major
+// has come every two weeks since Chrome 153 (2026-09-08). A clock behind
+// that day gives 157; one far ahead is held to a year past it, so a wrong
+// clock cannot name a Chrome that does not exist.
+func chromeMajorAt(now time.Time) int {
+	const base = 157
+	baseDay := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	steps := int(now.Sub(baseDay) / (14 * 24 * time.Hour))
+	return base + min(max(steps, 0), 26)
+}
 
 func chromeUA() string {
 	v := strconv.Itoa(chromeMajor())
 	return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + v + ".0.0.0 Safari/537.36"
 }
 
-func chromeUACH() string {
-	v := strconv.Itoa(chromeMajor())
-	brands := []string{
-		`"Not(A:Brand";v="99"`,
-		`"Google Chrome";v="` + v + `"`,
-		`"Chromium";v="` + v + `"`,
+func chromeUACH() string { return chromeUACHFor(chromeMajor()) }
+
+// chromeUACHFor is Sec-CH-UA as Chrome of major v sends it. Chromium makes
+// the GREASE brand and the order of the three brands from the major version
+// (user_agent_utils.cc, seed = major), so one version always sends the same
+// string: Chrome 133 sends "Not(A:Brand";v="99", "Google Chrome";v="133",
+// "Chromium";v="133". A random order per request is no Chrome's.
+func chromeUACHFor(v int) string {
+	chars := [...]string{" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"}
+	greaseVersions := [...]string{"8", "99", "24"}
+	orders := [6][3]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}
+	vs := strconv.Itoa(v)
+	in := [3]string{
+		`"Not` + chars[v%len(chars)] + "A" + chars[(v+1)%len(chars)] + `Brand";v="` + greaseVersions[v%len(greaseVersions)] + `"`,
+		`"Chromium";v="` + vs + `"`,
+		`"Google Chrome";v="` + vs + `"`,
 	}
-	rand.Shuffle(len(brands), func(i, j int) { brands[i], brands[j] = brands[j], brands[i] })
-	return brands[0] + ", " + brands[1] + ", " + brands[2]
+	var out [3]string
+	for i, at := range orders[v%len(orders)] {
+		out[at] = in[i]
+	}
+	return out[0] + ", " + out[1] + ", " + out[2]
 }
 
 // browserHeaders adds the headers Chrome sends, for the request variant

@@ -5,7 +5,6 @@ package switchboard
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -383,18 +382,26 @@ func (s *Switchboard) checkRestricted(ctxAtStart string) {
 }
 
 // probeWhite reports whether any of hosts completes a verified TLS handshake
-// on port 443, dialled directly rather than through a path.
+// on port 443, dialled directly rather than through a path. The handshake is
+// Chrome's: these go out in the open just as the paths stop answering.
 func probeWhite(ctx context.Context, hosts []string) bool {
 	res := make(chan bool, len(hosts))
 	for _, h := range hosts {
 		go func() {
 			nd := wire.NewDialer(0)
-			d := tls.Dialer{NetDialer: &nd, Config: &tls.Config{ServerName: h}}
-			c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(h, "443"))
-			if err == nil {
-				c.Close()
+			raw, err := nd.DialContext(ctx, "tcp", net.JoinHostPort(h, "443"))
+			if err != nil {
+				res <- false
+				return
 			}
-			res <- err == nil
+			c, err := wire.ChromeHandshake(ctx, raw, h)
+			if err != nil {
+				raw.Close()
+				res <- false
+				return
+			}
+			c.Close()
+			res <- true
 		}()
 	}
 	for range hosts {

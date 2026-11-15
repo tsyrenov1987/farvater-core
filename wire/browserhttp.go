@@ -117,6 +117,22 @@ func (t *BrowserTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
+// ChromeHandshake makes a TLS handshake over raw as Chrome does to
+// serverName, with the certificate verified against the system's roots. It
+// is for checks that only need to know a site answers: Go's own ClientHello
+// there, sent directly beside the tunnel, would name the client. On an error
+// raw is left to the caller.
+func ChromeHandshake(ctx context.Context, raw net.Conn, serverName string) (net.Conn, error) {
+	u, err := uClient(raw, &utls.Config{ServerName: serverName, ClientSessionCache: tlsSessions}, "chrome")
+	if err != nil {
+		return nil, err
+	}
+	if err := u.HandshakeContext(ctx); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
 // closeAfter wraps a response's body so that closing it also runs done.
 func closeAfter(resp *http.Response, err error) func(done func()) (*http.Response, error) {
 	return func(done func()) (*http.Response, error) {

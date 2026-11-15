@@ -1,9 +1,7 @@
 package wire
 
 import (
-	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -279,19 +277,20 @@ func fetchTURNCreds(ctx context.Context, s PathSpec) ([]vkturn.Creds, error) {
 	defer sess.Close()
 	rc := newRunConn(ctx, sess, Target{Host: u.Hostname(), Port: port})
 	defer rc.Close()
-	tc := tls.Client(rc, &tls.Config{ServerName: u.Hostname()})
-	if err := tc.HandshakeContext(ctx); err != nil {
-		return nil, err
-	}
+	// Chrome's TLS on the path, not Go's (F-133).
+	used := false
+	tr := &BrowserTransport{Dial: func(context.Context, string, string) (net.Conn, error) {
+		if used {
+			return nil, net.ErrClosed
+		}
+		used = true
+		return rc, nil
+	}}
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Connection", "close")
-	if err := req.Write(tc); err != nil {
-		return nil, err
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(tc), req)
+	resp, err := tr.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}

@@ -236,3 +236,28 @@ func TestPathTLSResumes(t *testing.T) {
 		}
 	}
 }
+
+// TestBrowserTransportByAddress: a URL with an IP address (the DoH resolvers
+// at 1.1.1.1 and 8.8.8.8) sends no SNI, as Chrome does, and the certificate
+// is checked against that address.
+func TestBrowserTransportByAddress(t *testing.T) {
+	log := &helloLog{}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	}))
+	srv.TLS = &tls.Config{GetConfigForClient: func(h *tls.ClientHelloInfo) (*tls.Config, error) {
+		log.add(h)
+		return nil, nil
+	}}
+	srv.StartTLS() // the test certificate is for 127.0.0.1
+	defer srv.Close()
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	if got := browserGet(t, &BrowserTransport{RootCAs: roots}, srv.URL+"/dns-query"); got != "ok" {
+		t.Fatalf("body = %q", got)
+	}
+	hs := log.all()
+	if len(hs) != 1 || hs[0].ServerName != "" || !isGREASE(hs[0].CipherSuites[0]) {
+		t.Fatalf("ClientHellos %d, SNI %q: want one of Chrome's without SNI", len(hs), hs[0].ServerName)
+	}
+}

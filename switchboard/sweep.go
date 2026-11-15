@@ -2,7 +2,6 @@ package switchboard
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"io"
 	"net"
@@ -111,18 +110,17 @@ func (s *Switchboard) probeOver(ctx context.Context, path string, got *atomic.In
 		f.serve(ctx)
 	}()
 	used := false
-	tr := &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) {
+	// Chrome's TLS inside the path, as the apps' own probes (F-133).
+	tr := &wire.BrowserTransport{
+		Dial: func(context.Context, string, string) (net.Conn, error) {
 			if used {
 				return nil, net.ErrClosed
 			}
 			used = true
 			return app, nil
 		},
-		TLSClientConfig:   &tls.Config{RootCAs: probeRoots},
-		DisableKeepAlives: true, ForceAttemptHTTP2: false,
+		RootCAs: probeRoots,
 	}
-	defer tr.CloseIdleConnections()
 	defer app.Close()
 	start := time.Now()
 	req, _ := http.NewRequestWithContext(ctx, "GET", s.cfg.ProbeURL, nil)
