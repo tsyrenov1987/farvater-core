@@ -73,7 +73,8 @@ func SetMemoryLimit(bytes int64) {
 // MemoryJSON reports the Go runtime's share of the process, so the iOS tunnel
 // can tell the core's memory from the rest of its budget:
 // {"total": bytes the runtime holds from the OS, "heap": live heap objects,
-// "stacks": goroutine stacks, "goroutines": n, "valve": times the valve opened}.
+// "stacks": goroutine stacks, "goroutines": n, "valve": times the valve opened,
+// "shed": new flows turned away under memory pressure}.
 func MemoryJSON() string {
 	s := []metrics.Sample{
 		{Name: "/memory/classes/total:bytes"},
@@ -99,6 +100,7 @@ func MemoryJSON() string {
 		"stacks":     int64(s[3].Value.Uint64()),
 		"goroutines": int64(s[4].Value.Uint64()),
 		"valve":      int64(valveFired.Load()),
+		"shed":       shedCount.Load(),
 		"active":     active,
 		"held":       kilvater.Held(),
 	})
@@ -220,12 +222,13 @@ func config(cat *catalogue.Catalogue, listenOn, u, p, network string) switchboar
 	}
 	cfg.MemoryFile = memoryFile
 	cfg.Hosted = hosted
-	cfg.Direct = withoutProbes(direct, append([]string{DefaultProbeURL}, cat.ProbeURLs...))
+	cfg.Direct = withoutProbes(direct, append([]string{DefaultProbeURL, FallbackProbeURL}, cat.ProbeURLs...))
 	cfg.RuDirect = true
 	// The leader's flows shared, in turn, with up to two proven paths of its
 	// group (brain/spread.go). Only paths the catalogue labels #group= take
 	// part, so the server decides: no labels, no spread.
 	cfg.Brain.Spread = 3
+	cfg.Pressed = pressed
 	cfg.ProbeURL = DefaultProbeURL
 	if len(cat.ProbeURLs) > 0 {
 		cfg.ProbeURL = cat.ProbeURLs[0]
@@ -599,21 +602,45 @@ func ProveDelivery(probeURL string, timeoutMs int) string {
 	s := current()
 	mu.Lock()
 	addr, su, sp := listen, user, pass
-	if probeURL == "" {
+	asked := probeURL != ""
+	if !asked {
 		probeURL = probe
 	}
 	mu.Unlock()
 	if s == nil {
 		return toJSON(proof{Error: "not running"})
 	}
+	ctx, c := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
+	defer c()
+	p := proveOnce(ctx, s, addr, su, sp, probeURL)
+	// The catalogue's probe got no answer at all: the probe's own site may be
+	// what failed (a single target is a single point of failure), so the
+	// second one is asked before the tunnel is called broken. Only a probe
+	// the caller left to the core, and only with time left for it.
+	if !asked && !p.OK && p.Bytes == 0 && probeURL != FallbackProbeURL {
+		if dl, ok := ctx.Deadline(); ok && time.Until(dl) >= fallbackProbeMin {
+			if q := proveOnce(ctx, s, addr, su, sp, FallbackProbeURL); q.OK {
+				return toJSON(q)
+			}
+		}
+	}
+	return toJSON(p)
+}
+
+// FallbackProbeURL is asked when the catalogue's probe gets no answer.
+const FallbackProbeURL = "https://www.gstatic.com/generate_204"
+
+// fallbackProbeMin: the fallback probe is tried only with this much time left.
+const fallbackProbeMin = 3 * time.Second
+
+// proveOnce fetches probeURL through the switchboard s and says what arrived.
+func proveOnce(ctx context.Context, s *switchboard.Switchboard, addr, su, sp, probeURL string) proof {
 	probeRead.Store(0)
 	probeSize.Store(0)
 	u, err := url.Parse(probeURL)
 	if err != nil || u.Scheme != "https" {
-		return toJSON(proof{Error: "probe url must be https"})
+		return proof{Error: "probe url must be https"}
 	}
-	ctx, c := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
-	defer c()
 	// Chrome's TLS inside the tunnel too, not Go's (F-133); the connection
 	// closes with the body, which ends the flow so its receipt is written.
 	tr := &wire.BrowserTransport{
@@ -628,7 +655,7 @@ func ProveDelivery(probeURL string, timeoutMs int) string {
 	req.Header.Set("User-Agent", "farvater-probe/"+switchboard.Version)
 	resp, err := (&http.Client{Transport: tr}).Do(req)
 	if err != nil {
-		return toJSON(proof{Ms: time.Since(start).Milliseconds(), Error: err.Error()})
+		return proof{Ms: time.Since(start).Milliseconds(), Error: err.Error()}
 	}
 	probeSize.Store(resp.ContentLength)
 	n, rerr := io.Copy(countingDiscard{}, resp.Body)
@@ -665,7 +692,7 @@ func ProveDelivery(probeURL string, timeoutMs int) string {
 			}
 		}
 	}
-	return toJSON(p)
+	return p
 }
 
 // socksConnect opens a SOCKS5 CONNECT through the local switchboard,

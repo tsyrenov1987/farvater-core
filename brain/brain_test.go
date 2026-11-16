@@ -119,6 +119,10 @@ func TestLeaderHysteresis(t *testing.T) {
 	}
 	feed("B", 9, 1, 2000) // mean ≈ 0.76: beats A by > 0.15
 	b.Pick(4000, "h", DstTLS443)
+	if b.Leader() != "A" {
+		t.Fatalf("leader %q changed before MinLeadMs: A has led 3 s", b.Leader())
+	}
+	b.Pick(1000+DefaultConfig().MinLeadMs, "h", DstTLS443)
 	if b.Leader() != "B" {
 		t.Fatalf("leader %q, want B after a clear challenger", b.Leader())
 	}

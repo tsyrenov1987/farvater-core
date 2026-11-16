@@ -80,6 +80,13 @@ type Config struct {
 	// (brain/sweep.go). Empty: no sweeps.
 	ProbeURL string
 
+	// Pressed, when set and true, refuses new flows at once (a SOCKS failure
+	// the app sees as a reset and retries): an iOS tunnel past about 50 MiB is
+	// killed with every flow it carries, so near that line a burst of new
+	// flows is turned away rather than let in. The flows already running are
+	// left alone. Nil: never.
+	Pressed func() bool
+
 	DialTimeout      time.Duration
 	FirstByteTimeout time.Duration
 	FirstPayloadWait time.Duration
@@ -171,6 +178,7 @@ type Switchboard struct {
 	retries atomic.Int64
 	udp     atomic.Int64
 	direct  atomic.Int64
+	shed    atomic.Int64 // flows refused while Pressed
 }
 
 // labTune, when set (only by the chaos lab's build, sleep_chaos.go), changes
@@ -613,6 +621,9 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 		return
 	}
 	if req.Cmd == socksFwdUDP {
+		if s.refused(c) {
+			return
+		}
 		s.serveUDP(ctx, c)
 		return
 	}
@@ -622,6 +633,9 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 		// DNS-over-TLS on the tunnel's own DNS address.
 		_ = replySocks5(c, 2) // connection not allowed by ruleset
 		c.Close()
+		return
+	}
+	if s.refused(c) {
 		return
 	}
 	if s.isDirect(req.Host) {
@@ -665,6 +679,17 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 	}
 	go f.readLoop()
 	f.serve(ctx)
+}
+
+// refused turns c away under memory pressure (Config.Pressed).
+func (s *Switchboard) refused(c net.Conn) bool {
+	if s.cfg.Pressed == nil || !s.cfg.Pressed() {
+		return false
+	}
+	s.shed.Add(1)
+	_ = replySocks5(c, 1) // general failure
+	c.Close()
+	return true
 }
 
 func (s *Switchboard) pick(now int64, dst string, class brain.DstClass) brain.Decision {
@@ -962,8 +987,9 @@ type Status struct {
 	Flows     int64         `json:"flows"`
 	Active    int64         `json:"active"`
 	Retries   int64         `json:"retries"`
-	UDP       int64         `json:"udp"`    // UDP associations that reached a path
-	Direct    int64         `json:"direct"` // flows that went around the paths (Config.Direct)
+	UDP       int64         `json:"udp"`            // UDP associations that reached a path
+	Direct    int64         `json:"direct"`         // flows that went around the paths (Config.Direct)
+	Shed      int64         `json:"shed,omitempty"` // flows refused under memory pressure (Config.Pressed)
 	Dropped   int           `json:"dropped"`
 	Served    int64         `json:"served"`  // the session's receipts served, on every network, probes left out
 	Blocked   int64         `json:"blocked"` // the session's receipts with a block signature, the same way
@@ -986,7 +1012,7 @@ func (s *Switchboard) Status() Status {
 	st := Status{
 		Version: Version, UptimeSec: int64(time.Since(s.started).Seconds()),
 		Listen: s.cfg.Listen, Ctx: s.b.Ctx(), Catalogue: s.cat.Title, Leader: s.b.Leader(),
-		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Dropped: s.b.Dropped,
+		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Shed: s.shed.Load(), Dropped: s.b.Dropped,
 		Skipped: s.Skipped, Journal: len(s.b.J.Entries()), Served: s.served, Blocked: s.blocked, Slept: s.slept, Drops: s.b.Drops,
 	}
 	exits := map[string]string{}

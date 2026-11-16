@@ -73,6 +73,15 @@ type Config struct {
 	// outweigh the few receipts of the path that took over.
 	DemoteHoldMs int64
 
+	// MinLeadMs: a leader keeps the lead this long before a challenger can
+	// take it for looking better (the posterior rule) or answering sooner.
+	// A leader that fails (a trip, stalls, silence, lost races, slowness) is
+	// replaced at once, as before. In the fleet's journals (16.11) the lead
+	// lasted 150 s at the median, 29 % under a minute, and 15 % of changes
+	// went back to the path left less than 5 minutes before: every change
+	// moves the new flows and costs their handshakes. 0: no minimum.
+	MinLeadMs int64
+
 	// A leader in doubt has the paths swept (sweep.go): up to SweepMax of
 	// them get a volume probe at once, at most once per SweepMs (0: never).
 	// SweepAlways sweeps every SweepMs, doubt or not.
@@ -88,7 +97,7 @@ func DefaultConfig() Config {
 		FirstByteDeadlineCapMs: 5000, Breaker: DefaultBreakerConfig(),
 		SlowBps: 128 * 1024, FasterFactor: 3, SpeedProbeShare: 0.3, SpeedProbeMax: 4, GoodputFreshMs: 10 * 60_000,
 		LagMs: 300, LagFactor: 2, LagGapMs: 250,
-		DemoteHoldMs: 2 * 60_000, SweepMs: 15_000, SweepMax: 8}
+		DemoteHoldMs: 5 * 60_000, MinLeadMs: 2 * 60_000, SweepMs: 15_000, SweepMax: 8}
 }
 
 // Decision is the answer to "which wire for this flow".
@@ -419,7 +428,7 @@ func (b *Brain) measured(path string, now int64) {
 	if cand, why := b.faster(avail, now); cand == path && cand != "" {
 		b.demoted[b.leader] = now
 		b.setLeader(cand, now, "lead_slow", why)
-	} else if cand, why := b.quicker(avail, now); cand == path && cand != "" {
+	} else if cand, why := b.quicker(avail, now); cand == path && cand != "" && b.settled(b.st[b.leader], now) {
 		b.demoted[b.leader] = now
 		b.setLeader(cand, now, "lead_lag", why)
 	}
@@ -508,6 +517,14 @@ func (b *Brain) muchLaggier(p string, now int64) bool {
 }
 
 // held reports whether p was dethroned within DemoteHoldMs.
+// settled reports whether the leader has led MinLeadMs, or has too few
+// receipts of its own to be held: a leader picked on priors alone, with no
+// delivery yet, gives way to one proven at once.
+func (b *Brain) settled(ls *PathState, now int64) bool {
+	return b.cfg.MinLeadMs <= 0 || now-b.leaderSince >= b.cfg.MinLeadMs ||
+		ls == nil || ls.RecentReceipts(now, b.cfg.LeaderWindowMs) < b.cfg.LeaderMinReceipts
+}
+
 func (b *Brain) held(p string, now int64) bool {
 	at, ok := b.demoted[p]
 	return ok && now-at < b.cfg.DemoteHoldMs
@@ -645,7 +662,8 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		b.setLeader(l, now, "lead_init", why)
 	} else {
 		ls := b.st[b.leader]
-		if cand, m := b.bestBy(avail, b.leader, true, now); cand != "" && m >= ls.Mean()+b.cfg.LeaderDelta && !b.muchSlower(cand, now) && !b.muchLaggier(cand, now) && !b.held(cand, now) {
+		settled := b.settled(ls, now)
+		if cand, m := b.bestBy(avail, b.leader, true, now); settled && cand != "" && m >= ls.Mean()+b.cfg.LeaderDelta && !b.muchSlower(cand, now) && !b.muchLaggier(cand, now) && !b.held(cand, now) {
 			b.setLeader(cand, now, "lead_switch", fmt.Sprintf("posterior %.2f vs %.2f of %s", m, ls.Mean(), b.leader))
 		} else if ls.ConsecutiveStalls() >= b.cfg.LeaderStallStrikes {
 			if cand, _ := b.bestBy(avail, b.leader, false, now); cand != "" {
@@ -658,7 +676,7 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		} else if cand, why := b.faster(avail, now); cand != "" {
 			b.demoted[b.leader] = now
 			b.setLeader(cand, now, "lead_slow", why)
-		} else if cand, why := b.quicker(avail, now); cand != "" {
+		} else if cand, why := b.quicker(avail, now); settled && cand != "" {
 			b.demoted[b.leader] = now
 			b.setLeader(cand, now, "lead_lag", why)
 		}

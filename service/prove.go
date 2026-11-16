@@ -36,8 +36,20 @@ type carrier interface {
 var probeRoots *x509.CertPool
 
 func (s *Session) prove(ctx context.Context, sb *switchboard.Switchboard, user, pass, probeURL string) Proof {
-	return s.proveOver(ctx, sb, user, pass, probeURL)
+	p := s.proveOver(ctx, sb, user, pass, probeURL)
+	// No answer at all from the catalogue's probe: its site may be what
+	// failed, so the second one is asked before the tunnel is called broken.
+	if !p.OK && p.Bytes == 0 && probeURL != fallbackProbe && ctx.Err() == nil {
+		if q := s.proveOver(ctx, sb, user, pass, fallbackProbe); q.OK {
+			return q
+		}
+	}
+	return p
 }
+
+// fallbackProbe is asked when the catalogue's probe gets no answer
+// (mobile.FallbackProbeURL on the phones).
+const fallbackProbe = "https://www.gstatic.com/generate_204"
 
 // proveOver fetches the probe through the switchboard, as every app's traffic
 // goes, and says what actually arrived (mobile.ProveDelivery on the phones).
