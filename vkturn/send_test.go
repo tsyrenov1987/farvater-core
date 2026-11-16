@@ -88,6 +88,12 @@ func TestFailedSendIsALossNotAnError(t *testing.T) {
 	if !ch.dead.Load() {
 		t.Fatal("a channel whose sends all failed is not retired")
 	}
+	// Every slot empty while heal opens new channels: lost too, not an error.
+	empty := []*channel{nil}
+	c.chans.Store(&empty)
+	if n, err := c.WriteTo([]byte("data"), nil); err != nil || n != 4 {
+		t.Fatalf("no channel: n=%d err=%v, want 4 and nil", n, err)
+	}
 	close(c.done)
 	if _, err := c.WriteTo([]byte("data"), nil); err == nil {
 		t.Fatal("a closed conn takes writes")

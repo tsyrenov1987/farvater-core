@@ -419,7 +419,7 @@ func (c *relayConn) WriteTo(p []byte, _ net.Addr) (int, error) {
 	}
 	ch := c.pick()
 	if ch == nil {
-		return 0, net.ErrClosed
+		return len(p), nil // every slot is empty while heal opens new channels: lost, like a failed send
 	}
 	c.send(ch, p)
 	return len(p), nil
