@@ -367,15 +367,16 @@ func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (
 	}
 	off := 1 + KeyIDSize
 	ts := int64(binary.BigEndian.Uint64(b[off : off+8]))
+	unlisted := set.allowed != nil && !set.allowed[id] && !set.revoked[id]
 	if !withinWindow(ts, now) {
+		if unlisted {
+			return -1, claimed, FailUnknown
+		}
 		return -1, claimed, FailWindow
 	}
-	if set.revoked[id] {
-		return -1, claimed, FailRevoked
-	}
-	if set.allowed != nil && !set.allowed[id] {
-		return -1, claimed, FailUnknown
-	}
+	// The MAC is worked out before the lists are read, so a refusal takes the
+	// same time whether or not the key id is on them: the timing of a refusal
+	// does not tell which ids are listed (audit KL-09).
 	tagMAC := b[off+16:]
 	hit := -1
 	for i, m := range set.masters {
@@ -383,6 +384,12 @@ func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (
 			hit = i
 			break
 		}
+	}
+	if set.revoked[id] {
+		return -1, claimed, FailRevoked
+	}
+	if set.allowed != nil && !set.allowed[id] {
+		return -1, claimed, FailUnknown
 	}
 	if hit < 0 {
 		return -1, claimed, FailMAC

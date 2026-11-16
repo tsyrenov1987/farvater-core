@@ -167,6 +167,13 @@ func (m *Metrics) authFailKey(id Identity, reason string) {
 		return
 	}
 	l := failLabel{id.Label(), reason}
+	// An id that is on no list can be any random 8 bytes: such refusals are
+	// counted under "other", so made-up ids cannot use up the labels and hide
+	// the refusals of real keys (audit KL-05). The verifier reports an unlisted
+	// id as FailUnknown whatever else is wrong with the tag.
+	if reason == FailUnknown || reason == FailNoV2 {
+		l.key = "other"
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.fails == nil {

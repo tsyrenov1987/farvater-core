@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/netip"
@@ -107,12 +108,38 @@ var errForbiddenTarget = errors.New("kilvater: target address not allowed")
 // classify as private.
 var cgnat = netip.MustParsePrefix("100.64.0.0/10")
 
+// special lists the ranges that are not the public internet but that netip
+// does not classify (audit KL-06): "this network", reserved and broadcast,
+// IETF protocol assignments, benchmarking, IPv4-compatible IPv6, NAT64, the
+// discard prefix, Teredo, 6to4 and site-local IPv6. Through NAT64, 6to4 or
+// Teredo an address of one of these could lead to a loopback or private IPv4
+// address. The documentation ranges are left open: nothing routes them.
+var special = func() []netip.Prefix {
+	var ps []netip.Prefix
+	for _, s := range []string{
+		"0.0.0.0/8", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4",
+		"::/96", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/32",
+		"2002::/16", "fec0::/10",
+	} {
+		ps = append(ps, netip.MustParsePrefix(s))
+	}
+	return ps
+}()
+
 // publicOnly reports whether ip may be dialed when AllowPrivate is off.
 func publicOnly(ip netip.Addr) bool {
 	ip = ip.Unmap()
-	return ip.IsValid() && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsUnspecified() &&
-		!ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsInterfaceLocalMulticast() &&
-		!ip.IsMulticast() && !cgnat.Contains(ip)
+	if !ip.IsValid() || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast() || cgnat.Contains(ip) {
+		return false
+	}
+	for _, p := range special {
+		if p.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }
 
 // allowed reports whether the resolved address may be dialed.
@@ -174,6 +201,13 @@ func closeCode(err error) byte {
 // openReadTimeout bounds how long the server waits for a client's OPEN frame
 // after it has authenticated, so a client that never opens cannot hold a stream.
 var openReadTimeout = 15 * time.Second
+
+// openWait is how long this stream waits for OPEN: openReadTimeout give or
+// take a third (10 to 20 s by default), so the end of a stream that never
+// opens does not fall on the same second every time (audit KL-15).
+func openWait() time.Duration {
+	return openReadTimeout*2/3 + time.Duration(rand.Int64N(int64(openReadTimeout*2/3)+1))
+}
 
 func (s *Server) log(format string, args ...any) {
 	if s.Logger != nil {
@@ -252,7 +286,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat, lab
 	var f opened
 	select {
 	case f = <-ch:
-	case <-time.After(openReadTimeout):
+	case <-time.After(openWait()):
 		s.Metrics.openTimeout()
 		return
 	case <-r.Context().Done():

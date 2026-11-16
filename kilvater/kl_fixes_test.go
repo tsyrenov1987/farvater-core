@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 )
@@ -215,5 +216,75 @@ func TestMaxStreamsV1(t *testing.T) {
 	s.MaxStreamsV1 = 0
 	if _, ok := s.admit(Identity{Index: 1}, time.Now()); !ok {
 		t.Fatal("v1 stream refused with no cap")
+	}
+}
+
+// KL-09: an unlisted id is refused as unknown even with a bad MAC or an old
+// timestamp, and the MAC is checked before the lists are read.
+func TestV2RefusalOrder(t *testing.T) {
+	var master Key
+	rand.Read(master[:])
+	in, out := KeyIDFor(master, []byte("in")), KeyIDFor(master, []byte("out"))
+	now := time.Now()
+	v := NewVerifierConfig(VerifierConfig{Master: &master, Allowed: []KeyID{in}, AllowList: true})
+	var junk Key
+	rand.Read(junk[:])
+	cases := []struct {
+		tag, want string
+	}{
+		{NewTagV2(out, junk, "/c", now), FailUnknown},
+		{NewTagV2(out, DeriveKey(master, out), "/c", now.Add(-time.Hour)), FailUnknown},
+		{NewTagV2(in, junk, "/c", now), FailMAC},
+		{NewTagV2(in, DeriveKey(master, in), "/c", now.Add(-time.Hour)), FailWindow},
+	}
+	for i, c := range cases {
+		if n, _, why := v.VerifyDetail(c.tag, "/c", now); n >= 0 || why != c.want {
+			t.Errorf("case %d: n=%d why=%q, want %q", i, n, why, c.want)
+		}
+	}
+}
+
+// KL-05: refusals of made-up ids do not use up the per-key labels.
+func TestFailLabelsNotFilledByUnknownIDs(t *testing.T) {
+	m := NewMetrics(nil)
+	var id KeyID
+	for i := 0; i < 2*maxFailLabels; i++ {
+		rand.Read(id[:])
+		m.authFailKey(Identity{V2: true, KeyID: id}, FailUnknown)
+	}
+	real := Identity{V2: true, KeyID: KeyID{1, 2, 3}}
+	m.authFailKey(real, FailMAC)
+	if m.fails[failLabel{real.Label(), FailMAC}] != 1 {
+		t.Fatalf("real key's refusal not under its own label; %d labels", len(m.fails))
+	}
+	if m.fails[failLabel{"other", FailUnknown}] != 2*maxFailLabels {
+		t.Fatal("unknown ids not folded into other")
+	}
+}
+
+// KL-06: the special ranges are not dialed.
+func TestPublicOnlySpecialRanges(t *testing.T) {
+	for _, s := range []string{"64:ff9b::7f00:1", "2002:7f00:1::", "2001::1", "::7f00:1", "0.1.2.3",
+		"240.0.0.1", "192.0.0.8", "198.18.0.1", "255.255.255.255", "fec0::1", "100::1"} {
+		if publicOnly(netip.MustParseAddr(s)) {
+			t.Errorf("%s allowed", s)
+		}
+	}
+	for _, s := range []string{"1.1.1.1", "8.8.8.8", "2a00:1450:4001::1", "2606:4700::1111", "::ffff:1.1.1.1"} {
+		if !publicOnly(netip.MustParseAddr(s)) {
+			t.Errorf("%s refused", s)
+		}
+	}
+}
+
+// KL-15: the wait for OPEN is spread over 10..20 s.
+func TestOpenWaitSpread(t *testing.T) {
+	lo, hi := time.Hour, time.Duration(0)
+	for i := 0; i < 2000; i++ {
+		w := openWait()
+		lo, hi = min(lo, w), max(hi, w)
+	}
+	if lo < 10*time.Second || hi > 20*time.Second || hi-lo < 8*time.Second {
+		t.Fatalf("spread %v..%v", lo, hi)
 	}
 }
