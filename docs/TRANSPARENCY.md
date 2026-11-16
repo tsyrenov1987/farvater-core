@@ -1,9 +1,9 @@
 # Transparency — what is inside a Farvater VPN build
 
-Build: **Farvater VPN for iPhone 1.0.1 (40)**. Core: tag [`ios-1.0.1-40`](https://github.com/tsyrenov1987/farvater-core/tree/ios-1.0.1-40).
-The core's Go code at that tag is the code of commit `e4665db`, from which the build's `FarvaterCore.xcframework`
-(SHA-256 of the arm64 binary starts `1dfbbe196d0e0b04`) was made; the commits after it change only comments and this document.
-The previous edition of this document, for 1.0 (19), is at tag [`ios-1.0-19`](https://github.com/tsyrenov1987/farvater-core/blob/ios-1.0-19/docs/TRANSPARENCY.md).
+Build: **Farvater VPN for iPhone 1.0.1 (62)**. Core: tag [`ios-1.0.1-62`](https://github.com/tsyrenov1987/farvater-core/tree/ios-1.0.1-62).
+The core's Go code at that tag is the code of commit `2069e3e`, from which the build's `FarvaterCore.xcframework`
+(SHA-256 of the arm64 binary starts `4c3f5c6638412058`) was made; the commits after it change only this document.
+The previous edition of this document, for 1.0.1 (40), is at tag [`ios-1.0.1-40`](https://github.com/tsyrenov1987/farvater-core/blob/ios-1.0.1-40/docs/TRANSPARENCY.md).
 
 ## The app around the core
 
@@ -21,11 +21,11 @@ Measured on the arm64 slice of this build's `FarvaterCore.xcframework`: text sym
 
 | Part | Machine code | Share |
 |---|---:|---:|
-| Go runtime, standard library, golang.org/x | 2.97 MB | 61.1 % |
-| Third-party libraries (below) | 1.31 MB | 26.9 % |
-| Our core (`brain`, `switchboard`, `wire`, `kilvater`, `vkturn`, `catalogue`, `mobile`) | 0.39 MB | 8.0 % |
+| Go runtime, standard library, golang.org/x | 2.97 MB | 59.8 % |
+| Third-party libraries (below) | 1.31 MB | 26.4 % |
+| Our core (`brain`, `switchboard`, `wire`, `kilvater`, `vkturn`, `catalogue`, `mobile`) | 0.49 MB | 9.9 % |
 | Compiler-generated (type equality, wrappers, stubs) | 0.20 MB | 4.0 % |
-| Total | 4.87 MB | |
+| Total | 4.98 MB | |
 
 Our part is small in bytes and is the part that decides: which path carries each connection, how delivery is
 measured, when a path is bypassed and when it is tried again. The libraries speak the wire formats; the runtime
@@ -41,7 +41,7 @@ path that `replace` points at our clean-room shim, `third_party/sing-shim`).
 ### How to reproduce
 
 ```sh
-git checkout ios-1.0.1-40
+git checkout ios-1.0.1-62
 gomobile bind -target=ios/arm64 -iosversion 17.0 -trimpath -ldflags="-s -w" ./mobile   # upstream golang.org/x/mobile
 lipo FarvaterCore.xcframework/ios-arm64/FarvaterCore.framework/FarvaterCore -thin arm64 -output core.a
 ar -x core.a go.o
@@ -58,7 +58,7 @@ Every module with machine code in the core, with the version and `go.sum` hash a
 | Module | Version | License | Machine code | go.sum |
 |---|---|---|---:|---|
 | github.com/apernet/quic-go | v0.63.1-0.20261004180939-a10df75c260c | MIT | 470 KB | `h1:cxK8qTA0YCsj68A7zLYDCfPgMTOyt3ePkHh+oXEmYU0=` |
-| github.com/refraction-networking/utls | v1.8.3-0.20260301010127-aa6edf4b11af | BSD-3-Clause | 411 KB | `h1:er2acxbi3N1nvEq6HXHUAR1nTWEJmQfqiGR8EVT9rfs=` |
+| github.com/refraction-networking/utls | v1.8.3-0.20260301010127-aa6edf4b11af | BSD-3-Clause | 414 KB | `h1:er2acxbi3N1nvEq6HXHUAR1nTWEJmQfqiGR8EVT9rfs=` |
 | github.com/klauspost/compress | v1.20.1 | BSD-3-Clause, Apache-2.0 (per package) | 93 KB | `h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=` |
 | github.com/klauspost/reedsolomon | v1.12.0 | MIT | 56 KB | `h1:I5FEp3xSwVCcEh3F5A7dofEfhXdF/bWhQWPH+XwBFno=` |
 | github.com/xtaci/kcp-go/v5 | v5.6.72 | MIT | 54 KB | `h1:FLaQPalgpufJYQRk0OK+gErEhXGLUPjv6FSRPrFR8Lk=` |
