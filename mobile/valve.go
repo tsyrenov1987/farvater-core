@@ -63,11 +63,24 @@ func pressed() bool {
 // line, or the flow is turned away like a pressed one (one per shedTrickle
 // still gets in). A phone opening flows at an ordinary pace never reads the
 // memory here.
+// The door's line is the valve's line and a quarter: many of the recent flows
+// already show in the memory or are gone, so weighing them against the valve's
+// own line turned away a burst the phone could carry (Mac harness, 150 flows at
+// once: 90 served, peak 26.6 MB; against line+25 %: 175 served, peak 38 MB; no
+// door at all: 188 served, peak 46.5 MB, at the edge of jetsam).
 const (
 	burstWindow   = 2 * time.Second
 	burstFlows    = 16        // flows let in within burstWindow before the door weighs
 	burstFlowCost = 192 << 10 // what a new flow takes once it carries data
+	burstLineNum  = 125       // percent of the valve's line the door weighs against
 )
+
+// burstOver says whether recent flows, each still taking burstFlowCost beyond
+// the free pages the runtime keeps, would take held memory past the door's line.
+func burstOver(held, free int64, recent int, at int64) bool {
+	grow := int64(recent)*burstFlowCost - free
+	return grow > 0 && held+grow >= at*burstLineNum/100
+}
 
 var (
 	burstMu    sync.Mutex
@@ -97,7 +110,7 @@ func burstPressed() bool {
 		// The runtime keeps freed pages up to the soft limit, and new flows
 		// fill those first: only what they need beyond them grows the tunnel.
 		held, free := goHeldFree()
-		if grow := int64(recent)*burstFlowCost - free; grow > 0 && held+grow >= at {
+		if burstOver(held, free, recent, at) {
 			return true // not counted: it is not let in (unless as the trickle)
 		}
 	}

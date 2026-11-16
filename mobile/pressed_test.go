@@ -75,3 +75,23 @@ func TestPressedWeighsABurstAtTheDoor(t *testing.T) {
 		t.Fatal("a flow after a quiet spell was refused")
 	}
 }
+
+// TestBurstOverWeighsAgainstLinePlusAQuarter: numbers from the 16.11 harness,
+// valve line 33 MiB. An ordinary page of 25 flows over an idle 30 MiB runtime
+// is let in; 150 flows at once over 25 MiB are not.
+func TestBurstOverWeighsAgainstLinePlusAQuarter(t *testing.T) {
+	const mib = 1 << 20
+	line := int64(33 * mib)
+	if burstOver(30*mib, 1*mib, 25, line) {
+		t.Fatal("25 flows over an idle runtime turned away")
+	}
+	if !burstOver(25*mib, 1*mib, 150, line) {
+		t.Fatal("150 flows at once let in")
+	}
+	if burstOver(40*mib, 30*mib, 100, line) {
+		t.Fatal("flows that fit in the free pages turned away")
+	}
+	if !burstOver(41*mib+mib/4, 0, 1, line) {
+		t.Fatal("a flow past line+25 % let in")
+	}
+}
