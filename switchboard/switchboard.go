@@ -881,29 +881,30 @@ const answerStatusMs = 30 * 60_000
 
 // PathStatus is one row of Status.
 type PathStatus struct {
-	ID             string  `json:"id"`
-	Rail           string  `json:"rail"`
-	Exit           string  `json:"exit,omitempty"` // the catalogue's country of the exit, when it names one
-	Server         string  `json:"server"`
-	Leader         bool    `json:"leader"`
-	DelivMean      float64 `json:"deliv_mean"`
-	FbMean         float64 `json:"fb_mean"`
-	Receipts       int     `json:"receipts"`
-	Recent15m      int     `json:"recent_15m"`
-	P90FirstByteMs int64   `json:"p90_first_byte_ms"`
-	Cut16          bool    `json:"cut16"`
-	Parked         bool    `json:"parked"`
-	Tripped        string  `json:"tripped,omitempty"`         // breaker signature while avoided as primary
-	TrippedLeftMs  int64   `json:"tripped_left_ms,omitempty"` // until it is tried as a primary again
-	Served         int     `json:"served"`                    // receipts served: first byte, no block signature
-	Blocked        int     `json:"blocked"`                   // receipts with a block signature
-	Asleep         bool    `json:"asleep,omitempty"`          // a hosted path whose transport is down
-	UpBytes        int64   `json:"up_bytes"`                  // carried this session, running flows and UDP included
-	DownBytes      int64   `json:"down_bytes"`
-	GoodputBps     int64   `json:"goodput_bps,omitempty"` // download rate while bytes flowed, 0 until measured
-	AnswerMs       int64   `json:"answer_ms,omitempty"`   // median dial-to-first-byte of the last half hour's flows; absent until one answered
-	AnswerN        int     `json:"answer_n,omitempty"`    // how many flows AnswerMs is the median of
-	Vol            *Volume `json:"vol,omitempty"`         // bytes carried when flows and connections ended; absent until one has
+	ID             string             `json:"id"`
+	Rail           string             `json:"rail"`
+	Exit           string             `json:"exit,omitempty"` // the catalogue's country of the exit, when it names one
+	Server         string             `json:"server"`
+	Leader         bool               `json:"leader"`
+	DelivMean      float64            `json:"deliv_mean"`
+	FbMean         float64            `json:"fb_mean"`
+	Receipts       int                `json:"receipts"`
+	Recent15m      int                `json:"recent_15m"`
+	P90FirstByteMs int64              `json:"p90_first_byte_ms"`
+	Cut16          bool               `json:"cut16"`
+	Parked         bool               `json:"parked"`
+	Tripped        string             `json:"tripped,omitempty"`         // breaker signature while avoided as primary
+	TrippedLeftMs  int64              `json:"tripped_left_ms,omitempty"` // until it is tried as a primary again
+	Served         int                `json:"served"`                    // receipts served: first byte, no block signature
+	Blocked        int                `json:"blocked"`                   // receipts with a block signature
+	Asleep         bool               `json:"asleep,omitempty"`          // a hosted path whose transport is down
+	UpBytes        int64              `json:"up_bytes"`                  // carried this session, running flows and UDP included
+	DownBytes      int64              `json:"down_bytes"`
+	GoodputBps     int64              `json:"goodput_bps,omitempty"` // download rate while bytes flowed, 0 until measured
+	AnswerMs       int64              `json:"answer_ms,omitempty"`   // median dial-to-first-byte of the last half hour's flows; absent until one answered
+	AnswerN        int                `json:"answer_n,omitempty"`    // how many flows AnswerMs is the median of
+	Vol            *Volume            `json:"vol,omitempty"`         // bytes carried when flows and connections ended; absent until one has
+	Bond           []wire.BondLegStat `json:"bond,omitempty"`        // a bond's legs: bytes each carried, drops, returns
 }
 
 // Volume says at what volume things ended on a path in this network: each list
@@ -991,10 +992,12 @@ type Status struct {
 	Direct    int64         `json:"direct"`         // flows that went around the paths (Config.Direct)
 	Shed      int64         `json:"shed,omitempty"` // flows refused under memory pressure (Config.Pressed)
 	Dropped   int           `json:"dropped"`
-	Served    int64         `json:"served"`  // the session's receipts served, on every network, probes left out
-	Blocked   int64         `json:"blocked"` // the session's receipts with a block signature, the same way
-	Slept     int64         `json:"slept"`   // the session's receipts of flows the device slept through, the same way
-	Drops     brain.Drops   `json:"drops"`   // receipts the brain left out of the evidence, by why
+	Served    int64         `json:"served"`            // the session's receipts served, on every network, probes left out
+	Blocked   int64         `json:"blocked"`           // the session's receipts with a block signature, the same way
+	Slept     int64         `json:"slept"`             // the session's receipts of flows the device slept through, the same way
+	Drops     brain.Drops   `json:"drops"`             // receipts the brain left out of the evidence, by why
+	White     bool          `json:"white,omitempty"`   // the network is a restricted (white-list) one
+	VKOpen    bool          `json:"vk_open,omitempty"` // bare vkturn paths are allowed as primaries here
 	Paths     []PathStatus  `json:"paths"`
 	Skipped   []string      `json:"skipped"`
 	Journal   int           `json:"journal_entries"`
@@ -1014,6 +1017,7 @@ func (s *Switchboard) Status() Status {
 		Listen: s.cfg.Listen, Ctx: s.b.Ctx(), Catalogue: s.cat.Title, Leader: s.b.Leader(),
 		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Shed: s.shed.Load(), Dropped: s.b.Dropped,
 		Skipped: s.Skipped, Journal: len(s.b.J.Entries()), Served: s.served, Blocked: s.blocked, Slept: s.slept, Drops: s.b.Drops,
+		White: s.b.Restricted(), VKOpen: s.b.VKOpen(now),
 	}
 	exits := map[string]string{}
 	for _, e := range s.cat.Paths {
@@ -1039,6 +1043,9 @@ func (s *Switchboard) Status() Status {
 			Asleep: s.b.Asleep(id), UpBytes: c.up.Load(), DownBytes: c.down.Load(), GoodputBps: int64(ps.GoodputBps),
 			AnswerMs: ansMs, AnswerN: ansN, Vol: volStatus(ps),
 		})
+		if bs, ok := s.wires[id].(wire.BondStater); ok {
+			st.Paths[len(st.Paths)-1].Bond = bs.BondStats()
+		}
 	}
 	n := len(s.receipts)
 	if n > 50 {
