@@ -37,7 +37,7 @@ const (
 
 // pressed is the switchboard's Config.Pressed on the phones.
 func pressed() bool {
-	if !pressedOn.Load() {
+	if !pressedOn.Load() && !burstPressed() {
 		return false
 	}
 	now := time.Now().UnixMilli()
@@ -51,6 +51,62 @@ func pressed() bool {
 
 // The valve looks often only when the runtime is near the line, so an idle phone
 // is not woken four times a second.
+// The valve looks at the memory every 250 ms at best, and a flow grows after
+// it is let in: its wire dials, its buffers fill. A phone coming back to a
+// network, or every app reconnecting after a path switched, opens a hundred
+// flows within a second, all let in before the valve's next look; on the Mac
+// harness (16.11) 115 flows opened at once took the Go runtime from 25 to 47 MB
+// in under ten seconds, and the iOS tunnel is killed at about 50 MiB in all.
+// So while flows arrive fast, each new one is weighed at the door: the memory
+// now plus what the flows let in within the last burstWindow will still take
+// (burstFlowCost each, measured: 21.5 MB over 115 flows) must stay under the
+// line, or the flow is turned away like a pressed one (one per shedTrickle
+// still gets in). A phone opening flows at an ordinary pace never reads the
+// memory here.
+const (
+	burstWindow   = 2 * time.Second
+	burstFlows    = 16        // flows let in within burstWindow before the door weighs
+	burstFlowCost = 192 << 10 // what a new flow takes once it carries data
+)
+
+var (
+	burstMu    sync.Mutex
+	burstStart time.Time // start of the current window
+	burstPrev  int       // flows let in during the previous window
+	burstNow   int       // flows let in during the current one
+)
+
+// burstPressed counts a flow at the door and says whether, arriving in a
+// burst, it would take the runtime over the valve's line.
+func burstPressed() bool {
+	at := valveAt.Load()
+	if at <= 0 {
+		return false
+	}
+	now := time.Now()
+	burstMu.Lock()
+	switch since := now.Sub(burstStart); {
+	case since >= 2*burstWindow:
+		burstStart, burstPrev, burstNow = now, 0, 0
+	case since >= burstWindow:
+		burstStart, burstPrev, burstNow = burstStart.Add(burstWindow), burstNow, 0
+	}
+	recent := burstPrev + burstNow
+	burstMu.Unlock()
+	if recent >= burstFlows {
+		// The runtime keeps freed pages up to the soft limit, and new flows
+		// fill those first: only what they need beyond them grows the tunnel.
+		held, free := goHeldFree()
+		if grow := int64(recent)*burstFlowCost - free; grow > 0 && held+grow >= at {
+			return true // not counted: it is not let in (unless as the trickle)
+		}
+	}
+	burstMu.Lock()
+	burstNow++
+	burstMu.Unlock()
+	return false
+}
+
 const (
 	valveLook     = 250 * time.Millisecond
 	valveIdleLook = time.Second
@@ -70,6 +126,13 @@ func goHeld() int64 {
 	s := []metrics.Sample{{Name: "/memory/classes/total:bytes"}, {Name: "/memory/classes/heap/released:bytes"}}
 	metrics.Read(s)
 	return int64(s[0].Value.Uint64() - s[1].Value.Uint64())
+}
+
+// goHeldFree is goHeld and, of it, the heap pages the runtime holds free.
+func goHeldFree() (held, free int64) {
+	s := []metrics.Sample{{Name: "/memory/classes/total:bytes"}, {Name: "/memory/classes/heap/released:bytes"}, {Name: "/memory/classes/heap/free:bytes"}}
+	metrics.Read(s)
+	return int64(s[0].Value.Uint64() - s[1].Value.Uint64()), int64(s[2].Value.Uint64())
 }
 
 func valveLoop() {
