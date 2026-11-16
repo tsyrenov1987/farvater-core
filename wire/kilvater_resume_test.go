@@ -313,3 +313,82 @@ func TestKilvaterResumeUploadToSilentOldServer(t *testing.T) {
 		t.Fatal("the upload stalled: the client waits for a confirmation that will never come")
 	}
 }
+
+// writerFirstTarget answers with down bytes before it reads anything, then
+// reads to the end and reports how many bytes came up.
+func writerFirstTarget(t *testing.T, down int) (int, <-chan int64) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	got := make(chan int64, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		if tc, ok := c.(*net.TCPConn); ok {
+			tc.SetReadBuffer(64 << 10)
+			tc.SetWriteBuffer(64 << 10)
+		}
+		buf := make([]byte, down)
+		rand.Read(buf)
+		c.Write(buf)
+		n, _ := io.Copy(io.Discard, c)
+		got <- n
+	}()
+	return ln.Addr().(*net.TCPAddr).Port, got
+}
+
+// FV-007: an upload far larger than the window, to a target that writes its
+// whole answer before it reads. Confirming queued bytes let the queue reach
+// its guard and the stream stalled for good; the flow must finish both ways.
+func TestResumeUploadWhileTargetWritesFirst(t *testing.T) {
+	const up, down = 16 << 20, 16 << 20
+	lab, spec := newKilLab(t, 5*time.Second)
+	w, err := newKilWire(spec, lab.dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	sess, err := w.Dial(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, got := writerFirstTarget(t, down)
+	upc := make(chan []byte, 1)
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := sess.Run(ctx, Target{Host: "127.0.0.1", Port: port}, nil, upc, pw, nopMeter{})
+		pw.CloseWithError(err)
+	}()
+	go func() {
+		payload := make([]byte, 16<<10)
+		for off := 0; off < up; off += len(payload) {
+			upc <- payload
+		}
+		close(upc)
+	}()
+	done := make(chan error, 1)
+	go func() { _, err := io.ReadFull(pr, make([]byte, down)); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatalf("download stalled: %+v", lab.srv.ResumeStats())
+	}
+	select {
+	case n := <-got:
+		if n != up {
+			t.Fatalf("target got %d bytes up, want %d", n, up)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatalf("upload stalled: %+v", lab.srv.ResumeStats())
+	}
+}

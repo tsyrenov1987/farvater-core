@@ -230,14 +230,19 @@ type session struct {
 	// their own, so a target that is slow to read never stops the stream's
 	// frame loop: FLOWACKs behind the DATA are still read, the target's
 	// answer still flows down, and the two sides cannot wait on each other.
-	// The client keeps at most a window unconfirmed, so the queue stays
-	// within it; qMax is only a guard against a peer that does not.
-	qMu   sync.Mutex
-	qCond *sync.Cond
-	q     [][]byte // nil entry: the client finished sending (half-close)
-	qLen  int
-	qMax  int
-	qDead bool
+	// The client keeps at most a window unconfirmed, and the server confirms
+	// only what the target has taken (written), never what is merely queued,
+	// so the queue stays within that window; qMax is only a guard against a
+	// peer that does not (FV-007: confirming queued bytes let an upload fill
+	// the queue to qMax while the target was busy writing its answer, and the
+	// frame loop then waited on the target, which waited on the frame loop).
+	qMu     sync.Mutex
+	qCond   *sync.Cond
+	q       [][]byte // nil entry: the client finished sending (half-close)
+	qLen    int
+	qMax    int
+	qDead   bool
+	written uint64 // DATA bytes the target has taken; counts like up
 }
 
 func (t *sessions) add(key sessKey, remote net.Conn, window int) *session {
@@ -280,9 +285,10 @@ func (se *session) writeRemote() {
 			closeWrite(se.remote) // the client finished sending; the target may go on
 			continue
 		}
-		_, err := se.remote.Write(p)
+		n, err := se.remote.Write(p)
 		se.qMu.Lock()
 		se.qLen -= len(p)
+		se.written += uint64(n)
 		se.qCond.Broadcast()
 		se.qMu.Unlock()
 		if err != nil {
@@ -544,8 +550,41 @@ func (s *Server) serve(se *session, gen, sent uint64, upDone uint64, up io.Reade
 		}
 	}()
 
+	// The client's bytes are confirmed as the target takes them, not as
+	// they arrive: a FLOWACK frees the client's window, and a window freed
+	// for bytes still queued would let the queue outgrow it (FV-007).
+	adone := make(chan struct{})
+	go func() {
+		defer close(adone)
+		acked := upDone
+		for {
+			se.qMu.Lock()
+			for {
+				if se.qDead {
+					se.qMu.Unlock()
+					return
+				}
+				select {
+				case <-stop:
+					se.qMu.Unlock()
+					return
+				default:
+				}
+				if se.written > acked && se.written-acked >= ResumeAckStep {
+					break
+				}
+				se.qCond.Wait()
+			}
+			n := se.written
+			se.qMu.Unlock()
+			if err := sh.WriteFrame(FrameFlowAck, AckBody(n)); err != nil {
+				return
+			}
+			acked = n
+		}
+	}()
+
 	ended := false // the client said the flow is over
-	acked := upDone
 	var buf []byte
 loop:
 	for {
@@ -556,18 +595,13 @@ loop:
 		buf = body[:0]
 		switch typ {
 		case FrameData:
-			n, err := se.writeUp(gen, body)
-			if err != nil {
+			if _, err := se.writeUp(gen, body); err != nil {
 				if !errors.Is(err, errSessionGone) {
 					ended = true // the target is gone: nothing to come back to
 				}
 				break loop
 			}
 			ks.addUp(len(body))
-			if n-acked >= ResumeAckStep {
-				acked = n
-				sh.WriteFrame(FrameFlowAck, AckBody(n))
-			}
 		case FrameFlowAck:
 			if off, ok := ParseAck(body); ok {
 				se.ack(off)
@@ -589,7 +623,11 @@ loop:
 	se.mu.Lock()
 	se.cond.Broadcast()
 	se.mu.Unlock()
+	se.qMu.Lock()
+	se.qCond.Broadcast()
+	se.qMu.Unlock()
 	<-wdone
+	<-adone
 	if !ended {
 		se.detach(gen, s.resumeGrace(), s.resumeMaxKept(), s.resumeMaxBytes())
 	}
