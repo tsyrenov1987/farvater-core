@@ -29,6 +29,10 @@ type Labels struct {
 	Group       string `json:"group,omitempty"` // paths that come out at one address share a group
 	BudgetBytes int64  `json:"budget_bytes,omitempty"`
 	UDP         bool   `json:"udp,omitempty"`
+	// Door names the entry the path goes in at ("cdnv": CDNvideo), from a
+	// "#door=<name>" line: brain/gate.go lets plain vkturn paths in only while
+	// a CDNvideo path answers.
+	Door string `json:"door,omitempty"`
 }
 
 // Entry is one path of the catalogue.
@@ -192,6 +196,7 @@ func Parse(body []byte) (*Catalogue, error) {
 	white := false // so does a "#white" line: an entry allow-listed networks let through
 	exit := ""     // and a "#exit=<country>" line: where the path comes out, for the app to show
 	group := ""    // and a "#group=<name>" line: the paths that come out at one address
+	door := ""     // and a "#door=<name>" line: the entry the path goes in at
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if v, ok := strings.CutPrefix(line, "#net="); ok {
@@ -206,6 +211,10 @@ func Parse(body []byte) (*Catalogue, error) {
 			group = strings.TrimSpace(v)
 			continue
 		}
+		if v, ok := strings.CutPrefix(line, "#door="); ok {
+			door = strings.TrimSpace(v)
+			continue
+		}
 		if line == "#white" {
 			white = true
 			continue
@@ -213,8 +222,8 @@ func Parse(body []byte) (*Catalogue, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		lineNet, lineWhite, lineExit, lineGroup := net, white, exit, group
-		net, white, exit, group = "", false, "", ""
+		lineNet, lineWhite, lineExit, lineGroup, lineDoor := net, white, exit, group, door
+		net, white, exit, group, door = "", false, "", "", ""
 		s, err := wire.ParseURI(line)
 		if err != nil {
 			continue // unsupported scheme or malformed: skip, never fail the whole list
@@ -223,7 +232,7 @@ func Parse(body []byte) (*Catalogue, error) {
 		if seen[s.ID] > 1 {
 			s.ID = fmt.Sprintf("%s#%d", s.ID, seen[s.ID])
 		}
-		c.Paths = append(c.Paths, Entry{ID: s.ID, URI: line, Labels: Labels{Rail: s.Rail(), Net: lineNet, White: lineWhite, Exit: lineExit, Group: lineGroup, UDP: s.Kind == wire.KindHysteria2}, Spec: s})
+		c.Paths = append(c.Paths, Entry{ID: s.ID, URI: line, Labels: Labels{Rail: s.Rail(), Net: lineNet, White: lineWhite, Exit: lineExit, Group: lineGroup, Door: lineDoor, UDP: s.Kind == wire.KindHysteria2}, Spec: s})
 	}
 	if len(c.Paths) == 0 {
 		return nil, ErrNoPaths

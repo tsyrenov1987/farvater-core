@@ -17,6 +17,8 @@ type PathInfo struct {
 	Group string
 	White bool
 	Net   string
+	// Door: the entry the path goes in at, from the catalogue ("cdnv": CDNvideo).
+	Door string
 	// NotHTTP: the path's traffic looks like no HTTP (Hysteria 2 under
 	// Salamander noise). Such a path stays in the fan and takes flows on proven
 	// delivery, but never stands in for a failing one: a flow that fails is
@@ -229,7 +231,11 @@ func (b *Brain) available(now int64) []string {
 	// is the one meant to pass: a trip earned while the lists still held it
 	// back does not keep it out once they let it through.
 	white := b.Restricted()
+	gate := b.gated(now)
 	for _, p := range b.paths {
+		if gate[p.ID] {
+			continue
+		}
 		if !b.asleep[p.ID] && !b.Diag.Parked(p.ID, now) && (!b.Breaker.Tripped(p.ID, now) || white && p.White) {
 			out = append(out, p.ID)
 		}
@@ -238,6 +244,13 @@ func (b *Brain) available(now int64) []string {
 		// Never narrow to nothing: if the breaker and the freeze guard would
 		// silence the whole fleet, fall back to everything awake and let
 		// delivery measurement re-sort it. A rail is avoided, never removed.
+		for _, p := range b.paths {
+			if !b.asleep[p.ID] && !gate[p.ID] {
+				out = append(out, p.ID)
+			}
+		}
+	}
+	if len(out) == 0 {
 		for _, p := range b.paths {
 			if !b.asleep[p.ID] {
 				out = append(out, p.ID)
@@ -817,8 +830,9 @@ func (b *Brain) UDPOrder(now int64) []string {
 		return b.st[rest[i]].Mean() > b.st[rest[j]].Mean()
 	})
 	out = append(out, rest...)
+	gate := b.gated(now)
 	for _, p := range b.paths {
-		if !b.asleep[p.ID] && !contains(out, p.ID) {
+		if !b.asleep[p.ID] && !gate[p.ID] && !contains(out, p.ID) {
 			out = append(out, p.ID)
 		}
 	}
