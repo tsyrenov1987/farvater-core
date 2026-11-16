@@ -19,6 +19,16 @@ import (
 	"github.com/tsyrenov1987/farvater-core/vkturn"
 )
 
+// vkturn's relay sockets go through SocketControl like every other socket the
+// core opens (FV-011). SocketControl is read per socket: clients set it after
+// start-up.
+func init() {
+	vkturn.ListenPacket = func() (net.PacketConn, error) {
+		lc := net.ListenConfig{Control: SocketControl}
+		return lc.ListenPacket(context.Background(), "udp4", "0.0.0.0:0")
+	}
+}
+
 // A vkturn:// link is an ordinary path whose TCP connection rides VK's call
 // relays (TURN) to the node, where the relays are let through and the node is
 // not:

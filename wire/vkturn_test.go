@@ -2,7 +2,9 @@ package wire
 
 import (
 	"encoding/base64"
+	"errors"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -50,5 +52,32 @@ func TestParseVKTurnRejects(t *testing.T) {
 		if _, err := ParseURI(link); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// FV-011: a vkturn relay socket must pass through SocketControl (protect on
+// Android, interface pinning on the desktop), set after start-up.
+func TestVkturnSocketGoesThroughSocketControl(t *testing.T) {
+	old := SocketControl
+	t.Cleanup(func() { SocketControl = old })
+	var calls int
+	var net_ string
+	SocketControl = func(network, _ string, _ syscall.RawConn) error {
+		calls++
+		net_ = network
+		return nil
+	}
+	pc, err := vkturn.ListenPacket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc.Close()
+	if calls != 1 || net_ != "udp4" {
+		t.Fatalf("SocketControl calls=%d network=%q, want 1 udp4", calls, net_)
+	}
+	SocketControl = func(string, string, syscall.RawConn) error { return errors.New("refused") }
+	if pc, err := vkturn.ListenPacket(); err == nil {
+		pc.Close()
+		t.Fatal("a socket SocketControl refused was opened anyway")
 	}
 }

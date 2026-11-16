@@ -244,8 +244,16 @@ func (c *relayConn) fix(i int, now time.Time) {
 	}()
 }
 
+// ListenPacket opens a channel's UDP socket. wire replaces it with one that
+// applies wire.SocketControl, so the socket is protected on Android and pinned
+// to the physical interface on the desktop instead of looping into the tunnel
+// (FV-011); vkturn cannot import wire itself.
+var ListenPacket = func() (net.PacketConn, error) {
+	return net.ListenPacket("udp4", "0.0.0.0:0")
+}
+
 func openChannel(cr Creds, srv *net.UDPAddr, bits int) (*channel, error) {
-	pc, err := net.ListenPacket("udp4", "0.0.0.0:0")
+	pc, err := ListenPacket()
 	if err != nil {
 		return nil, err
 	}
