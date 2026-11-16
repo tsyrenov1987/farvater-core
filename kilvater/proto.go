@@ -322,7 +322,7 @@ const (
 // into a tag) and the reason is one of the Fail* constants. For a refused v1 or
 // malformed tag the Identity is zero and the reason empty.
 func (v *Verifier) VerifyDetail(tag, path string, now time.Time) (int, Identity, string) {
-	b, err := base64.RawURLEncoding.DecodeString(tag)
+	b, err := base64.RawURLEncoding.Strict().DecodeString(tag)
 	if err != nil {
 		return -1, Identity{}, ""
 	}

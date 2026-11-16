@@ -57,6 +57,10 @@ func main() {
 	resumeGrace := flag.Duration("resume-grace", kilvater.DefaultResumeGrace, "how long a TCP flow whose stream was lost waits for its client to come back on another stream; 0 turns resumable flows off")
 	resumeMaxBytes := flag.Int64("resume-max-bytes", kilvater.DefaultResumeMaxBytes, "stop keeping flows that lose their stream while this many bytes are buffered for clients")
 	resumeMaxKept := flag.Int64("resume-max-kept", kilvater.DefaultResumeMaxKept, "stop keeping flows that lose their stream while this many already wait for their client")
+	maxStreamsV1 := flag.Int64("max-streams-v1", 0, "cap the concurrent streams of all v1 keys together (they share one label); 0 is no limit")
+	bondMaxPerKey := flag.Int("bond-max-per-key", 0, "cap the bonds one key holds at once (with or without legs); 0 is no limit")
+	resumeMaxBytesPerKey := flag.Int64("resume-max-bytes-per-key", 0, "cap the target bytes held unconfirmed for one key over all its resumable flows; past it they wait for the client's confirmations; 0 is no limit")
+	resumeMaxKeptPerKey := flag.Int64("resume-max-kept-per-key", 0, "cap one key's flows waiting for their client after losing a stream; 0 is no limit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -128,10 +132,14 @@ func main() {
 		MaxBytesPerKey:   *maxBytesPerKey,
 		MaxStreamsPerKey: *maxStreamsPerKey,
 		MaxBytesWindow:   *maxBytesWindow,
+		MaxStreamsV1:     *maxStreamsV1,
+		BondMaxPerKey:    *bondMaxPerKey,
 
-		ResumeGrace:    *resumeGrace,
-		ResumeMaxBytes: *resumeMaxBytes,
-		ResumeMaxKept:  *resumeMaxKept,
+		ResumeGrace:          *resumeGrace,
+		ResumeMaxBytes:       *resumeMaxBytes,
+		ResumeMaxKept:        *resumeMaxKept,
+		ResumeMaxBytesPerKey: *resumeMaxBytesPerKey,
+		ResumeMaxKeptPerKey:  *resumeMaxKeptPerKey,
 	}
 	metrics.Resume = srv.ResumeStats
 	if srv.DenyDst, err = denyPrefixes(*denyDst); err != nil {
@@ -167,6 +175,7 @@ func main() {
 	if *maxBytesPerKey > 0 || *maxStreamsPerKey > 0 {
 		log.Printf("per-key limits: max_bytes=%d per %v, max_streams=%d", *maxBytesPerKey, *maxBytesWindow, *maxStreamsPerKey)
 	}
+	log.Printf("shared-resource caps: v1_streams=%d bonds_per_key=%d resume_bytes_per_key=%d resume_kept_per_key=%d", *maxStreamsV1, *bondMaxPerKey, *resumeMaxBytesPerKey, *resumeMaxKeptPerKey)
 	if *metricsAddr != "" {
 		startMetrics(*metricsAddr, metrics)
 	}

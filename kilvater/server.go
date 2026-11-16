@@ -50,6 +50,14 @@ type Server struct {
 	MaxBytesPerKey   int64
 	MaxStreamsPerKey int64
 	MaxBytesWindow   time.Duration
+	// MaxStreamsV1 caps the concurrent streams of all v1 keys together (they
+	// are one label); 0 is no limit. It keeps one shared key from taking every
+	// connection of the proxy in front (KL-11).
+	MaxStreamsV1 int64
+	// BondMaxPerKey caps the bonds one key holds at once, legs or not; past it
+	// the key's new bonds get CLOSE 2, as when the table is full. 0 is no
+	// limit, and then one key may take the whole table (KL-02).
+	BondMaxPerKey int
 
 	// DenyDst are addresses clients may reach only on the ports in SelfPorts:
 	// the server's own public addresses and those of its sister nodes. A
@@ -78,7 +86,15 @@ type Server struct {
 	ResumeWindow   int
 	ResumeMaxKept  int64
 	ResumeMaxBytes int64
-	sess           sessions
+	// ResumeMaxBytesPerKey caps the target bytes held unconfirmed for one key,
+	// over all its flows, attached or waiting: past it the key's flows stop
+	// reading their targets until the client confirms (TCP holds the targets
+	// back, nothing is lost). ResumeMaxKeptPerKey caps one key's flows that
+	// wait for their client; past it, its flow that loses a stream ends as
+	// without resumption. 0 is no limit for either (KL-03, KL-04).
+	ResumeMaxBytesPerKey int64
+	ResumeMaxKeptPerKey  int64
+	sess                 sessions
 
 	// Dial, if set, reaches the clients' TCP targets instead of the checked
 	// dialer (a test lab routing every name to its own site).
@@ -202,6 +218,8 @@ func (s *Server) admit(id Identity, now time.Time) (*keyStat, bool) {
 			return nil, false
 		}
 		maxStreams = s.MaxStreamsPerKey
+	} else {
+		maxStreams = s.MaxStreamsV1
 	}
 	return s.Metrics.openStream(id.Label(), maxStreams)
 }
@@ -287,7 +305,7 @@ func (s *Server) tcpSession(ctx context.Context, addr string, key sessKey, up io
 		WriteFrame(down, FrameClose, []byte{closeCode(err)})
 		return
 	}
-	se := s.sess.add(key, remote, s.resumeWindow())
+	se := s.sess.add(key, remote, s.resumeWindow(), s.ResumeMaxBytesPerKey)
 	gen, upDone, err := se.attach(0)
 	if err != nil {
 		se.close()

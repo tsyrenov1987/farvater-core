@@ -199,8 +199,32 @@ type sessions struct {
 	held atomic.Int64 // bytes buffered for clients, all sessions
 	kept atomic.Int64 // sessions waiting, with no stream, for a client to return
 
+	keys map[string]*keyUse // per key label, under mu
+
 	resumed, gone, lost atomic.Int64
 }
+
+// keyUse is what one key's sessions hold, for the per-key caps.
+type keyUse struct {
+	held atomic.Int64
+	kept atomic.Int64
+	n    int // sessions, under sessions.mu
+}
+
+// heldAdd and keptAdd count for the whole table and for the session's key.
+func (se *session) heldAdd(n int64) {
+	se.tab.held.Add(n)
+	se.use.held.Add(n)
+}
+
+func (se *session) keptAdd(n int64) {
+	se.tab.kept.Add(n)
+	se.use.kept.Add(n)
+}
+
+// keyBudgetWait is how often a flow held back by its key's budget looks again:
+// the confirmations that free the budget arrive on the key's other flows.
+var keyBudgetWait = 20 * time.Millisecond
 
 // session is one resumable TCP flow: the connection to the target, and the
 // bytes from it the client has not confirmed. It outlives the streams that
@@ -210,6 +234,8 @@ type session struct {
 	key    sessKey
 	remote net.Conn
 	window int
+	use    *keyUse
+	budget int64 // the key's ResumeMaxBytesPerKey; 0 is none
 
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -245,8 +271,8 @@ type session struct {
 	written uint64 // DATA bytes the target has taken; counts like up
 }
 
-func (t *sessions) add(key sessKey, remote net.Conn, window int) *session {
-	se := &session{tab: t, key: key, remote: remote, window: window}
+func (t *sessions) add(key sessKey, remote net.Conn, window int, budget int64) *session {
+	se := &session{tab: t, key: key, remote: remote, window: window, budget: budget}
 	se.cond = sync.NewCond(&se.mu)
 	se.qCond = sync.NewCond(&se.qMu)
 	se.qMax = 2*window + 256<<10
@@ -254,6 +280,14 @@ func (t *sessions) add(key sessKey, remote net.Conn, window int) *session {
 	if t.m == nil {
 		t.m = map[sessKey]*session{}
 	}
+	if t.keys == nil {
+		t.keys = map[string]*keyUse{}
+	}
+	if se.use = t.keys[key.label]; se.use == nil {
+		se.use = &keyUse{}
+		t.keys[key.label] = se.use
+	}
+	se.use.n++
 	old := t.m[key]
 	t.m[key] = se
 	t.mu.Unlock()
@@ -332,9 +366,17 @@ func (se *session) readRemote() {
 			se.cond.Wait()
 		}
 		closed := se.closed
+		// Past the key's budget a flow that already holds something waits
+		// for confirmations; one that holds nothing may still read, so the
+		// key's flows can never all stand still.
+		over := se.budget > 0 && se.down.Len() > 0 && se.use.held.Load() >= se.budget
 		se.mu.Unlock()
 		if closed {
 			return
+		}
+		if over {
+			time.Sleep(keyBudgetWait)
+			continue
 		}
 		n, err := se.remote.Read(p)
 		se.mu.Lock()
@@ -344,7 +386,7 @@ func (se *session) readRemote() {
 		}
 		if n > 0 {
 			se.down.Append(p[:n])
-			se.tab.held.Add(int64(n))
+			se.heldAdd(int64(n))
 		}
 		if err != nil {
 			se.downEOF = true
@@ -369,9 +411,9 @@ func (se *session) close() {
 		se.timer.Stop()
 	}
 	if !se.on && se.gen != 0 {
-		se.tab.kept.Add(-1)
+		se.keptAdd(-1)
 	}
-	se.tab.held.Add(-int64(se.down.Len()))
+	se.heldAdd(-int64(se.down.Len()))
 	se.down.Reset()
 	se.cond.Broadcast()
 	se.mu.Unlock()
@@ -384,6 +426,9 @@ func (se *session) close() {
 	se.tab.mu.Lock()
 	if se.tab.m[se.key] == se {
 		delete(se.tab.m, se.key)
+	}
+	if se.use.n--; se.use.n == 0 && se.tab.keys[se.key.label] == se.use {
+		delete(se.tab.keys, se.key.label)
 	}
 	se.tab.mu.Unlock()
 }
@@ -410,7 +455,7 @@ func (se *session) attach(from uint64) (gen, up uint64, err error) {
 		se.timer = nil
 	}
 	if !se.on && se.gen != 0 {
-		se.tab.kept.Add(-1)
+		se.keptAdd(-1)
 	}
 	se.gen++
 	se.on = true
@@ -422,7 +467,7 @@ func (se *session) attach(from uint64) (gen, up uint64, err error) {
 func (se *session) ackLocked(off uint64) {
 	before := se.down.Len()
 	if se.down.Ack(off) {
-		se.tab.held.Add(int64(se.down.Len() - before))
+		se.heldAdd(int64(se.down.Len() - before))
 		se.cond.Broadcast()
 	}
 }
@@ -464,20 +509,21 @@ func (se *session) closeUp(gen uint64) {
 // grace for the client to come back on another stream, unless the server
 // already keeps as much as it may, in which case the flow ends as it would
 // have without resumption.
-func (se *session) detach(gen uint64, grace time.Duration, maxKept, maxBytes int64) {
+func (se *session) detach(gen uint64, grace time.Duration, maxKept, maxBytes, maxKeptPerKey int64) {
 	se.mu.Lock()
 	if se.closed || se.gen != gen {
 		se.mu.Unlock()
 		return
 	}
-	if grace <= 0 || se.tab.kept.Load() >= maxKept || se.tab.held.Load() >= maxBytes {
+	if grace <= 0 || se.tab.kept.Load() >= maxKept || se.tab.held.Load() >= maxBytes ||
+		(maxKeptPerKey > 0 && se.use.kept.Load() >= maxKeptPerKey) {
 		se.mu.Unlock()
 		se.tab.lost.Add(1)
 		se.close()
 		return
 	}
 	se.on = false
-	se.tab.kept.Add(1)
+	se.keptAdd(1)
 	se.timer = time.AfterFunc(grace, func() {
 		se.mu.Lock()
 		stale := se.closed || se.on || se.gen != gen
@@ -499,7 +545,7 @@ func (s *Server) serve(se *session, gen, sent uint64, upDone uint64, up io.Reade
 	// The first frame tells the client the flow is resumable and, on a
 	// resumed stream, where to send from.
 	if err := writeAckPad(down, upDone); err != nil {
-		se.detach(gen, s.resumeGrace(), s.resumeMaxKept(), s.resumeMaxBytes())
+		se.detach(gen, s.resumeGrace(), s.resumeMaxKept(), s.resumeMaxBytes(), s.ResumeMaxKeptPerKey)
 		return
 	}
 
@@ -629,7 +675,7 @@ loop:
 	<-wdone
 	<-adone
 	if !ended {
-		se.detach(gen, s.resumeGrace(), s.resumeMaxKept(), s.resumeMaxBytes())
+		se.detach(gen, s.resumeGrace(), s.resumeMaxKept(), s.resumeMaxBytes(), s.ResumeMaxKeptPerKey)
 	}
 }
 

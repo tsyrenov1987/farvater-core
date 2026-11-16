@@ -466,10 +466,17 @@ func (b *Bond) recv(l *bondLeg, off uint64, data []byte) {
 	if end <= b.rcvNext || len(data) == 0 {
 		return // a copy of what we have
 	}
-	if off < b.rcvNext || end > b.read+uint64(bondWindow)+uint64(bondChunk) {
+	if end < off || off < b.rcvNext || end > b.read+uint64(bondWindow)+uint64(bondChunk) {
 		return // not on a chunk boundary we know, or past the window: drop
 	}
 	if _, dup := b.ooo[off]; dup {
+		return
+	}
+	// An honest sender cuts the flow into chunks that do not overlap, so what
+	// waits out of order never passes the window. Chunks at offsets one byte
+	// apart would each be kept whole (KL-01): drop what would pass it, the
+	// sender sends it again.
+	if b.oooBytes+len(data) > bondWindow+bondChunk {
 		return
 	}
 	b.ooo[off] = append([]byte(nil), data...)

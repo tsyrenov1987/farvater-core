@@ -309,7 +309,7 @@ func TestSessionWriteUpDoesNotWaitOnTarget(t *testing.T) {
 	srvEnd, target := net.Pipe() // no buffer: an unread write blocks
 	defer target.Close()
 	var tab sessions
-	se := tab.add(sessKey{label: "t"}, srvEnd, ResumeWindow)
+	se := tab.add(sessKey{label: "t"}, srvEnd, ResumeWindow, 0)
 	defer se.close()
 	gen, _, err := se.attach(0)
 	if err != nil {
@@ -357,7 +357,7 @@ func TestSessionQueueDroppedOnClose(t *testing.T) {
 	srvEnd, target := net.Pipe()
 	defer target.Close()
 	var tab sessions
-	se := tab.add(sessKey{label: "t"}, srvEnd, ResumeWindow)
+	se := tab.add(sessKey{label: "t"}, srvEnd, ResumeWindow, 0)
 	gen, _, _ := se.attach(0)
 	if _, err := se.writeUp(gen, make([]byte, 64<<10)); err != nil {
 		t.Fatal(err)

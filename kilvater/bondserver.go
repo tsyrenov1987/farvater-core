@@ -16,6 +16,7 @@ var bondIdle = 30 * time.Second
 const bondMax = 4096
 
 type srvBond struct {
+	label string
 	b     *Bond
 	ready chan struct{} // closed once the target is dialed (or failed)
 	ok    bool
@@ -24,11 +25,24 @@ type srvBond struct {
 }
 
 type bondTable struct {
-	mu sync.Mutex
-	m  map[string]*srvBond
+	mu     sync.Mutex
+	m      map[string]*srvBond
+	perKey map[string]int // bonds in m by key label
 }
 
-var bonds = &bondTable{m: map[string]*srvBond{}}
+var bonds = &bondTable{m: map[string]*srvBond{}, perKey: map[string]int{}}
+
+// drop removes sb from the table if it is still there; under mu.
+func (t *bondTable) drop(key string, sb *srvBond) bool {
+	if t.m[key] != sb {
+		return false
+	}
+	delete(t.m, key)
+	if t.perKey[sb.label]--; t.perKey[sb.label] <= 0 {
+		delete(t.perKey, sb.label)
+	}
+	return true
+}
 
 type legRW struct {
 	io.Reader
@@ -57,13 +71,15 @@ func (s *Server) join(label string, body []byte, up io.ReadCloser, down io.Write
 	sb := bonds.m[key]
 	creator := false
 	if sb == nil {
-		if flags&JoinCreate == 0 || len(bonds.m) >= bondMax {
+		if flags&JoinCreate == 0 || len(bonds.m) >= bondMax ||
+			(s.BondMaxPerKey > 0 && bonds.perKey[label] >= s.BondMaxPerKey) {
 			bonds.mu.Unlock()
 			WriteFrame(down, FrameClose, []byte{2}) // no such bond
 			return
 		}
-		sb = &srvBond{b: NewBond(), ready: make(chan struct{})}
+		sb = &srvBond{label: label, b: NewBond(), ready: make(chan struct{})}
 		bonds.m[key] = sb
+		bonds.perKey[label]++
 		creator = true
 	}
 	sb.legs++
@@ -79,10 +95,7 @@ func (s *Server) join(label string, body []byte, up io.ReadCloser, down io.Write
 		if sb.legs == 0 && bonds.m[key] == sb {
 			sb.idle = time.AfterFunc(bondIdle, func() {
 				bonds.mu.Lock()
-				drop := sb.legs == 0 && bonds.m[key] == sb
-				if drop {
-					delete(bonds.m, key)
-				}
+				drop := sb.legs == 0 && bonds.drop(key, sb)
 				bonds.mu.Unlock()
 				if drop {
 					sb.b.Abort(1, errBondClosed)
@@ -112,9 +125,7 @@ func (s *Server) join(label string, body []byte, up io.ReadCloser, down io.Write
 func (s *Server) bondTarget(key string, sb *srvBond, addr string, ks *keyStat) {
 	defer func() {
 		bonds.mu.Lock()
-		if bonds.m[key] == sb {
-			delete(bonds.m, key)
-		}
+		bonds.drop(key, sb)
 		bonds.mu.Unlock()
 	}()
 	dial := s.dialer().DialContext
