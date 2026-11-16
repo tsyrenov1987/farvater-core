@@ -406,14 +406,22 @@ func (c *relayConn) pick() *channel {
 	return best
 }
 
+// WriteTo sends one KCP datagram. A send that fails is a lost datagram, which
+// KCP resends, never an error: kcp keeps the first write error it gets and
+// fails every later write with it, so one blink of the network (a phone
+// changing networks, sendto refused) would kill the session for good while
+// heal brings fresh channels up under it. send counts the failure, and the
+// channel is retired at deadAfter; once nothing is heard for giveUp the
+// session closes as before.
 func (c *relayConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+	if c.closed() {
+		return 0, net.ErrClosed
+	}
 	ch := c.pick()
 	if ch == nil {
 		return 0, net.ErrClosed
 	}
-	if err := c.send(ch, p); err != nil {
-		return 0, err
-	}
+	c.send(ch, p)
 	return len(p), nil
 }
 
