@@ -21,6 +21,7 @@ type channel struct {
 	client   *turn.Client
 	relay    net.PacketConn
 	st       *Stream
+	wmu      sync.Mutex // one sender at a time: st's seq/ts and the wire order (FV-012)
 	pace     *pacer
 	sent     atomic.Int64
 	recv     atomic.Int64
@@ -319,10 +320,13 @@ func (c *relayConn) Stats() (sent, recv []int64) {
 }
 
 func (c *relayConn) send(ch *channel, payload []byte) error {
-	pkt := c.sealer.Seal(make([]byte, 0, len(payload)+Overhead), ch.st, c.sid, payload)
-	ch.pace.take(len(pkt))
-	ch.sent.Add(int64(len(pkt)))
+	n := len(payload) + Overhead
+	ch.pace.take(n) // outside wmu: a paced sender must not hold up the others' lock
+	ch.wmu.Lock()
+	pkt := c.sealer.Seal(make([]byte, 0, n), ch.st, c.sid, payload)
 	_, err := ch.relay.WriteTo(pkt, c.server)
+	ch.wmu.Unlock()
+	ch.sent.Add(int64(len(pkt)))
 	if err == nil {
 		ch.errs.Store(0)
 	} else if ch.errs.Add(1) >= deadAfter {
