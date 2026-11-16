@@ -39,8 +39,18 @@ func isGREASE(v uint16) bool { return v&0x0f0f == 0x0a0a && v>>8 == v&0xff }
 
 // browserTestServer is an HTTPS server for name (h2 or http/1.1 only) and a
 // BrowserTransport that reaches it at that name.
+// forgetTLSSession drops what the process-wide tlsSessions cache holds for
+// name, before the test and after it. A test's server is new on every run,
+// so a session an earlier run (-count=N) left under the same name is one it
+// cannot resume, and the first ClientHello would offer it (FV-008).
+func forgetTLSSession(t *testing.T, name string) {
+	tlsSessions.Put(name, nil)
+	t.Cleanup(func() { tlsSessions.Put(name, nil) })
+}
+
 func browserTestServer(t *testing.T, name string, h2 bool) (*BrowserTransport, *helloLog) {
 	t.Helper()
+	forgetTLSSession(t, name)
 	cert := selfSignedCert(t, name)
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
@@ -164,6 +174,7 @@ func TestPathTLSResumes(t *testing.T) {
 		for _, http11 := range []bool{false, true} {
 			t.Run(fp+"/http11="+strconv.FormatBool(http11), func(t *testing.T) {
 				name := fp + strconv.FormatBool(http11) + ".path.test"
+				forgetTLSSession(t, name)
 				cert := selfSignedCert(t, name)
 				log := &helloLog{}
 				resumed := make(chan bool, 4)
