@@ -219,12 +219,15 @@ func (s *bondSession) Close() error {
 // drop (a route that blinks comes back into the flow), the pause doubling up to
 // bondLegRetryMax, bondLegRejoins times in a row, or bondLegRejoinsAlone when no
 // other leg is carrying (the server may have lost the bond: the flow should
-// fail, not hang).
+// fail, not hang). bondLegRejoins = 12 keeps a leg trying for ~79 s
+// (1+2+4+8×9): a VK TURN leg cut for even 10 s only comes back once vkturn
+// gives its silent tunnel up (giveUp 40 s) and opens a fresh one; with 6
+// (~31 s) the leg let go just before that (measured from NSK 16.11).
 const (
 	bondLegRetry        = time.Second
 	bondLegRetryMax     = 8 * time.Second
 	bondLegTries        = 4
-	bondLegRejoins      = 6
+	bondLegRejoins      = 12
 	bondLegRejoinsAlone = 2
 )
 
