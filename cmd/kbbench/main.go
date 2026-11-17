@@ -15,8 +15,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/tsyrenov1987/farvater-core/wire"
@@ -153,6 +155,8 @@ func main() {
 	pause := flag.Duration("pause", 10*time.Second, "pause between runs")
 	timeout := flag.Duration("timeout", 180*time.Second, "one run's limit")
 	host := flag.String("host", "speed.cloudflare.com", "the measuring host (https)")
+	quotaMax := flag.Int("quota", 0, "instead of a run: open up to this many allocations per TURN credential and say where the relay stops")
+	quotaPool := flag.String("pool", "", "with -quota: a directory of pool q*.json accounts to ask instead of the link's")
 	flag.Parse()
 	raw := *link
 	if strings.HasPrefix(raw, "@") {
@@ -168,19 +172,31 @@ func main() {
 		fmt.Fprintln(os.Stderr, "link:", err)
 		os.Exit(2)
 	}
+	if *quotaMax > 0 {
+		quota(spec, *quotaMax, time.Second, *quotaPool)
+		return
+	}
 	w, err := wire.Build(spec)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build:", err)
 		os.Exit(2)
 	}
-	defer w.Close()
+	// An interrupt ends the run in hand, and the relays are let go on the way out.
+	root, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	enc := json.NewEncoder(os.Stdout)
-	for i := 1; i <= *n; i++ {
-		enc.Encode(one(w, i, *mode, *host, *size, *timeout))
+	for i := 1; i <= *n && root.Err() == nil; i++ {
+		enc.Encode(one(root, w, i, *mode, *host, *size, *timeout))
 		if i < *n {
-			time.Sleep(*pause)
+			select {
+			case <-time.After(*pause):
+			case <-root.Done():
+			}
 		}
 	}
+	w.Close()
+	wire.CloseTURNTunnels()
+	time.Sleep(300 * time.Millisecond) // the relays' answers to the release
 }
 
 func legs(w wire.Wire) map[string]wire.BondLegStat {
@@ -195,9 +211,9 @@ func legs(w wire.Wire) map[string]wire.BondLegStat {
 	return out
 }
 
-func one(w wire.Wire, run int, mode, host string, size int64, limit time.Duration) (res result) {
+func one(root context.Context, w wire.Wire, run int, mode, host string, size int64, limit time.Duration) (res result) {
 	res.Run = run
-	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	ctx, cancel := context.WithTimeout(root, limit)
 	defer cancel()
 	before := legs(w)
 	g := &gaps{start: time.Now(), stallMin: time.Second}
