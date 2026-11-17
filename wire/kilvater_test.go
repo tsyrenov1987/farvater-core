@@ -170,6 +170,27 @@ func TestKilvaterSkewedClockConnects(t *testing.T) {
 	}
 }
 
+// KL-13: a page's Date moves the tag's clock by at most maxDateSkew, so a tag
+// cannot be ordered for next month; 11 h either way still connects.
+func TestKilvaterDateSkewBounded(t *testing.T) {
+	if got := clampSkew(30 * 24 * time.Hour); got != maxDateSkew {
+		t.Fatalf("clamp +30d = %v", got)
+	}
+	if got := clampSkew(-30 * 24 * time.Hour); got != -maxDateSkew {
+		t.Fatalf("clamp -30d = %v", got)
+	}
+	for _, skew := range []time.Duration{11 * time.Hour, -11 * time.Hour} {
+		key, hexKey := kilTestKey(t)
+		w, err := newKilWire(kilTestSpec(hexKey), kilServerDial(t, key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.now = func() time.Time { return time.Now().Add(skew) }
+		flowEchoOver(t, w)
+		w.Close()
+	}
+}
+
 // tcpPair is a connected loopback TCP pair.
 func tcpPair(t *testing.T) (net.Conn, net.Conn) {
 	t.Helper()

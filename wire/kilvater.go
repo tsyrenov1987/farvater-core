@@ -140,9 +140,20 @@ func (w *kilWire) authority() string {
 	return w.spec.ServerSNI()
 }
 
+// maxDateSkew bounds how far the page's Date may move our clock (KL-13): whoever
+// serves the page would otherwise pick the time the tag is minted for, and a
+// tag minted for next month is good next month without the key. A phone whose
+// clock is off by more than this cannot use the kilvater rail; the other rails
+// of the fan are untouched.
+const maxDateSkew = 12 * time.Hour
+
+func clampSkew(d time.Duration) time.Duration {
+	return max(-maxDateSkew, min(maxDateSkew, d))
+}
+
 // serverNow is the server's clock as the last page fetched told it.
 func (w *kilWire) serverNow() time.Time {
-	return w.now().Add(time.Duration(w.skew.Load()))
+	return w.now().Add(clampSkew(time.Duration(w.skew.Load())))
 }
 
 // tag makes the request tag: v2 (with the key id, verified in O(1)) when the
@@ -232,7 +243,7 @@ func (w *kilWire) warm(ctx context.Context, cc *http2.ClientConn) {
 	rtt := time.Since(start)
 	defer resp.Body.Close()
 	if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
-		w.skew.Store(int64(d.Sub(w.now())))
+		w.skew.Store(int64(clampSkew(d.Sub(w.now()))))
 	}
 	var assets []pageAsset
 	if resp.StatusCode == http.StatusNotModified {
