@@ -182,7 +182,7 @@ func main() {
 	flag.Parse()
 	if *old {
 		vkturn.Share, vkturn.Window, vkturn.Resend = 0, 1024, [4]int{1, 10, 2, 1}
-		vkturn.KeepEarly = true
+		kcp.NoEarlyRetransmit = false
 	}
 	raw := *link
 	if strings.HasPrefix(raw, "@") {

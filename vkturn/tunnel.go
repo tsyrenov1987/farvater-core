@@ -128,11 +128,9 @@ func (c *shaped) wait(n int) {
 // both are off, and the timeout is the slow one (from 100 ms, doubling).
 var Resend = [4]int{0, 10, 0, 1}
 
-// KeepEarly leaves the early retransmit on (the bench's "before").
-var KeepEarly bool
+func init() { kcp.NoEarlyRetransmit = true }
 
 func tuneKCP(s *kcp.UDPSession) {
-	kcp.NoEarlyRetransmit = !KeepEarly
 	s.SetNoDelay(Resend[0], Resend[1], Resend[2], Resend[3])
 	s.SetWindowSize(Window, Window)
 	s.SetMtu(mtu)
