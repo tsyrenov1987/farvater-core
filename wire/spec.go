@@ -77,6 +77,11 @@ type PathSpec struct {
 	// id); empty, it sends v1 tags. The link's key is the derived key.
 	KeyID string
 
+	// TagV3, from the link's "tv=3", makes a client with a key id send v3 tags,
+	// whose MAC also covers the :authority (audit KL-08). Only a server that
+	// knows v3 takes them, so the link turns it on once the node is updated.
+	TagV3 bool
+
 	// TURN, set, carries the path's TCP connection through VK's call relays
 	// to the node instead of dialing Host:Port (a vkturn:// link; see vkturn.go).
 	TURN *TURNSpec
@@ -224,6 +229,7 @@ func ParseURI(raw string) (PathSpec, error) {
 		spec.Fingerprint = first(q.Get("fp"), "chrome")
 		spec.Pad = q.Get("pad")
 		spec.KeyID = q.Get("kid")
+		spec.TagV3 = q.Get("tv") == "3"
 		spec.Path = u.Path
 		if spec.Path == "" || spec.Path == "/" {
 			spec.Path = "/connect"

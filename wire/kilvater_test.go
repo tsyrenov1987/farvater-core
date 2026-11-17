@@ -3,6 +3,7 @@ package wire
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -386,4 +387,49 @@ func TestKilvaterH2MatchesChrome(t *testing.T) {
 		p, _ := h2fpHeader(heads[0], ":path")
 		t.Errorf("first request %s; a browser opens a connection with the page", p)
 	}
+}
+
+// KL-08 (2): a link with tv=3 sends v3 tags bound to its :authority. Behind
+// nginx grpc_pass kilvaterd sees the upstream as Host, so the node lists its
+// cover names; the tunnel runs end to end.
+func TestKilvaterV3Flow(t *testing.T) {
+	var fleet kilvater.Key
+	rand.Read(fleet[:])
+	node := kilvater.NodeMaster(fleet, "de3")
+	id := kilvater.KeyIDFor(fleet, []byte("e2e"))
+	k := kilvater.DeriveKey(node, id)
+
+	link := "kilvater://" + hex.EncodeToString(k[:]) + "@203.0.113.7:8080?sni=files.example.app&fp=chrome&path=%2Fconnect&kid=" + id.String() + "&tv=3#v3"
+	spec, err := ParseURI(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spec.TagV3 {
+		t.Fatal("tv=3 not parsed")
+	}
+	w0 := &kilWire{spec: spec, key: k, keyID: &id, now: time.Now}
+	if b, _ := base64.RawURLEncoding.DecodeString(w0.tag("/connect")); len(b) == 0 || b[0] != 3 {
+		t.Fatalf("tag version %v, want 3", b[:1])
+	}
+
+	srv := &kilvater.Server{
+		Verifier: kilvater.NewVerifierConfig(kilvater.VerifierConfig{Master: &fleet, Masters: []kilvater.Key{node},
+			Authorities: []string{"files.example.app"}}),
+		Decoy: http.HandlerFunc(kilDecoy), AllowPrivate: true}
+	asNginx := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		r.Host = "127.0.0.1:8081" // what grpc_pass sends without grpc_set_header Host
+		srv.ServeHTTP(rw, r)
+	})
+	dial := func(ctx context.Context) (net.Conn, error) {
+		c, s := net.Pipe()
+		t.Cleanup(func() { s.Close() })
+		go (&http2.Server{}).ServeConn(s, &http2.ServeConnOpts{Handler: asNginx})
+		return c, nil
+	}
+	w, err := newKilWire(spec, dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	flowEchoOver(t, w)
 }

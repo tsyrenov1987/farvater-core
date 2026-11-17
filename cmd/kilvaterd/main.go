@@ -35,6 +35,7 @@ func main() {
 	masterFile := flag.String("master", "", "master key file enabling v2 derived keys: one 64-hex master per line, '#' comments, each accepted (a node's own master from -nodemaster, and the fleet master while clients move over); empty disables v2")
 	revokedFile := flag.String("revoked", "", "revoked v2 key ids, one 16-hex line each, '#' comments (reloaded on SIGHUP)")
 	allowedFile := flag.String("allowed", "", "the only v2 key ids accepted, one 16-hex line each, '#' comments (reloaded on SIGHUP); while the file does not exist every id a master derives is accepted")
+	authorities := flag.String("authorities", "", "comma-separated names this node serves (its cover sites): a v3 tag is accepted when made for one of them or for the request's Host (behind nginx grpc_pass the Host is the upstream unless grpc_set_header Host $host is set); v2 tags are not affected")
 	decoyDir := flag.String("decoy", "/var/www/html", "static files served to non-tunnel visitors")
 	acmeDomain := flag.String("acme", "", "domain to get a Let's Encrypt certificate for (TLS-ALPN-01); empty uses -cert/-key")
 	acmeCache := flag.String("acme-cache", "/var/lib/kilvaterd/acme", "directory where autocert stores certificates")
@@ -109,6 +110,7 @@ func main() {
 	}
 
 	cfg, err := loadVerifierConfig(*keysFile, *masterFile, *revokedFile, *allowedFile)
+	cfg.Authorities = splitList(*authorities)
 	if err != nil {
 		log.Fatalf("keys: %v", err)
 	}
@@ -184,7 +186,9 @@ func main() {
 	// revocation takes effect for the next authentication and never cuts an
 	// open tunnel.
 	installReload(srv.Verifier, func() (kilvater.VerifierConfig, error) {
-		return loadVerifierConfig(*keysFile, *masterFile, *revokedFile, *allowedFile)
+		c, err := loadVerifierConfig(*keysFile, *masterFile, *revokedFile, *allowedFile)
+		c.Authorities = splitList(*authorities)
+		return c, err
 	})
 
 	httpSrv := &http.Server{
@@ -532,4 +536,15 @@ func parsePorts(list string) ([]uint16, error) {
 		out = append(out, uint16(n))
 	}
 	return out, nil
+}
+
+// splitList splits a comma-separated flag into its non-empty, trimmed parts.
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -177,6 +178,7 @@ type keySet struct {
 	masters []Key          // masters a v2 key may be derived from (none disables v2)
 	revoked map[KeyID]bool // revoked v2 key ids
 	allowed map[KeyID]bool // the only v2 key ids accepted; nil accepts any
+	names   []string       // the node's own names a v3 tag may be made for
 }
 
 // Verifier checks tags against its key material and refuses a tag seen before.
@@ -219,6 +221,11 @@ type VerifierConfig struct {
 	// anyone having to remember the id to revoke. v1 keys are not affected.
 	Allowed   []KeyID
 	AllowList bool
+	// Authorities are the names this node serves (its cover sites). A v3 tag
+	// is accepted when its MAC covers one of them or the request's own Host.
+	// The Host alone is not enough behind nginx grpc_pass, which rewrites
+	// :authority to the upstream address unless grpc_set_header Host is set.
+	Authorities []string
 }
 
 // NewVerifierConfig builds a verifier from full key material (v1 keys, an
@@ -249,7 +256,13 @@ func (v *Verifier) Reload(cfg VerifierConfig) {
 			allowed[id] = true
 		}
 	}
-	v.set.Store(&keySet{keys: cfg.Keys, masters: masters, revoked: rev, allowed: allowed})
+	var names []string
+	for _, a := range cfg.Authorities {
+		if a = NormAuthority(a); a != "" && !slices.Contains(names, a) {
+			names = append(names, a)
+		}
+	}
+	v.set.Store(&keySet{keys: cfg.Keys, masters: masters, revoked: rev, allowed: allowed, names: names})
 }
 
 // Identity names the key a tag authenticated as, for per-key accounting and
@@ -322,6 +335,13 @@ const (
 // into a tag) and the reason is one of the Fail* constants. For a refused v1 or
 // malformed tag the Identity is zero and the reason empty.
 func (v *Verifier) VerifyDetail(tag, path string, now time.Time) (int, Identity, string) {
+	return v.VerifyDetailHost(tag, "", path, now)
+}
+
+// VerifyDetailHost is VerifyDetail for a request sent to host (its Host or
+// :authority as the server saw it, "" if unknown). host matters only to a v3
+// tag, which is accepted for host or for one of the configured Authorities.
+func (v *Verifier) VerifyDetailHost(tag, host, path string, now time.Time) (int, Identity, string) {
 	b, err := base64.RawURLEncoding.Strict().DecodeString(tag)
 	if err != nil {
 		return -1, Identity{}, ""
@@ -332,7 +352,22 @@ func (v *Verifier) VerifyDetail(tag, path string, now time.Time) (int, Identity,
 		n, id := v.verifyV1(set, b, path, now)
 		return n, id, ""
 	case len(b) == tagV2Size && b[0] == tagVersion2:
-		return v.verifyV2(set, b, path, now)
+		return v.verifyV2(set, b, path, now, func(k Key, id KeyID, ts, nonce, tagMAC []byte) bool {
+			return hmac.Equal(macV2(k, id, ts, nonce, path), tagMAC)
+		})
+	case len(b) == tagV2Size && b[0] == tagVersion3:
+		names := set.names
+		if h := NormAuthority(host); h != "" && !slices.Contains(names, h) {
+			names = append(slices.Clip(names), h)
+		}
+		return v.verifyV2(set, b, path, now, func(k Key, id KeyID, ts, nonce, tagMAC []byte) bool {
+			for _, a := range names {
+				if hmac.Equal(macV3(k, id, ts, nonce, a, path), tagMAC) {
+					return true
+				}
+			}
+			return false
+		})
 	default:
 		return -1, Identity{}, ""
 	}
@@ -358,7 +393,9 @@ func (v *Verifier) verifyV1(set *keySet, b []byte, path string, now time.Time) (
 	return idx, Identity{Index: idx}
 }
 
-func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (int, Identity, string) {
+// verifyV2 checks a v2 or v3 tag; macOK says whether the MAC is right for a
+// derived key (the two versions differ only in what the MAC covers).
+func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time, macOK func(k Key, id KeyID, ts, nonce, tagMAC []byte) bool) (int, Identity, string) {
 	var id KeyID
 	copy(id[:], b[1:1+KeyIDSize])
 	claimed := Identity{V2: true, KeyID: id}
@@ -380,7 +417,7 @@ func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (
 	tagMAC := b[off+16:]
 	hit := -1
 	for i, m := range set.masters {
-		if hmac.Equal(macV2(DeriveKey(m, id), id, b[off:off+8], b[off+8:off+16], path), tagMAC) {
+		if macOK(DeriveKey(m, id), id, b[off:off+8], b[off+8:off+16], tagMAC) {
 			hit = i
 			break
 		}

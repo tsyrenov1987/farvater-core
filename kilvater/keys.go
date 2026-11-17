@@ -9,6 +9,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"net"
+	"strings"
 	"time"
 )
 
@@ -33,6 +35,10 @@ func (id KeyID) String() string { return hex.EncodeToString(id[:]) }
 
 const (
 	tagVersion2 = 2
+	// tagVersion3 is a v2 tag whose MAC also covers the authority (the host the
+	// client addressed), so a tag is good only for the name it was made for
+	// (audit KL-08). Same layout and size as v2.
+	tagVersion3 = 3
 	// tagV2Size: version(1) + keyID(8) + unix seconds(8) + nonce(8) + MAC(16).
 	tagV2Size = 1 + KeyIDSize + 8 + 8 + 16
 
@@ -40,6 +46,7 @@ const (
 	kidInfo    = "kilvater/kid\x00"  // HMAC prefix for a key id
 	nodeInfo   = "kilvater/node\x00" // HMAC prefix for a node master
 	macV2Label = "kilvater/2\x00"    // domain of a v2 tag MAC
+	macV3Label = "kilvater/3\x00"    // domain of a v3 tag MAC
 )
 
 // DeriveKey computes a client key from the master and a key id:
@@ -128,4 +135,41 @@ func ParseKeyID(s string) (KeyID, error) {
 	}
 	copy(id[:], b)
 	return id, nil
+}
+
+// NormAuthority is an authority as a v3 tag MAC covers it: the host without a
+// port or a trailing dot, lower case. "Files.Example.app:8080" and
+// "files.example.app" are the same authority.
+func NormAuthority(a string) string {
+	if h, _, err := net.SplitHostPort(a); err == nil {
+		a = h
+	}
+	return strings.ToLower(strings.TrimSuffix(a, "."))
+}
+
+func macV3(k Key, id KeyID, ts, nonce []byte, authority, path string) []byte {
+	m := hmac.New(sha256.New, k[:])
+	m.Write([]byte(macV3Label))
+	m.Write(id[:])
+	m.Write(ts)
+	m.Write(nonce)
+	m.Write([]byte(NormAuthority(authority)))
+	m.Write([]byte{0})
+	m.Write([]byte(path))
+	return m.Sum(nil)[:16]
+}
+
+// NewTagV3 makes a v3 request tag: a v2 tag whose MAC also covers authority,
+// the :authority the request is sent with. A server takes it only for one of
+// its own names, so a tag seen on the way to one cover site is no good at
+// another site under the same master.
+func NewTagV3(id KeyID, k Key, authority, path string, now time.Time) string {
+	b := make([]byte, tagV2Size)
+	b[0] = tagVersion3
+	copy(b[1:1+KeyIDSize], id[:])
+	off := 1 + KeyIDSize
+	binary.BigEndian.PutUint64(b[off:off+8], uint64(now.Unix()))
+	rand.Read(b[off+8 : off+16])
+	copy(b[off+16:], macV3(k, id, b[off:off+8], b[off+8:off+16], authority, path))
+	return base64.RawURLEncoding.EncodeToString(b)
 }

@@ -221,7 +221,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.Decoy.ServeHTTP(w, r) // an ordinary visitor, no tag at all
 		return
 	}
-	n, id, why := s.Verifier.VerifyDetail(c.Value, r.URL.Path, time.Now())
+	n, id, why := s.Verifier.VerifyDetailHost(c.Value, r.Host, r.URL.Path, time.Now())
 	if n < 0 {
 		s.Metrics.authFailKey(id, why) // a tag cookie was present but did not verify
 		s.Decoy.ServeHTTP(w, r)

@@ -281,6 +281,15 @@ dead. Only TCP bonds: UDP takes the first leg's plain stream.
     sees the subscriber string; the issuer keeps the id-to-subscriber map.
   - `key = HKDF-SHA256(secret = master, salt = "", info = "kilvater/key\0" || keyID, length = 32)`.
   - The client is given `key` and `keyID`; the server, holding `master`, re-derives `key` from `keyID` alone.
+- **v3 tags (bound to the site).** A v2 tag's MAC covers the key id, time, nonce and path, not the host, so a
+  tag seen where TLS ends before the node is good on every process holding the same master within its window
+  (audit KL-08). A v3 tag has the v2 layout and size with version byte `3`, and its MAC is
+  `HMAC(key, "kilvater/3\0" || keyID || ts || nonce || authority || 0x00 || path)[0:16]`, where `authority` is
+  the request's `:authority` without the port, lower case. The server accepts it only for one of its own
+  names (`-authorities`, comma-separated) or the Host it saw; behind nginx `grpc_pass` the Host is the upstream
+  address unless `grpc_set_header Host $host` is set, so list the names. A client sends v3 only when the link
+  says `tv=3`, because an older server refuses version 3: update the node first, then add `tv=3` to its links.
+  v2 tags stay accepted.
 - **Pinpoint revocation.** A v2 key id on the revocation list is refused even though it still derives; one
   client is cut without touching the master or anyone else. The server reloads its keys, master and revocation
   list on `SIGHUP`, so a revocation takes effect at once and never cuts an open tunnel (it only gates new ones).

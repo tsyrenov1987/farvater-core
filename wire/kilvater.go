@@ -157,8 +157,12 @@ func (w *kilWire) serverNow() time.Time {
 }
 
 // tag makes the request tag: v2 (with the key id, verified in O(1)) when the
-// link carried a key id, else v1.
+// link carried a key id, v3 (v2 bound to the :authority) when it also said
+// tv=3, else v1.
 func (w *kilWire) tag(path string) string {
+	if w.keyID != nil && w.spec.TagV3 {
+		return kilvater.NewTagV3(*w.keyID, w.key, w.authority(), path, w.serverNow())
+	}
 	if w.keyID != nil {
 		return kilvater.NewTagV2(*w.keyID, w.key, path, w.serverNow())
 	}
