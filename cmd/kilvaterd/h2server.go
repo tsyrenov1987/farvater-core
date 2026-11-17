@@ -64,7 +64,20 @@ func nginxH2Server(idle time.Duration) *http2.Server {
 		// nginx uses RFC 7540 priorities and so does not send
 		// SETTINGS_NO_RFC7540_PRIORITIES; Go's default RFC 9218 scheduler does.
 		// The RFC 7540 scheduler was x/net's own default for years.
-		NewWriteScheduler: func() http2.WriteScheduler { return http2.NewPriorityWriteScheduler(nil) },
+		//
+		// MaxClosedNodesInTree is 0, not the default 10: x/net (v0.61.0 and
+		// v0.62.0) CloseStream hands a copy of the stream's write queue to its
+		// pool while a closed node kept in the tree still points at the same
+		// arrays, so a stream closed with frames queued later pops a zero
+		// FrameWriteRequest and startFrameWrite panics on it (prod: "http: panic
+		// serving … nil pointer dereference", audit 17.11, lab repro). A closed
+		// node is then dropped at once; the SETTINGS frame does not change.
+		NewWriteScheduler: func() http2.WriteScheduler {
+			return http2.NewPriorityWriteScheduler(&http2.PriorityWriteSchedulerConfig{
+				MaxClosedNodesInTree: 0,
+				MaxIdleNodesInTree:   10,
+			})
+		},
 	}
 }
 
