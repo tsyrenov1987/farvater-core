@@ -29,7 +29,8 @@ type shapedPipe struct {
 	// does not die.
 	freezeAt  time.Time
 	freezeFor time.Duration
-	slowRate  float64 // when set, the window above slows the route to this instead
+	slowRate  float64       // when set, the window above slows the route to this instead
+	every     time.Duration // when set, the freeze comes again every this long
 }
 
 type shapedSeg struct {
@@ -50,7 +51,7 @@ func newShapedPipe(rate float64, delay time.Duration) *shapedPipe {
 				return
 			}
 			now := time.Now()
-			if s.slowRate == 0 && !s.freezeAt.IsZero() && !now.Before(s.freezeAt) && now.Before(s.freezeAt.Add(s.freezeFor)) {
+			if s.slowRate == 0 && s.frozen(now) {
 				s.mu.Unlock()
 				continue
 			}
@@ -68,6 +69,17 @@ func newShapedPipe(rate float64, delay time.Duration) *shapedPipe {
 		}
 	}()
 	return s
+}
+
+func (s *shapedPipe) frozen(now time.Time) bool {
+	if s.freezeAt.IsZero() || now.Before(s.freezeAt) {
+		return false
+	}
+	d := now.Sub(s.freezeAt)
+	if s.every > 0 {
+		d %= s.every
+	}
+	return d < s.freezeFor
 }
 
 func (s *shapedPipe) write(p []byte) (int, error) {
@@ -264,5 +276,81 @@ func TestBondSpareLeg(t *testing.T) {
 	t.Logf("bulk: %.0f KiB/s of 1000, the spared leg carried %.0f%%", bps/1024, 100*share)
 	if bps < 0.8*1000*1024 || share < 0.25 {
 		t.Errorf("bulk through a spared leg: %.0f KiB/s, share %.0f%%", bps/1024, 100*share)
+	}
+}
+
+// One route trickles and lags (a TURN path under loss: reliable, in order,
+// seconds late) while the other is well: the bond should give about what the
+// good route gives alone, each way.
+func TestBondOneLegTricklesLate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow")
+	}
+	for _, c := range []struct {
+		name  string
+		rate  float64
+		delay time.Duration
+	}{
+		{"35 KiB/s, 2.5 s late", 35 << 10, 2500 * time.Millisecond},
+		{"60 KiB/s, 1 s late", 60 << 10, time.Second},
+		{"20 KiB/s, 5 s late", 20 << 10, 5 * time.Second},
+	} {
+		good := 300.0 * 1024
+		bps := shapedThroughput(t, 5<<20, []legShape{{good, 150 * time.Millisecond, 256 << 10, 0, 0, 0}, {c.rate, c.delay, 512 << 10, 0, 0, 0}})
+		t.Logf("%-22s %4.0f KiB/s, the good leg alone gives 300", c.name, bps/1024)
+		if bps < 0.8*good {
+			t.Errorf("%s: %.0f KiB/s, under 80%% of the good leg alone", c.name, bps/1024)
+		}
+	}
+}
+
+// One route crawls in fits and starts (a TURN path that loses packets: a
+// second of data, then seconds of nothing) and never dies: the bond should
+// still give about what the good route gives alone.
+func TestBondOneLegCrawls(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow")
+	}
+	for _, c := range []struct {
+		name          string
+		queue         int
+		freeze, every time.Duration
+	}{
+		{"fits 2.5 of 3 s", 512 << 10, 2500 * time.Millisecond, 3 * time.Second},
+		{"fits 5 of 6 s, deep", 1 << 20, 5 * time.Second, 6 * time.Second},
+		{"fits 1 of 2 s", 256 << 10, time.Second, 2 * time.Second},
+	} {
+		a, b := NewBond(), NewBond()
+		good := 300 << 10
+		mk := func(rate float64, delay time.Duration, queue int, crawl bool) {
+			ab, ba := newShapedPipe(rate, delay), newShapedPipe(rate, delay)
+			ab.queue, ba.queue = queue, queue
+			if crawl {
+				at := time.Now().Add(500 * time.Millisecond)
+				ab.freezeAt, ab.freezeFor, ab.every = at, c.freeze, c.every
+				ba.freezeAt, ba.freezeFor, ba.every = at, c.freeze, c.every
+			}
+			go a.RunLeg(&shapedEnd{in: ba, out: ab}, false)
+			go b.RunLeg(&shapedEnd{in: ab, out: ba}, true)
+		}
+		mk(float64(good), 150*time.Millisecond, 256<<10, false)
+		mk(400<<10, 100*time.Millisecond, c.queue, true)
+		n := 6 << 20
+		data := randBytes(n)
+		errs := make(chan error, 1)
+		start := time.Now()
+		sendAll(t, a, data, errs)
+		got, err := recvAll(b)
+		d := time.Since(start)
+		if err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("%s: got %d/%d bytes, %v", c.name, len(got), n, err)
+		}
+		bps := float64(n) / d.Seconds()
+		t.Logf("%-22s %4.0f KiB/s, the good leg alone gives %d", c.name, bps/1024, good>>10)
+		if bps < 0.8*float64(good) {
+			t.Errorf("%s: %.0f KiB/s, under 80%% of the good leg alone", c.name, bps/1024)
+		}
+		a.Close()
+		b.Close()
 	}
 }

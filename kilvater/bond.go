@@ -85,6 +85,7 @@ var (
 	bondAckEvery   = 32 << 10
 	bondCloseGrace = 2 * time.Second
 	bondWriteHeld  = 10 * time.Millisecond // a write longer than this is one the route holds back
+	bondLateShare  = 0.75                  // of the window the others may fill before a leg's chunk arrives
 	// A leg whose oldest chunk holds up the flow for this long (or for twice
 	// its usual delay, if that is longer) is taken to have stalled: everything
 	// on it goes out on the others and it rests, longer each time it stalls.
@@ -844,6 +845,35 @@ func (b *Bond) wantAckLocked() {
 	b.cond.Broadcast()
 }
 
+// lateLocked reports whether a new chunk given to l now would arrive only
+// after the other legs have filled most of the window behind it: the flow
+// would then wait on it, at this leg's pace. Such a leg takes one chunk at a
+// time (which keeps its rate and delay measured) until it is quicker.
+func (b *Bond) lateLocked(l *bondLeg, now time.Time) bool {
+	out := l.inflight
+	if l.counts {
+		out = int(l.sent - l.peerGot)
+	}
+	if out <= 0 || l.rate <= 0 {
+		return false
+	}
+	others := 0.0
+	for o := range b.legs {
+		if o != l && !o.dead && !now.Before(o.restTill) {
+			others += o.rate
+		}
+	}
+	if others <= 0 {
+		return false
+	}
+	way := l.minRTT
+	if way == 0 {
+		way = l.delay
+	}
+	eta := float64(out)/l.rate + way.Seconds()/2
+	return eta > bondLateShare*float64(bondWindow)/others
+}
+
 // pickLocked finds the next chunk for a leg with room: one to send again, the
 // head held up too long (sent on a second leg), or a new one.
 func (b *Bond) pickLocked(l *bondLeg, now time.Time) *bondChunkT {
@@ -889,6 +919,9 @@ func (b *Bond) pickLocked(l *bondLeg, now time.Time) *bondChunkT {
 	if len(b.pending) > 0 {
 		if l.spare && b.otherHasRoomLocked(l, now) {
 			return nil // the leg with room takes it
+		}
+		if b.lateLocked(l, now) {
+			return nil // it would come after the others have filled the window
 		}
 		c := b.pending[0]
 		b.pending[0] = nil
