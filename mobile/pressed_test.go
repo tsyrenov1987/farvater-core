@@ -30,3 +30,68 @@ func TestPressedLetsATrickleIn(t *testing.T) {
 		t.Fatal("after shedTrickle the next flow should get in")
 	}
 }
+
+func resetBurst() {
+	burstMu.Lock()
+	burstStart, burstPrev, burstNow = time.Time{}, 0, 0
+	burstMu.Unlock()
+}
+
+// A burst of flows is weighed at the door: under a line the memory cannot
+// reach, all get in; under a line it is already past, the first burstFlows get
+// in (an ordinary pace never reads the memory) and the rest only as the trickle.
+func TestPressedWeighsABurstAtTheDoor(t *testing.T) {
+	defer valveAt.Store(0)
+	defer pressedOn.Store(false)
+	defer resetBurst()
+	pressedOn.Store(false)
+
+	valveAt.Store(1 << 40)
+	resetBurst()
+	for i := range 200 {
+		if pressed() {
+			t.Fatalf("flow %d refused under a line memory cannot reach", i)
+		}
+	}
+
+	valveAt.Store(1) // the runtime holds more than this
+	resetBurst()
+	lastLetIn.Store(time.Now().UnixMilli()) // trickle slot just used
+	in := 0
+	for range 100 {
+		if !pressed() {
+			in++
+		}
+	}
+	if in != burstFlows {
+		t.Fatalf("burst of 100 past the line: %d let in, want %d", in, burstFlows)
+	}
+
+	// Once the window has passed twice, the count starts over.
+	burstMu.Lock()
+	burstStart = time.Now().Add(-2 * burstWindow)
+	burstMu.Unlock()
+	if pressed() {
+		t.Fatal("a flow after a quiet spell was refused")
+	}
+}
+
+// TestBurstOverWeighsAgainstLinePlusAQuarter: numbers from the 16.11 harness,
+// valve line 33 MiB. An ordinary page of 25 flows over an idle 30 MiB runtime
+// is let in; 150 flows at once over 25 MiB are not.
+func TestBurstOverWeighsAgainstLinePlusAQuarter(t *testing.T) {
+	const mib = 1 << 20
+	line := int64(33 * mib)
+	if burstOver(30*mib, 1*mib, 25, line) {
+		t.Fatal("25 flows over an idle runtime turned away")
+	}
+	if !burstOver(25*mib, 1*mib, 150, line) {
+		t.Fatal("150 flows at once let in")
+	}
+	if burstOver(40*mib, 30*mib, 100, line) {
+		t.Fatal("flows that fit in the free pages turned away")
+	}
+	if !burstOver(41*mib+mib/4, 0, 1, line) {
+		t.Fatal("a flow past line+25 % let in")
+	}
+}
