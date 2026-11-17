@@ -71,6 +71,10 @@ type bondWire struct {
 	tune  *bondTune // tests; nil = the package defaults
 	stats []legCount
 
+	// A leg that never got into a flow rests before the next flows try it (see
+	// bondLegRest): unix ms until when, and how long the rest was.
+	restTill, restFor []atomic.Int64
+
 	// what the flows waited on chunks out of order, downstream (see kilvater.BondStats)
 	holes, holeMs, holeMax, oooMax, dup atomic.Int64
 }
@@ -229,6 +233,46 @@ func (w *bondWire) tuning() bondTune {
 	return bondTune{bondLegRetry, bondLegRetryMax, bondLegTries, bondLegRejoins, bondLegRejoinsAlone}
 }
 
+// bondLegRest is how long a leg that never got into a flow is left alone by the
+// flows that follow, doubling up to bondLegRestMax while it keeps failing. Off
+// the mobile networks the CDN leg's door answers every flow with its cover
+// site: without the rest each flow knocks on it bondLegTries+1 times, on the
+// port the bond is there to spare. A flow that outlives the rest tries the leg
+// then; a leg that got in rests no more.
+var (
+	bondLegRest    = 20 * time.Second
+	bondLegRestMax = 2 * time.Minute
+)
+
+// resting is how much longer leg i is left alone.
+func (w *bondWire) resting(i int) time.Duration {
+	if i >= len(w.restTill) {
+		return 0
+	}
+	return time.Until(time.UnixMilli(w.restTill[i].Load()))
+}
+
+// rested notes how leg i's tries in a flow ended: in (it carried) or never in.
+func (w *bondWire) rested(i int, in bool) {
+	if i >= len(w.restTill) {
+		return
+	}
+	if in {
+		w.restFor[i].Store(0)
+		w.restTill[i].Store(0)
+		return
+	}
+	d := time.Duration(w.restFor[i].Load()) * 2
+	if d < bondLegRest {
+		d = bondLegRest
+	}
+	if d > bondLegRestMax {
+		d = bondLegRestMax
+	}
+	w.restFor[i].Store(int64(d))
+	w.restTill[i].Store(time.Now().Add(d).UnixMilli())
+}
+
 func newBond(s PathSpec) (Wire, error) {
 	ws := make([]*kilWire, 0, len(s.Legs))
 	for _, ls := range s.Legs {
@@ -244,7 +288,8 @@ func newBond(s PathSpec) (Wire, error) {
 		}
 		ws = append(ws, w)
 	}
-	return &bondWire{spec: s, legs: ws, stats: make([]legCount, len(ws))}, nil
+	return &bondWire{spec: s, legs: ws, stats: make([]legCount, len(ws)),
+		restTill: make([]atomic.Int64, len(ws)), restFor: make([]atomic.Int64, len(ws))}, nil
 }
 
 func (w *bondWire) ID() string           { return w.spec.ID }
@@ -267,14 +312,21 @@ func (w *bondWire) Refresh(t time.Time) {
 // Dial opens the first leg that opens; the others open when the flow starts.
 func (w *bondWire) Dial(ctx context.Context) (Session, error) {
 	var last error
-	for i, l := range w.legs {
-		st, err := l.openTunnel(ctx)
-		if err == nil {
-			return &bondSession{w: w, first: st, firstLeg: i}, nil
-		}
-		last = err
-		if ctx.Err() != nil {
-			break
+	// The legs that are not resting first, then the resting ones: a flow
+	// never fails for a rest.
+	for _, rest := range []bool{false, true} {
+		for i, l := range w.legs {
+			if (w.resting(i) > 0) != rest {
+				continue
+			}
+			st, err := l.openTunnel(ctx)
+			if err == nil {
+				return &bondSession{w: w, first: st, firstLeg: i}, nil
+			}
+			last = err
+			if ctx.Err() != nil {
+				return nil, last
+			}
 		}
 	}
 	return nil, last
@@ -359,6 +411,13 @@ func (s *bondSession) Run(ctx context.Context, target Target, prelude []byte, up
 			defer legsWG.Done()
 			defer func() { alive <- struct{}{} }()
 			create, fails, pause := true, 0, tn.retry
+			if d := s.w.resting(i); d > 0 && i != s.firstLeg {
+				select { // the leg failed the flows before this one: it joins when its rest is over
+				case <-ctx.Done():
+					return
+				case <-time.After(d):
+				}
+			}
 			for ctx.Err() == nil && !b.Done() {
 				var st net.Conn
 				var err error
@@ -396,6 +455,9 @@ func (s *bondSession) Run(ctx context.Context, target Target, prelude []byte, up
 							lc.drops.Add(1) // it carried and fell out while the flow lives
 						}
 					}
+					if create {
+						s.w.rested(i, true)
+					}
 					create, fails, pause = false, 0, tn.retry
 				} else {
 					if lc != nil {
@@ -404,6 +466,9 @@ func (s *bondSession) Run(ctx context.Context, target Target, prelude []byte, up
 					fails++
 					switch {
 					case create && fails > tn.tries: // never got in: a refused key, a server without bonds
+						if ctx.Err() == nil && !b.Done() {
+							s.w.rested(i, false)
+						}
 						return
 					case !create && (fails > tn.rejoins || b.Legs() == 0 && fails > tn.alone):
 						return
