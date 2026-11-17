@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xtaci/kcp-go/v5"
@@ -57,9 +58,83 @@ const DefaultBitsPerChan = 1800000
 // bytes. It and the KCP and smux settings below match the server's.
 const mtu = 1100
 
+// Share is the part of the relay channels' paced rate that the tunnel's data
+// may fill; the rest is left to KCP's headers, acks and resends. KCP runs here
+// with no congestion window, so without the shaping it puts a whole send
+// window in front of the pacer at once: the segments wait there longer than
+// KCP's resend timeout and go out again, and a quarter of an upload is copies
+// (measured 17.11.2026: 8054 resends in 32319 segments, stalls up to 2 s).
+// Window is KCP's send and receive window in segments: what may sit in front
+// of the pacer when a channel dies under the tunnel. Variables for the bench.
+var (
+	Share  = 0.85
+	Window = 256
+)
+
+// shaped lets data into the KCP session no faster than its channels send.
+type shaped struct {
+	net.Conn
+	rate   func() float64 // bytes per second the channels carry now
+	mu     sync.Mutex
+	tokens float64
+	last   time.Time
+}
+
+const shapedPiece = 4 << 10
+
+func (c *shaped) Write(p []byte) (int, error) {
+	done := 0
+	for done < len(p) {
+		n := min(len(p)-done, shapedPiece)
+		c.wait(n)
+		m, err := c.Conn.Write(p[done : done+n])
+		done += m
+		if err != nil {
+			return done, err
+		}
+	}
+	return done, nil
+}
+
+func (c *shaped) wait(n int) {
+	r := c.rate() * Share
+	if r <= 0 {
+		return
+	}
+	c.mu.Lock()
+	now := time.Now()
+	if !c.last.IsZero() {
+		c.tokens += now.Sub(c.last).Seconds() * r
+	}
+	if burst := r / 20; c.tokens > burst {
+		c.tokens = burst
+	}
+	c.last = now
+	c.tokens -= float64(n)
+	var d time.Duration
+	if c.tokens < 0 {
+		d = time.Duration(-c.tokens / r * float64(time.Second))
+	}
+	c.mu.Unlock()
+	if d > 0 {
+		time.Sleep(d)
+	}
+}
+
+// Resend is KCP's timers as SetNoDelay takes them: nodelay, interval, fast
+// resend, no congestion window. The datagrams take the relay channels in turn
+// and arrive out of order, so a resend on "a later one was acked" (fast, and
+// the early one in third_party/kcp-go) fires on packets that were never lost:
+// both are off, and the timeout is the slow one (from 100 ms, doubling).
+var Resend = [4]int{0, 10, 0, 1}
+
+// KeepEarly leaves the early retransmit on (the bench's "before").
+var KeepEarly bool
+
 func tuneKCP(s *kcp.UDPSession) {
-	s.SetNoDelay(1, 10, 2, 1)
-	s.SetWindowSize(1024, 1024)
+	kcp.NoEarlyRetransmit = !KeepEarly
+	s.SetNoDelay(Resend[0], Resend[1], Resend[2], Resend[3])
+	s.SetWindowSize(Window, Window)
 	s.SetMtu(mtu)
 	s.SetStreamMode(true)
 	s.SetWriteDelay(false)
@@ -98,7 +173,11 @@ func Open(ctx context.Context, cfg Config) (*Tunnel, error) {
 		return nil, err
 	}
 	tuneKCP(ks)
-	sess, err := smux.Client(ks, smuxConfig())
+	var conn net.Conn = ks
+	if Share > 0 {
+		conn = &shaped{Conn: ks, rate: func() float64 { return float64(max(rc.Channels(), 1)) * float64(bits) / 8 }}
+	}
+	sess, err := smux.Client(conn, smuxConfig())
 	if err != nil {
 		ks.Close()
 		rc.Close()

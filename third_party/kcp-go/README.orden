@@ -1,0 +1,4 @@
+kcp-go v5.6.72 (github.com/xtaci/kcp-go), copied 17.11.2026 without tests,
+examples and assets. One change: kcp.go, the package variable NoEarlyRetransmit
+and its check in flush. To take a new upstream version: copy it over and put
+the two places back.

@@ -16,11 +16,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/tsyrenov1987/farvater-core/vkturn"
 	"github.com/tsyrenov1987/farvater-core/wire"
 	kcp "github.com/xtaci/kcp-go/v5"
 )
@@ -160,6 +162,9 @@ func kcpNow() map[string]uint64 {
 		"early": s.EarlyRetransSegs, "lost": s.LostSegs, "rep": s.RepeatSegs, "outb": s.BytesSent, "inb": s.BytesReceived}
 }
 
+// plainTarget, when set, is a kbspeed to measure against ("host:port").
+var plainTarget string
+
 func main() {
 	link := flag.String("link", "", "the path's link, or @file holding it")
 	mode := flag.String("mode", "down", "down | up")
@@ -168,9 +173,17 @@ func main() {
 	pause := flag.Duration("pause", 10*time.Second, "pause between runs")
 	timeout := flag.Duration("timeout", 180*time.Second, "one run's limit")
 	host := flag.String("host", "speed.cloudflare.com", "the measuring host (https)")
+	flag.StringVar(&plainTarget, "plain", "", "measure against a kbspeed at host:port over plain HTTP instead of -host")
 	quotaMax := flag.Int("quota", 0, "instead of a run: open up to this many allocations per TURN credential and say where the relay stops")
 	quotaPool := flag.String("pool", "", "with -quota: a directory of pool q*.json accounts to ask instead of the link's")
+	flag.Float64Var(&vkturn.Share, "vk-share", vkturn.Share, "vkturn: part of the channels' rate the data may fill (0 = no shaping)")
+	flag.IntVar(&vkturn.Window, "vk-wnd", vkturn.Window, "vkturn: KCP window, segments")
+	old := flag.Bool("vk-old", false, "vkturn: KCP as before the audit (fast and early resends, no shaping, window 1024)")
 	flag.Parse()
+	if *old {
+		vkturn.Share, vkturn.Window, vkturn.Resend = 0, 1024, [4]int{1, 10, 2, 1}
+		vkturn.KeepEarly = true
+	}
 	raw := *link
 	if strings.HasPrefix(raw, "@") {
 		b, err := os.ReadFile(raw[1:])
@@ -270,19 +283,32 @@ func one(root context.Context, w wire.Wire, run int, mode, host string, size int
 		return
 	}
 	defer sess.Close()
-	rc = newRunConn(ctx, sess, wire.Target{Host: host, Port: 443})
+	scheme, tr := "https", &http.Transport{DisableKeepAlives: true}
+	if plainTarget != "" {
+		h, p, err := net.SplitHostPort(plainTarget)
+		port, _ := strconv.Atoi(p)
+		if err != nil || port <= 0 {
+			res.Err = "plain: host:port wanted"
+			return
+		}
+		scheme, host = "http", plainTarget
+		rc = newRunConn(ctx, sess, wire.Target{Host: h, Port: port})
+		tr.DialContext = func(context.Context, string, string) (net.Conn, error) { return rc, nil }
+	} else {
+		rc = newRunConn(ctx, sess, wire.Target{Host: host, Port: 443})
+		tc := tls.Client(rc, &tls.Config{ServerName: host, NextProtos: []string{"http/1.1"}})
+		tr.DialTLSContext = func(context.Context, string, string) (net.Conn, error) { return tc, nil }
+	}
 	defer rc.Close()
-	tc := tls.Client(rc, &tls.Config{ServerName: host, NextProtos: []string{"http/1.1"}})
-	tr := &http.Transport{DialTLSContext: func(context.Context, string, string) (net.Conn, error) { return tc, nil }, DisableKeepAlives: true}
 	var req *http.Request
 	var body *zeros
 	if mode == "up" {
 		body = &zeros{left: size, g: g}
-		req, _ = http.NewRequestWithContext(ctx, "POST", "https://"+host+"/__up", body)
+		req, _ = http.NewRequestWithContext(ctx, "POST", scheme+"://"+host+"/__up", body)
 		req.ContentLength = size
 		req.Header.Set("Content-Type", "application/octet-stream")
 	} else {
-		req, _ = http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://%s/__down?bytes=%d", host, size), nil)
+		req, _ = http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s://%s/__down?bytes=%d", scheme, host, size), nil)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	resp, err := tr.RoundTrip(req)

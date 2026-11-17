@@ -67,3 +67,5 @@ require (
 	google.golang.org/protobuf v1.36.11
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
+
+replace github.com/xtaci/kcp-go/v5 => ./third_party/kcp-go
