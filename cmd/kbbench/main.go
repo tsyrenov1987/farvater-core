@@ -29,6 +29,7 @@ type runConn struct {
 	cancel context.CancelFunc
 	up     chan []byte
 	pr     *io.PipeReader
+	done   chan struct{} // the session's Run has returned
 }
 
 type noMeter struct{}
@@ -39,8 +40,9 @@ func (noMeter) Down([]byte) {}
 func newRunConn(ctx context.Context, sess wire.Session, target wire.Target) *runConn {
 	ctx, cancel := context.WithCancel(ctx)
 	pr, pw := io.Pipe()
-	c := &runConn{ctx: ctx, cancel: cancel, up: make(chan []byte, 16), pr: pr}
+	c := &runConn{ctx: ctx, cancel: cancel, up: make(chan []byte, 16), pr: pr, done: make(chan struct{})}
 	go func() {
+		defer close(c.done)
 		_, err := sess.Run(ctx, target, nil, c.up, pw, noMeter{})
 		if err == nil {
 			err = io.EOF
@@ -217,8 +219,16 @@ func one(root context.Context, w wire.Wire, run int, mode, host string, size int
 	defer cancel()
 	before := legs(w)
 	g := &gaps{start: time.Now(), stallMin: time.Second}
+	var rc *runConn
 	defer func() {
 		res.Secs = time.Since(g.start).Seconds()
+		if rc != nil { // a bond counts its legs when the flow has ended
+			rc.Close()
+			select {
+			case <-rc.done:
+			case <-time.After(3 * time.Second):
+			}
+		}
 		if res.Secs > 0 {
 			res.KBps = float64(res.Bytes) / 1024 / res.Secs
 		}
@@ -242,7 +252,7 @@ func one(root context.Context, w wire.Wire, run int, mode, host string, size int
 		return
 	}
 	defer sess.Close()
-	rc := newRunConn(ctx, sess, wire.Target{Host: host, Port: 443})
+	rc = newRunConn(ctx, sess, wire.Target{Host: host, Port: 443})
 	defer rc.Close()
 	tc := tls.Client(rc, &tls.Config{ServerName: host, NextProtos: []string{"http/1.1"}})
 	tr := &http.Transport{DialTLSContext: func(context.Context, string, string) (net.Conn, error) { return tc, nil }, DisableKeepAlives: true}
