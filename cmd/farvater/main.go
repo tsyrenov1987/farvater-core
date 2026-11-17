@@ -75,12 +75,14 @@ func cmdRun(args []string) {
 	admin := fs.String("admin", "127.0.0.1:1081", "admin JSON address (empty = off)")
 	ctxName := fs.String("ctx", "default", "network context name for receipts")
 	verbose := fs.Bool("v", false, "log every receipt")
+	probe := fs.String("probe", "", "sweep probe URL (empty = no sweeps, as before; the apps use the catalogue's or the default)")
 	_ = fs.Parse(args)
 
 	cat := loadCatalogue(*src)
 	cfg := switchboard.DefaultConfig()
 	cfg.Listen = *listen
 	cfg.Ctx = *ctxName
+	cfg.ProbeURL = *probe
 	cfg.Brain = brain.DefaultConfig()
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	if *verbose {
