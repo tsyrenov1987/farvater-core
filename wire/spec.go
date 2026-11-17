@@ -83,6 +83,8 @@ type PathSpec struct {
 
 	// Legs are a kilbond:// path's kilvater links, one per route (bond.go).
 	Legs []PathSpec
+	// Spare, on a bond's leg: a route to spare (see kilvater.JoinSpare).
+	Spare bool
 }
 
 // Rail is the informational label of the path's transport.

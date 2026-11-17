@@ -165,6 +165,9 @@ func kcpNow() map[string]uint64 {
 // plainTarget, when set, is a kbspeed to measure against ("host:port").
 var plainTarget string
 
+// downRate: see -rate.
+var downRate int
+
 func main() {
 	link := flag.String("link", "", "the path's link, or @file holding it")
 	mode := flag.String("mode", "down", "down | up")
@@ -173,6 +176,7 @@ func main() {
 	pause := flag.Duration("pause", 10*time.Second, "pause between runs")
 	timeout := flag.Duration("timeout", 180*time.Second, "one run's limit")
 	host := flag.String("host", "speed.cloudflare.com", "the measuring host (https)")
+	flag.IntVar(&downRate, "rate", 0, "with -plain, down: ask kbspeed to send at this many bytes a second (a flow that does not fill the path)")
 	flag.StringVar(&plainTarget, "plain", "", "measure against a kbspeed at host:port over plain HTTP instead of -host")
 	quotaMax := flag.Int("quota", 0, "instead of a run: open up to this many allocations per TURN credential and say where the relay stops")
 	quotaPool := flag.String("pool", "", "with -quota: a directory of pool q*.json accounts to ask instead of the link's")
@@ -308,7 +312,7 @@ func one(root context.Context, w wire.Wire, run int, mode, host string, size int
 		req.ContentLength = size
 		req.Header.Set("Content-Type", "application/octet-stream")
 	} else {
-		req, _ = http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s://%s/__down?bytes=%d", scheme, host, size), nil)
+		req, _ = http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s://%s/__down?bytes=%d&rate=%d", scheme, host, size, downRate), nil)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	resp, err := tr.RoundTrip(req)

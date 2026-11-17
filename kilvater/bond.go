@@ -55,6 +55,14 @@ const (
 // flow over from the middle.
 const JoinCreate byte = 1
 
+// JoinSpare in a JOIN's flags marks a leg whose route is to be spared (a
+// narrow shared port, as the CDN relay's): each end gives it new chunks only
+// while no other leg has room for them, so a flow the other legs can carry
+// alone leaves it nearly idle, and a flow that fills them still gets the sum.
+// It still carries copies of a held-up head and what a dead leg dropped. An
+// end that does not know the flag treats the leg as any other.
+const JoinSpare byte = 2
+
 // SessionIDLen is the length of a bond's id.
 const SessionIDLen = 16
 
@@ -76,6 +84,7 @@ var (
 	bondLegQueue   = 600 * time.Millisecond // a leg's cap is this much of its delivery rate
 	bondAckEvery   = 32 << 10
 	bondCloseGrace = 2 * time.Second
+	bondWriteHeld  = 10 * time.Millisecond // a write longer than this is one the route holds back
 	// A leg whose oldest chunk holds up the flow for this long (or for twice
 	// its usual delay, if that is longer) is taken to have stalled: everything
 	// on it goes out on the others and it rests, longer each time it stalls.
@@ -103,7 +112,9 @@ type bondLeg struct {
 	cap      int
 	acked    int // bytes released on this leg since the last rate update
 	busy     bool
-	rate     float64 // bytes per second, smoothed
+	spare    bool      // see JoinSpare
+	writing  time.Time // since when its writer has been in a write; zero when it is not
+	rate     float64   // bytes per second, smoothed
 	ackDue   bool
 	finSent  bool
 	dead     bool
@@ -516,7 +527,12 @@ func (b *Bond) RunLeg(rw io.ReadWriteCloser, accept bool) bool {
 
 // RunLegNamed is RunLeg for a leg that Stats reports under name (its route).
 func (b *Bond) RunLegNamed(rw io.ReadWriteCloser, accept bool, name string) bool {
-	l := &bondLeg{rw: rw, cap: bondLegCapInit, ackDue: accept, done: make(chan struct{}), name: name}
+	return b.RunLegSpare(rw, accept, name, false)
+}
+
+// RunLegSpare is RunLegNamed for a leg that may be one to spare (JoinSpare).
+func (b *Bond) RunLegSpare(rw io.ReadWriteCloser, accept bool, name string, spare bool) bool {
+	l := &bondLeg{rw: rw, cap: bondLegCapInit, ackDue: accept, done: make(chan struct{}), name: name, spare: spare}
 	b.mu.Lock()
 	l.since = b.now()
 	if b.closed {
@@ -871,6 +887,9 @@ func (b *Bond) pickLocked(l *bondLeg, now time.Time) *bondChunkT {
 		}
 	}
 	if len(b.pending) > 0 {
+		if l.spare && b.otherHasRoomLocked(l, now) {
+			return nil // the leg with room takes it
+		}
 		c := b.pending[0]
 		b.pending[0] = nil
 		b.pending = b.pending[1:]
@@ -878,9 +897,28 @@ func (b *Bond) pickLocked(l *bondLeg, now time.Time) *bondChunkT {
 		l.inflight += c.n
 		l.mark(c, now)
 		b.unacked = append(b.unacked, c)
+		if !l.spare && l.room() <= 0 && len(b.pending) > 0 {
+			b.cond.Broadcast() // it is full: a spared leg may take the rest
+		}
 		return c
 	}
 	return nil
+}
+
+// otherHasRoomLocked reports whether a leg that is not to be spared can take
+// a new chunk now.
+func (b *Bond) otherHasRoomLocked(l *bondLeg, now time.Time) bool {
+	for o := range b.legs {
+		if o == l || o.spare || o.dead || now.Before(o.restTill) || o.room() <= 0 {
+			continue
+		}
+		// A leg whose write does not return is held back by its route (the
+		// socket is full): it has room by its cap, and cannot take a chunk.
+		if o.writing.IsZero() || now.Sub(o.writing) < bondWriteHeld {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *bondLeg) mark(c *bondChunkT, now time.Time) {
@@ -934,8 +972,13 @@ func (b *Bond) writer(l *bondLeg) {
 			}
 			b.cond.Wait()
 		}
+		l.writing = b.now()
 		b.mu.Unlock()
-		if err := WriteFrame(l.rw, typ, body); err != nil {
+		err := WriteFrame(l.rw, typ, body)
+		b.mu.Lock()
+		l.writing = time.Time{}
+		b.mu.Unlock()
+		if err != nil {
 			b.mu.Lock()
 			l.endLocked("write:" + ErrClass(err))
 			b.legDeadLocked(l)

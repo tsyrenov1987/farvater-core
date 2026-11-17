@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -371,5 +372,22 @@ func TestBondLegRestsBetweenFlows(t *testing.T) {
 	st := w.BondStats()[0]
 	if st.Down == 0 || w.resting(0) > 0 {
 		t.Fatalf("the leg did not come back after its rest: %+v, resting %v", st, w.resting(0))
+	}
+}
+
+// spare= marks the legs to spare; all of them at once is none.
+func TestBondParseSpare(t *testing.T) {
+	leg := func(n string) string {
+		return "leg=" + base64.RawURLEncoding.EncodeToString([]byte("kilvater://"+strings.Repeat("ab", 32)+"@h"+n+".example:443#l"+n))
+	}
+	base := "kilbond://b@h:443?" + leg("0") + "&" + leg("1")
+	for in, want := range map[string][2]bool{"": {false, false}, "&spare=0": {true, false}, "&spare=1,7,x": {false, true}, "&spare=0&spare=1": {false, false}} {
+		spec, err := ParseURI(base + in + "#b")
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if got := [2]bool{spec.Legs[0].Spare, spec.Legs[1].Spare}; got != want {
+			t.Errorf("%q: spare %v, want %v", in, got, want)
+		}
 	}
 }

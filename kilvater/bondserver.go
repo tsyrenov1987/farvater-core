@@ -130,7 +130,7 @@ func (s *Server) join(label, route string, body []byte, up io.ReadCloser, down i
 		return
 	}
 	s.Metrics.bondLegStart(route)
-	sb.b.RunLegNamed(&legRW{Reader: up, Writer: down, body: up}, true, route)
+	sb.b.RunLegSpare(&legRW{Reader: up, Writer: down, body: up}, true, route, flags&JoinSpare != 0)
 }
 
 // bondTarget dials the bond's target and pumps it to and from the bond until

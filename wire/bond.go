@@ -24,7 +24,7 @@ import (
 // back in order at the server (kilvater/bond.go), so the flow gets the sum of
 // the routes, and survives one of them dropping:
 //
-//	kilbond://<anything>?leg=<base64url kilvater:// or vkturn:// link>&leg=...#name
+//	kilbond://<anything>?leg=<base64url kilvater:// or vkturn:// link>&leg=...[&spare=0]#name
 //
 // UDP takes the first leg alone. A server without bonds refuses the legs and
 // the path fails as a whole, which the brain sees like any dead path.
@@ -54,6 +54,21 @@ func parseBond(raw string) (PathSpec, error) {
 	}
 	if len(spec.Legs) < 2 || len(spec.Legs) > 4 {
 		return PathSpec{}, errors.New("kilbond: needs 2 to 4 legs")
+	}
+	// spare=<leg number, from 0>[,...]: the legs to spare. Never all of them.
+	spared := 0
+	for _, v := range u.Query()["spare"] {
+		for _, f := range strings.Split(v, ",") {
+			if i, err := strconv.Atoi(f); err == nil && i >= 0 && i < len(spec.Legs) && !spec.Legs[i].Spare {
+				spec.Legs[i].Spare = true
+				spared++
+			}
+		}
+	}
+	if spared == len(spec.Legs) {
+		for i := range spec.Legs {
+			spec.Legs[i].Spare = false
+		}
 	}
 	first := spec.Legs[0]
 	spec.Host, spec.Port, spec.SNI = first.Host, first.Port, first.SNI
@@ -372,14 +387,17 @@ const (
 func (s *bondSession) Run(ctx context.Context, target Target, prelude []byte, up <-chan []byte, down io.Writer, m Meter) (Outcome, error) {
 	var sid [kilvater.SessionIDLen]byte
 	rand.Read(sid[:])
-	join := func(create bool) ([]byte, error) {
+	join := func(create, spare bool) ([]byte, error) {
 		var f byte
 		if create {
 			f = kilvater.JoinCreate
 		}
+		if spare {
+			f |= kilvater.JoinSpare
+		}
 		return kilvater.AppendJoin(nil, sid, f, kilvater.NetTCP, target.String())
 	}
-	if _, err := join(true); err != nil {
+	if _, err := join(true, false); err != nil {
 		s.Close()
 		return OutcomeError, err
 	}
@@ -435,9 +453,10 @@ func (s *bondSession) Run(ctx context.Context, target Target, prelude []byte, up
 					if lc != nil {
 						st = countedLeg{st, lc}
 					}
-					body, _ := join(create)
+					spare := s.w.legs[i].Spec().Spare
+					body, _ := join(create, spare)
 					if err = kilvater.WriteFrame(st, kilvater.FrameJoin, body); err == nil {
-						accepted = b.RunLegNamed(st, false, strconv.Itoa(i))
+						accepted = b.RunLegSpare(st, false, strconv.Itoa(i), spare)
 					} else {
 						if lc != nil {
 							lc.cause("join:"+kilvater.ErrClass(err), 1)

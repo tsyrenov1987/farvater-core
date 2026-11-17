@@ -213,3 +213,56 @@ func TestBondOldAcks(t *testing.T) {
 	}
 	t.Logf("old end: %.0f KiB/s", got/1024)
 }
+
+// A leg to spare (the CDN relay's narrow port) stays nearly idle while the
+// flow fits the other leg, and adds its rate once the flow fills that one.
+func TestBondSpareLeg(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow")
+	}
+	run := func(n int, pace float64) (bps float64, share float64) {
+		a, b := NewBond(), NewBond()
+		t.Cleanup(func() { a.Close(); b.Close() })
+		shapes := []legShape{{450 << 10, 60 * time.Millisecond, 0, 0, 0, 0}, {550 << 10, 120 * time.Millisecond, 0, 0, 0, 0}}
+		for i, s := range shapes {
+			ab, ba := newShapedPipe(s.rate, s.delay), newShapedPipe(s.rate, s.delay)
+			name := []string{"cdn", "vk"}[i]
+			go a.RunLegSpare(&shapedEnd{in: ba, out: ab}, false, name, i == 0)
+			go b.RunLegSpare(&shapedEnd{in: ab, out: ba}, true, name, i == 0)
+		}
+		data := randBytes(n)
+		start := time.Now()
+		go func() {
+			for off := 0; off < n; off += 16 << 10 {
+				a.Write(data[off:min(off+16<<10, n)])
+				if pace > 0 {
+					time.Sleep(time.Duration(float64(16<<10) / pace * float64(time.Second)))
+				}
+			}
+			a.CloseWrite()
+		}()
+		got, err := recvAll(b)
+		d := time.Since(start)
+		if err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("got %d/%d bytes, %v", len(got), n, err)
+		}
+		var cdn, all uint64
+		for _, l := range a.Stats().Legs {
+			all += l.Sent
+			if l.Name == "cdn" {
+				cdn = l.Sent
+			}
+		}
+		return float64(n) / d.Seconds(), float64(cdn) / float64(all)
+	}
+	bps, share := run(3<<20, 300<<10) // the flow asks for 300 KiB/s: the other leg alone has 550
+	t.Logf("paced 300 KiB/s: %.0f KiB/s, the spared leg carried %.0f%%", bps/1024, 100*share)
+	if share > 0.10 {
+		t.Errorf("the spared leg carried %.0f%% of a flow the other leg could carry alone", 100*share)
+	}
+	bps, share = run(8<<20, 0)
+	t.Logf("bulk: %.0f KiB/s of 1000, the spared leg carried %.0f%%", bps/1024, 100*share)
+	if bps < 0.8*1000*1024 || share < 0.25 {
+		t.Errorf("bulk through a spared leg: %.0f KiB/s, share %.0f%%", bps/1024, 100*share)
+	}
+}
