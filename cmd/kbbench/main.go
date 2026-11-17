@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/tsyrenov1987/farvater-core/wire"
+	kcp "github.com/xtaci/kcp-go/v5"
 )
 
 type runConn struct {
@@ -147,6 +148,16 @@ type result struct {
 	Legs   map[string][2]int64 `json:"legs,omitempty"`   // leg -> down, up bytes this run
 	LegEv  map[string][3]int64 `json:"leg_ev,omitempty"` // leg -> fail, drop, back this run
 	Bond   []wire.BondLegStat  `json:"bond,omitempty"`   // the legs' counts since the process began
+	KCP    map[string]uint64   `json:"kcp,omitempty"`    // what KCP under a VK leg did this run
+}
+
+// kcpNow is the process's KCP counters that tell a VK leg's waste: segments
+// out and in, those sent again (by timeout, early, on a fast ack) and those
+// that came twice.
+func kcpNow() map[string]uint64 {
+	s := kcp.DefaultSnmp.Copy()
+	return map[string]uint64{"out": s.OutSegs, "in": s.InSegs, "retx": s.RetransSegs, "fast": s.FastRetransSegs,
+		"early": s.EarlyRetransSegs, "lost": s.LostSegs, "rep": s.RepeatSegs, "outb": s.BytesSent, "inb": s.BytesReceived}
 }
 
 func main() {
@@ -218,6 +229,7 @@ func one(root context.Context, w wire.Wire, run int, mode, host string, size int
 	ctx, cancel := context.WithTimeout(root, limit)
 	defer cancel()
 	before := legs(w)
+	k0 := kcpNow()
 	g := &gaps{start: time.Now(), stallMin: time.Second}
 	var rc *runConn
 	defer func() {
@@ -235,6 +247,12 @@ func one(root context.Context, w wire.Wire, run int, mode, host string, size int
 		res.TTFBMs, res.Stalls, res.MaxGap = g.first.Milliseconds(), g.stalls, g.maxGap.Milliseconds()
 		if bs, ok := w.(wire.BondStater); ok {
 			res.Bond = bs.BondStats()
+		}
+		if k1 := kcpNow(); k1["in"] > k0["in"] {
+			res.KCP = map[string]uint64{}
+			for k, v := range k1 {
+				res.KCP[k] = v - k0[k]
+			}
 		}
 		if after := legs(w); after != nil {
 			res.Legs, res.LegEv = map[string][2]int64{}, map[string][3]int64{}
