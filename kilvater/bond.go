@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -122,6 +123,14 @@ type bondLeg struct {
 	minRTT    time.Duration
 	restAt    time.Time // when it last began to rest
 	probeAt   time.Time // a resting leg's last probe
+
+	// what it did, for LegStats
+	name   string
+	since  time.Time
+	rests  int    // times it was rested as stalled
+	hedges int    // copies of a held-up head it carried
+	retx   int    // chunks it carried again after another leg lost them
+	end    string // why it ended (the first cause)
 }
 
 // legMark is a chunk given to a leg, and where it ends in the leg's count.
@@ -171,6 +180,158 @@ type Bond struct {
 	err       error
 	quit      chan struct{}
 	now       func() time.Time
+
+	// counts, for Stats
+	gone      map[string]*LegStats // the legs that ended, by name
+	dupBytes  uint64               // payload that arrived a second time
+	oooMax    int                  // the most that ever waited out of order
+	holes     int                  // times the order was held up by a missing chunk
+	holeSince time.Time            // when the present hole opened; zero when none
+	holeWait  time.Duration        // all the time spent waiting on holes
+	holeMax   time.Duration
+
+	// OnLegEnd, if set before the first leg runs, is called with each leg's
+	// counts as it ends.
+	OnLegEnd func(LegStats)
+}
+
+// LegStats is what the legs of one name did in a bond: one leg, or the same
+// route joined again and again.
+type LegStats struct {
+	Name   string
+	Joins  int            // legs run under this name
+	Live   int            // of them, carrying now
+	Sent   uint64         // SEQ payload given to it, copies included
+	Rcvd   uint64         // SEQ payload read off it, copies included
+	Rests  int            // times it was rested as stalled
+	Hedges int            // copies of a held-up head it carried
+	Retx   int            // chunks it carried again after another leg lost them
+	RTT    time.Duration  // smoothed time from a chunk going out to the far end having it (the last leg's)
+	MinRTT time.Duration  // the least seen
+	Rate   float64        // bytes a second it delivered lately
+	Dur    time.Duration  // how long its legs ran, added up
+	Ends   map[string]int // why its legs ended
+}
+
+// BondStats is one end's view of a bond.
+type BondStats struct {
+	Legs     []LegStats
+	DupBytes uint64        // payload received twice (hedges, repeats)
+	OOOMax   int           // the most payload that waited out of order
+	Holes    int           // times the order was held up by a missing chunk
+	HoleWait time.Duration // the time spent so
+	HoleMax  time.Duration // the longest such wait
+}
+
+func (l *bondLeg) stats(now time.Time, live bool) LegStats {
+	st := LegStats{Name: l.name, Joins: 1, Sent: l.sent, Rcvd: l.rcvd, Rests: l.rests, Hedges: l.hedges,
+		Retx: l.retx, RTT: l.delay, MinRTT: l.minRTT, Rate: l.rate, Dur: now.Sub(l.since)}
+	if live {
+		st.Live = 1
+	} else {
+		end := l.end
+		if end == "" {
+			end = "unknown"
+		}
+		st.Ends = map[string]int{end: 1}
+	}
+	return st
+}
+
+func (a *LegStats) add(o LegStats) {
+	a.Joins += o.Joins
+	a.Live += o.Live
+	a.Sent += o.Sent
+	a.Rcvd += o.Rcvd
+	a.Rests += o.Rests
+	a.Hedges += o.Hedges
+	a.Retx += o.Retx
+	a.Dur += o.Dur
+	if o.RTT > 0 {
+		a.RTT, a.Rate = o.RTT, o.Rate
+	}
+	if o.MinRTT > 0 && (a.MinRTT == 0 || o.MinRTT < a.MinRTT) {
+		a.MinRTT = o.MinRTT
+	}
+	for k, v := range o.Ends {
+		if a.Ends == nil {
+			a.Ends = map[string]int{}
+		}
+		a.Ends[k] += v
+	}
+}
+
+// Stats reports what the bond and its legs did so far, legs in name order.
+func (b *Bond) Stats() BondStats {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	by := map[string]*LegStats{}
+	for n, g := range b.gone {
+		c := *g
+		c.Ends = map[string]int{}
+		for k, v := range g.Ends {
+			c.Ends[k] = v
+		}
+		by[n] = &c
+	}
+	for l := range b.legs {
+		if a := by[l.name]; a != nil {
+			a.add(l.stats(now, true))
+		} else {
+			st := l.stats(now, true)
+			by[l.name] = &st
+		}
+	}
+	out := BondStats{DupBytes: b.dupBytes, OOOMax: b.oooMax, Holes: b.holes, HoleWait: b.holeWait, HoleMax: b.holeMax}
+	if !b.holeSince.IsZero() {
+		d := now.Sub(b.holeSince)
+		out.HoleWait += d
+		if d > out.HoleMax {
+			out.HoleMax = d
+		}
+	}
+	for _, a := range by {
+		out.Legs = append(out.Legs, *a)
+	}
+	sort.Slice(out.Legs, func(i, j int) bool { return out.Legs[i].Name < out.Legs[j].Name })
+	return out
+}
+
+// endLocked notes why a leg ended; the first cause stands.
+func (l *bondLeg) endLocked(why string) {
+	if l.end == "" {
+		l.end = why
+	}
+}
+
+// ErrClass names an error in a word, for counts by cause.
+func ErrClass(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return "eof"
+	}
+	var te interface{ Timeout() bool }
+	if errors.As(err, &te) && te.Timeout() {
+		return "timeout"
+	}
+	m := strings.ToLower(err.Error())
+	for _, w := range [][2]string{
+		{"quota", "quota"}, {"486", "quota"}, {"unauthorized", "auth"}, {"401", "auth"}, {"stale", "auth"},
+		{"no relay allocation", "alloc"}, {"all retransmissions", "noanswer"},
+		{"deadline", "timeout"}, {"timeout", "timeout"}, {"timed out", "timeout"},
+		{"canceled", "canceled"}, {"goaway", "goaway"}, {"rst_stream", "rst"}, {"stream error", "rst"},
+		{"reset", "reset"}, {"refused", "refused"}, {"broken pipe", "pipe"}, {"closed", "closed"},
+		{"unreachable", "unreach"}, {"no route", "unreach"}, {"tls", "tls"}, {"certificate", "tls"},
+		{"status", "status"}, {"eof", "eof"},
+	} {
+		if strings.Contains(m, w[0]) {
+			return w[1]
+		}
+	}
+	return "other"
 }
 
 // NewBond makes one end of a bond.
@@ -350,11 +511,22 @@ func (b *Bond) closedErr() error {
 // server tells the client the leg is in. It reports whether the far end ever
 // answered on the leg.
 func (b *Bond) RunLeg(rw io.ReadWriteCloser, accept bool) bool {
-	l := &bondLeg{rw: rw, cap: bondLegCapInit, ackDue: accept, done: make(chan struct{})}
+	return b.RunLegNamed(rw, accept, "")
+}
+
+// RunLegNamed is RunLeg for a leg that Stats reports under name (its route).
+func (b *Bond) RunLegNamed(rw io.ReadWriteCloser, accept bool, name string) bool {
+	l := &bondLeg{rw: rw, cap: bondLegCapInit, ackDue: accept, done: make(chan struct{}), name: name}
 	b.mu.Lock()
+	l.since = b.now()
 	if b.closed {
+		cb := b.OnLegEnd
 		b.mu.Unlock()
 		rw.Close()
+		if cb != nil {
+			l.end = "done"
+			cb(l.stats(l.since, false))
+		}
 		return false
 	}
 	b.legs[l] = struct{}{}
@@ -365,8 +537,25 @@ func (b *Bond) RunLeg(rw io.ReadWriteCloser, accept bool) bool {
 	b.reader(l)
 	<-wdone
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	return l.accepted
+	st := l.stats(b.now(), false)
+	if !l.accepted {
+		st.Ends = map[string]int{"refused:" + l.end: 1} // the far end never answered on it
+	}
+	if b.gone == nil {
+		b.gone = map[string]*LegStats{}
+	}
+	if a := b.gone[l.name]; a != nil {
+		a.add(st)
+	} else {
+		c := st
+		b.gone[l.name] = &c
+	}
+	cb, ok := b.OnLegEnd, l.accepted
+	b.mu.Unlock()
+	if cb != nil {
+		cb(st)
+	}
+	return ok
 }
 
 // legDead takes a leg out: its chunks go back to be sent on the others.
@@ -394,8 +583,13 @@ func (b *Bond) legDeadLocked(l *bondLeg) {
 }
 
 func (b *Bond) reader(l *bondLeg) {
+	why := "proto"
 	defer func() {
 		b.mu.Lock()
+		if b.closed {
+			why = "done"
+		}
+		l.endLocked(why)
 		b.legDeadLocked(l)
 		b.mu.Unlock()
 		l.rw.Close()
@@ -404,6 +598,7 @@ func (b *Bond) reader(l *bondLeg) {
 	for {
 		typ, body, err := ReadFrame(l.rw, buf)
 		if err != nil {
+			why = "read:" + ErrClass(err)
 			return
 		}
 		buf = body[:0]
@@ -440,6 +635,9 @@ func (b *Bond) reader(l *bondLeg) {
 			if len(body) > 0 {
 				code = body[0]
 			}
+			b.mu.Lock()
+			l.endLocked("close" + string(rune('0'+code%10)))
+			b.mu.Unlock()
 			if code == 0 {
 				b.shut(0, nil)
 			} else {
@@ -464,12 +662,14 @@ func (b *Bond) recv(l *bondLeg, off uint64, data []byte) {
 	b.lastRx = l
 	end := off + uint64(len(data))
 	if end <= b.rcvNext || len(data) == 0 {
+		b.dupBytes += uint64(len(data))
 		return // a copy of what we have
 	}
 	if end < off || off < b.rcvNext || end > b.read+uint64(bondWindow)+uint64(bondChunk) {
 		return // not on a chunk boundary we know, or past the window: drop
 	}
 	if _, dup := b.ooo[off]; dup {
+		b.dupBytes += uint64(len(data))
 		return
 	}
 	// An honest sender cuts the flow into chunks that do not overlap, so what
@@ -490,6 +690,20 @@ func (b *Bond) recv(l *bondLeg, off uint64, data []byte) {
 		b.oooBytes -= len(c)
 		b.ready = append(b.ready, c)
 		b.rcvNext += uint64(len(c))
+	}
+	if b.oooBytes > b.oooMax {
+		b.oooMax = b.oooBytes
+	}
+	if b.oooBytes > 0 && b.holeSince.IsZero() {
+		b.holeSince = b.now()
+		b.holes++
+	} else if b.oooBytes == 0 && !b.holeSince.IsZero() {
+		d := b.now().Sub(b.holeSince)
+		b.holeSince = time.Time{}
+		b.holeWait += d
+		if d > b.holeMax {
+			b.holeMax = d
+		}
 	}
 	if b.rcvNext-b.ackRcv >= uint64(bondAckEvery) {
 		l.ackDue = true
@@ -625,6 +839,7 @@ func (b *Bond) pickLocked(l *bondLeg, now time.Time) *bondChunkT {
 		if l.counts && len(b.unacked) > 0 && l.probeAt.Before(l.restAt) && now.Sub(l.restAt) >= bondRestProbe {
 			if h := b.unacked[0]; !h.got && h.leg != l {
 				l.probeAt = now
+				l.hedges++
 				l.mark(h, now)
 				return h
 			}
@@ -642,6 +857,7 @@ func (b *Bond) pickLocked(l *bondLeg, now time.Time) *bondChunkT {
 		b.retx = b.retx[1:]
 		c.leg, c.sentAt = l, now
 		l.inflight += c.n
+		l.retx++
 		l.mark(c, now)
 		return c
 	}
@@ -649,6 +865,7 @@ func (b *Bond) pickLocked(l *bondLeg, now time.Time) *bondChunkT {
 		h := b.unacked[0]
 		if h.leg != l && !h.got && now.Sub(b.progress) >= bondHedgeAfter && now.Sub(h.hedgedAt) >= bondHedgeAfter {
 			h.hedgedAt = now
+			l.hedges++
 			l.mark(h, now)
 			return h
 		}
@@ -686,6 +903,7 @@ func (b *Bond) writer(l *bondLeg) {
 			}
 			if b.closed {
 				code := b.closeCode
+				l.endLocked("done")
 				b.mu.Unlock()
 				WriteFrame(l.rw, FrameClose, []byte{code})
 				return
@@ -719,6 +937,7 @@ func (b *Bond) writer(l *bondLeg) {
 		b.mu.Unlock()
 		if err := WriteFrame(l.rw, typ, body); err != nil {
 			b.mu.Lock()
+			l.endLocked("write:" + ErrClass(err))
 			b.legDeadLocked(l)
 			b.mu.Unlock()
 			return
@@ -784,6 +1003,7 @@ func (b *Bond) restLocked(l *bondLeg, now time.Time) {
 		l.rest = bondRestMax
 	}
 	l.restTill, l.restAt = now.Add(l.rest), now
+	l.rests++
 	l.cap, l.rate = bondLegCapMin, l.rate/2
 	for _, c := range b.unacked {
 		if c.leg == l {

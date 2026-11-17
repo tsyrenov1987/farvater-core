@@ -27,6 +27,8 @@ type Metrics struct {
 	// maxFailLabels distinct ids the rest fold into key="other".
 	fails map[failLabel]int64
 
+	bond bondMetrics
+
 	connsTotal    atomic.Int64
 	connsOpen     atomic.Int64
 	handshakeFail atomic.Int64
@@ -290,6 +292,8 @@ func (m *Metrics) WritePrometheus(w io.Writer) {
 	} {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %d\n", s.name, s.help, s.name, s.typ, s.name, s.val)
 	}
+
+	m.writeBond(w)
 
 	if m.Resume != nil {
 		rs := m.Resume()

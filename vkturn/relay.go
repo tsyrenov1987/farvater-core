@@ -6,7 +6,7 @@ package vkturn
 import (
 	"context"
 	"crypto/rand"
-	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -106,6 +106,7 @@ func dialRelays(ctx context.Context, server string, psk []byte, creds []Creds, b
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	abandoned := false
+	var firstErr error
 	for i, cr := range creds {
 		c.slots = append(c.slots, &slot{creds: cr, backoff: c.tm.retryFirst})
 		wg.Add(1)
@@ -113,6 +114,11 @@ func dialRelays(ctx context.Context, server string, psk []byte, creds []Creds, b
 			defer wg.Done()
 			ch, err := openChannel(cr, srv, bitsPerChan)
 			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
 				return
 			}
 			mu.Lock()
@@ -148,7 +154,9 @@ func dialRelays(ctx context.Context, server string, psk []byte, creds []Creds, b
 		}
 	}
 	if up == 0 {
-		return nil, errors.New("vkturn: no relay allocation came up")
+		// Say why: a quota the relay answers with (486), a credential it no
+		// longer takes (401), or no answer at all read very differently.
+		return nil, fmt.Errorf("vkturn: no relay allocation came up: %w", firstErr)
 	}
 	c.chans.Store(&chans)
 	c.heard.Store(time.Now().UnixNano())

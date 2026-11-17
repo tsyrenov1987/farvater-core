@@ -67,7 +67,7 @@ func TestBondMaxPerKey(t *testing.T) {
 		upR, upW := io.Pipe()
 		downR, downW := io.Pipe()
 		done := make(chan struct{})
-		go func() { s.join(label, body, upR, downW, nil); downW.Close(); close(done) }()
+		go func() { s.join(label, "t", body, upR, downW, nil); downW.Close(); close(done) }()
 		typ, fb, err := ReadFrame(downR, nil)
 		go io.Copy(io.Discard, downR)
 		upW.Close()

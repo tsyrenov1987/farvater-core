@@ -289,7 +289,7 @@ func TestBondLegRejoinsAfterOutage(t *testing.T) {
 		t.Fatalf("leg 1 never came back: dials %d→%d, read %d→%d", afterDials, d, afterRead, r)
 	}
 	st := w.BondStats()
-	if len(st) != 2 || st[1].Drops < 1 || st[1].Backs < 1 || st[1].Fails < 1 || st[0].Down == 0 || st[1].Down == 0 {
+	if len(st) < 2 || st[1].Drops < 1 || st[1].Backs < 1 || st[1].Fails < 1 || st[0].Down == 0 || st[1].Down == 0 || len(st[1].Why) == 0 || st[1].Ms == 0 {
 		t.Fatalf("leg stats don't show the outage: %+v", st)
 	}
 }

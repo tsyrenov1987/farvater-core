@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,12 +70,55 @@ type bondWire struct {
 	legs  []*kilWire
 	tune  *bondTune // tests; nil = the package defaults
 	stats []legCount
+
+	// what the flows waited on chunks out of order, downstream (see kilvater.BondStats)
+	holes, holeMs, holeMax, oooMax, dup atomic.Int64
 }
 
 // legCount is what one leg did over all the bond's flows this session.
 type legCount struct {
 	down, up            atomic.Int64 // bytes read and written on the leg's streams, frames included
 	drops, backs, fails atomic.Int64 // dropped while carrying, back into a flow after a drop, opens that failed
+
+	rests, hedges, retx atomic.Int64 // from the bond: rested as stalled, carried a copy of a held-up chunk, a lost one again
+	rtt, minRTT, durMs  atomic.Int64 // ms: the last leg's smoothed chunk delay, the least seen, time the legs ran
+
+	mu  sync.Mutex
+	why map[string]int64 // why legs failed to open or ended, by cause
+}
+
+// maxLegWhy caps the causes kept apart for one leg.
+const maxLegWhy = 12
+
+func (c *legCount) cause(k string, n int64) {
+	c.mu.Lock()
+	if c.why == nil {
+		c.why = map[string]int64{}
+	}
+	if _, ok := c.why[k]; !ok && len(c.why) >= maxLegWhy {
+		k = "other"
+	}
+	c.why[k] += n
+	c.mu.Unlock()
+}
+
+// ended takes in what one leg did in a flow (kilvater.LegStats).
+func (c *legCount) ended(st kilvater.LegStats) {
+	c.rests.Add(int64(st.Rests))
+	c.hedges.Add(int64(st.Hedges))
+	c.retx.Add(int64(st.Retx))
+	c.durMs.Add(st.Dur.Milliseconds())
+	if st.RTT > 0 {
+		c.rtt.Store(st.RTT.Milliseconds())
+	}
+	if m := st.MinRTT.Milliseconds(); m > 0 && (c.minRTT.Load() == 0 || m < c.minRTT.Load()) {
+		c.minRTT.Store(m)
+	}
+	for k, n := range st.Ends {
+		if k != "done" { // the flow ended: not the leg's doing
+			c.cause(k, int64(n))
+		}
+	}
 }
 
 // BondLegStat is one leg of a bond for the status (and Orden's journal):
@@ -86,6 +130,21 @@ type BondLegStat struct {
 	Drops int64  `json:"drop,omitempty"`
 	Backs int64  `json:"back,omitempty"`
 	Fails int64  `json:"fail,omitempty"`
+
+	Rests  int64            `json:"st,omitempty"`   // times the bond rested it as stalled
+	Hedges int64            `json:"hg,omitempty"`   // copies of a held-up chunk it carried
+	Retx   int64            `json:"rx,omitempty"`   // chunks it carried again after another leg lost them
+	RTT    int64            `json:"rtt,omitempty"`  // ms, smoothed: a chunk out to the far end having it
+	MinRTT int64            `json:"mrtt,omitempty"` // ms, the least seen
+	Ms     int64            `json:"ms,omitempty"`   // how long its legs ran
+	Why    map[string]int64 `json:"why,omitempty"`  // causes of its fails and drops
+
+	// On the entry named "*" only, for the bond as a whole (downstream):
+	Holes   int64 `json:"ho,omitempty"`  // times the order waited for a missing chunk
+	HoleMs  int64 `json:"hw,omitempty"`  // ms spent waiting so
+	HoleMax int64 `json:"hm,omitempty"`  // the longest wait, ms
+	OOOMax  int64 `json:"ooo,omitempty"` // the most bytes held out of order
+	Dup     int64 `json:"dup,omitempty"` // bytes that arrived twice
 }
 
 // BondStater is a wire made of legs that can say what each carried.
@@ -100,9 +159,36 @@ func (w *bondWire) BondStats() []BondLegStat {
 			c := &w.stats[i]
 			out[i].Down, out[i].Up = c.down.Load(), c.up.Load()
 			out[i].Drops, out[i].Backs, out[i].Fails = c.drops.Load(), c.backs.Load(), c.fails.Load()
+			out[i].Rests, out[i].Hedges, out[i].Retx = c.rests.Load(), c.hedges.Load(), c.retx.Load()
+			out[i].RTT, out[i].MinRTT, out[i].Ms = c.rtt.Load(), c.minRTT.Load(), c.durMs.Load()
+			c.mu.Lock()
+			if len(c.why) > 0 {
+				out[i].Why = make(map[string]int64, len(c.why))
+				for k, v := range c.why {
+					out[i].Why[k] = v
+				}
+			}
+			c.mu.Unlock()
 		}
 	}
+	if w.holes.Load() > 0 || w.dup.Load() > 0 {
+		out = append(out, BondLegStat{Leg: "*", Holes: w.holes.Load(), HoleMs: w.holeMs.Load(),
+			HoleMax: w.holeMax.Load(), OOOMax: w.oooMax.Load(), Dup: w.dup.Load()})
+	}
 	return out
+}
+
+// flowEnded takes in a finished flow's bond counts.
+func (w *bondWire) flowEnded(st kilvater.BondStats) {
+	w.holes.Add(int64(st.Holes))
+	w.holeMs.Add(st.HoleWait.Milliseconds())
+	w.dup.Add(int64(st.DupBytes))
+	if v := st.HoleMax.Milliseconds(); v > w.holeMax.Load() {
+		w.holeMax.Store(v)
+	}
+	if v := int64(st.OOOMax); v > w.oooMax.Load() {
+		w.oooMax.Store(v)
+	}
 }
 
 func (w *bondWire) count(i int) *legCount {
@@ -246,6 +332,14 @@ func (s *bondSession) Run(ctx context.Context, target Target, prelude []byte, up
 		return OutcomeError, err
 	}
 	b := kilvater.NewBond()
+	b.OnLegEnd = func(st kilvater.LegStats) {
+		if i, err := strconv.Atoi(st.Name); err == nil {
+			if lc := s.w.count(i); lc != nil {
+				lc.ended(st)
+			}
+		}
+	}
+	defer func() { s.w.flowEnded(b.Stats()) }()
 	tn := s.w.tuning()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -275,14 +369,20 @@ func (s *bondSession) Run(ctx context.Context, target Target, prelude []byte, up
 				}
 				accepted := false
 				lc := s.w.count(i)
+				if err != nil && lc != nil && ctx.Err() == nil {
+					lc.cause("open:"+kilvater.ErrClass(err), 1)
+				}
 				if err == nil {
 					if lc != nil {
 						st = countedLeg{st, lc}
 					}
 					body, _ := join(create)
 					if err = kilvater.WriteFrame(st, kilvater.FrameJoin, body); err == nil {
-						accepted = b.RunLeg(st, false)
+						accepted = b.RunLegNamed(st, false, strconv.Itoa(i))
 					} else {
+						if lc != nil {
+							lc.cause("join:"+kilvater.ErrClass(err), 1)
+						}
 						st.Close()
 					}
 				}

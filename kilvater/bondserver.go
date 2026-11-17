@@ -56,12 +56,16 @@ func (l *legRW) Close() error { return l.body.Close() }
 // bond is keyed by the key's label and the client's session id, so one key
 // can never reach another's flow. The first leg with JoinCreate dials the
 // target; the others attach to it.
-func (s *Server) join(label string, body []byte, up io.ReadCloser, down io.Writer, ks *keyStat) {
+// route is the name the leg came under (the request's host): each route to a
+// server has its own, which is how the metrics tell the legs apart.
+func (s *Server) join(label, route string, body []byte, up io.ReadCloser, down io.Writer, ks *keyStat) {
 	sid, flags, network, addr, err := ParseJoin(body)
 	if err != nil {
+		s.Metrics.bondRefused(route, "badjoin")
 		return
 	}
 	if network != NetTCP {
+		s.Metrics.bondRefused(route, "network")
 		WriteFrame(down, FrameClose, []byte{1})
 		return
 	}
@@ -73,11 +77,17 @@ func (s *Server) join(label string, body []byte, up io.ReadCloser, down io.Write
 	if sb == nil {
 		if flags&JoinCreate == 0 || len(bonds.m) >= bondMax ||
 			(s.BondMaxPerKey > 0 && bonds.perKey[label] >= s.BondMaxPerKey) {
+			why := "nobond" // a rejoin to a bond that is gone (ended, idled out, a restart)
+			if flags&JoinCreate != 0 {
+				why = "limit"
+			}
 			bonds.mu.Unlock()
+			s.Metrics.bondRefused(route, why)
 			WriteFrame(down, FrameClose, []byte{2}) // no such bond
 			return
 		}
 		sb = &srvBond{label: label, b: NewBond(), ready: make(chan struct{})}
+		sb.b.OnLegEnd = s.Metrics.bondLegEnd
 		bonds.m[key] = sb
 		bonds.perKey[label]++
 		creator = true
@@ -111,13 +121,16 @@ func (s *Server) join(label string, body []byte, up io.ReadCloser, down io.Write
 	select {
 	case <-sb.ready:
 	case <-time.After(30 * time.Second):
+		s.Metrics.bondRefused(route, "dialwait")
 		return
 	}
 	if !sb.ok {
+		s.Metrics.bondRefused(route, "dial")
 		WriteFrame(down, FrameClose, []byte{1})
 		return
 	}
-	sb.b.RunLeg(&legRW{Reader: up, Writer: down, body: up}, true)
+	s.Metrics.bondLegStart(route)
+	sb.b.RunLegNamed(&legRW{Reader: up, Writer: down, body: up}, true, route)
 }
 
 // bondTarget dials the bond's target and pumps it to and from the bond until
@@ -139,6 +152,7 @@ func (s *Server) bondTarget(key string, sb *srvBond, addr string, ks *keyStat) {
 		s.log("bond dial %s: %v", addr, err)
 		close(sb.ready)
 		sb.b.Abort(1, err)
+		s.Metrics.bondEnd(sb.b.Stats())
 		return
 	}
 	defer remote.Close()
@@ -192,4 +206,5 @@ func (s *Server) bondTarget(key string, sb *srvBond, addr string, ks *keyStat) {
 	wg.Wait()
 	b.Drain(10 * time.Second)
 	b.Close()
+	s.Metrics.bondEnd(b.Stats())
 }

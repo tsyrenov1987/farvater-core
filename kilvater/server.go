@@ -293,7 +293,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat, lab
 		return
 	}
 	if f.err == nil && f.typ == FrameJoin {
-		s.join(label, f.body, r.Body, down, ks) // one leg of a bond (bond.go)
+		s.join(label, r.Host, f.body, r.Body, down, ks) // one leg of a bond (bond.go)
 		return
 	}
 	if f.err != nil || f.typ != FrameOpen || len(f.body) < 2 {
