@@ -29,26 +29,29 @@ func zoneEvidence(b *Brain, now int64) {
 	b.Diag.lastWireFail["de3-xhttp"] = now - 6000
 }
 
+// Owner, 18.11.2026: on a cellular network with no whitelists every path is
+// in the fan — the zone's end takes none out.
 func TestGateOpenInternetCell(t *testing.T) {
 	b := gateBrain("cell:25002")
 	now := int64(1_000_000)
-	b.st["Orden-ru8"].AnsweredAt = now - 1000
 	openEvidence(b, now-2000) // foreign answers quickly: no whitelist zone
-	if b.Zone(now) || b.VKOpen(now) || b.CDNOpen(now) {
-		t.Fatal("gate open while the open internet answers")
+	if b.Zone(now) {
+		t.Fatal("zone while the open internet answers")
+	}
+	if !b.VKOpen(now) || !b.CDNOpen(now) {
+		t.Fatal("a path gated on a cellular network")
 	}
 	av := b.available(now)
-	for _, id := range []string{"de3-vk", "Orden-ru8", "de3-kilbond"} {
-		if contains(av, id) {
-			t.Fatalf("%s in the fan outside the zone: %v", id, av)
+	for _, p := range b.paths {
+		if !contains(av, p.ID) {
+			t.Fatalf("%s left the fan on cellular outside the zone: %v", p.ID, av)
 		}
 	}
-	if !contains(av, "de3-reality") || !contains(av, "de3-xhttp") || !contains(av, "wl2") {
-		t.Fatalf("an ungated path left the fan: %v", av)
-	}
 	u := b.UDPOrder(now)
-	if contains(u, "de3-vk") || contains(u, "Orden-ru8") || contains(u, "de3-kilbond") {
-		t.Fatalf("a gated path in the UDP order: %v", u)
+	for _, id := range []string{"de3-vk", "Orden-ru8", "de3-kilbond"} {
+		if !contains(u, id) {
+			t.Fatalf("%s not in the UDP order: %v", id, u)
+		}
 	}
 }
 
@@ -163,8 +166,11 @@ func TestGateQuickAnswersProveOpen(t *testing.T) {
 		b.Observe(Receipt{Path: id, AtMs: now + i*100, WireReadyMs: 60, FirstByteMs: 300, AnswerMs: 300, Down: 200 * KB, DurMs: 900, End: EndRemoteFin, DownAtFail: -1})
 	}
 	at := now + 200
-	if b.Zone(at) || b.CDNOpen(at) || contains(b.available(at), "Orden-ru8") {
-		t.Fatal("gate open after the open internet answered quickly")
+	if b.Zone(at) {
+		t.Fatal("zone after the open internet answered quickly")
+	}
+	if !contains(b.available(at), "Orden-ru8") || !contains(b.available(at), "de3-vk") {
+		t.Fatal("a path left the fan on cellular when the zone ended")
 	}
 }
 
@@ -233,17 +239,23 @@ func TestGateRestrictedCell(t *testing.T) {
 	}
 }
 
+// The zone's end closes vkturn off cellular, and nothing on cellular.
 func TestGateClosesWhenZoneEnds(t *testing.T) {
-	b := gateBrain("cell:25002")
-	now := int64(1_000_000)
-	zoneEvidence(b, now)
-	if !b.CDNOpen(now) {
-		t.Fatal("zone not seen")
-	}
-	later := now + 1000
-	openEvidence(b, later) // the open internet is back
-	if b.CDNOpen(later) || b.VKOpen(later) || contains(b.available(later), "Orden-ru8") {
-		t.Fatal("gate stays open after the open internet answered")
+	for ctx, open := range map[string]bool{"cell:25002": true, "wifi:ab12": false} {
+		b := gateBrain(ctx)
+		now := int64(1_000_000)
+		zoneEvidence(b, now)
+		if !b.VKOpen(now) {
+			t.Fatalf("%s: zone not seen", ctx)
+		}
+		later := now + 1000
+		openEvidence(b, later) // the open internet is back
+		if b.Zone(later) {
+			t.Fatalf("%s: zone after the open internet answered", ctx)
+		}
+		if b.VKOpen(later) != open || contains(b.available(later), "de3-vk") != open || contains(b.available(later), "Orden-ru8") != open {
+			t.Fatalf("%s: vk open %v, fan %v", ctx, b.VKOpen(later), b.available(later))
+		}
 	}
 }
 
@@ -267,7 +279,7 @@ func TestGateOneAddressIsNoProof(t *testing.T) {
 	now := int64(1_000_000)
 	b.st["de3-reality"].noteOpen(now - 2000)
 	b.st["de3-reality"].noteOpen(now - 1000)
-	if !b.Zone(now) || !b.CDNOpen(now) {
+	if !b.Zone(now) {
 		t.Fatal("two answers at one address ended the zone")
 	}
 	b.st["de3-xhttp"].noteOpen(now - 500)

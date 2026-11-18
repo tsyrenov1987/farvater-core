@@ -4,20 +4,21 @@ import "strings"
 
 // Two kinds of paths take flows only where they are meant to.
 //
-// CDNvideo (catalogue "#door=cdnv") and the bond that carries a CDNvideo leg
-// (rail "kilbond") ride a paid 10 Mbit/s door. The owner's rule (18.11.2026):
-// they work only on a cellular network, and only in a whitelist zone. The
-// audit of 18.11 found ~90 % of their bytes going to phones whose foreign
-// paths answered in the same hour, so the door was full of traffic that had
-// other ways out.
+// On a cellular network every path is in the fan, whitelist zone or not
+// (owner, 18.11.2026): nothing is gated there, and delivery sorts the paths.
+// The rule of the same morning — CDNvideo and the bond only in a zone — took
+// them and vkturn out of the fan each time the zone seemed over, the leader
+// with them (iOS 69 on МТС: eight times in an hour).
 //
-// Plain vkturn (rail "vkturn") rides VK's call relays on a pool of accounts
-// that must not burn. Rule of 16.11, widened 18.11: it works in a whitelist
-// zone on any network, whether CDNvideo answers or not — it is there to help
-// when CDNvideo is full or down.
+// Off cellular, CDNvideo (catalogue "#door=cdnv") and the bond that carries a
+// CDNvideo leg (rail "kilbond") take no flows: they ride a paid 10 Mbit/s
+// door. Plain vkturn (rail "vkturn") rides VK's call relays on a pool of
+// accounts that must not burn; off cellular it works in a whitelist zone,
+// whether CDNvideo answers or not.
 //
 // A whitelist zone is assumed on a cellular network until the open internet
-// proves itself there (Zone); on other networks it takes evidence.
+// proves itself there (Zone); on other networks it takes evidence. On
+// cellular the zone no longer gates: it says when the bond leads (bondLead).
 //
 // Outside its conditions a path stays in the catalogue and in memory and only
 // takes no flows; the moment they hold, it is back in the fan. available()
@@ -36,11 +37,13 @@ func cdnGated(p PathInfo) bool { return p.Door == DoorCDNvideo || p.Rail == "kil
 
 // gated returns the paths kept out of the fan right now (nil: none).
 func (b *Brain) gated(now int64) map[string]bool {
+	if b.cellular() {
+		return nil
+	}
 	zone := b.Zone(now)
-	cdnOpen := zone && b.cellular()
 	var out map[string]bool
 	for _, p := range b.paths {
-		if vkGated(p) && !zone || cdnGated(p) && !vkGated(p) && !cdnOpen {
+		if vkGated(p) && !zone || cdnGated(p) && !vkGated(p) {
 			if out == nil {
 				out = map[string]bool{}
 			}
@@ -206,9 +209,10 @@ func (b *Brain) bondHolds(now int64) bool {
 	return !slow && !b.leaderUnheard(now)
 }
 
-// VKOpen reports whether plain vkturn paths may take flows: a whitelist zone.
-func (b *Brain) VKOpen(now int64) bool { return b.Zone(now) }
+// VKOpen reports whether plain vkturn paths may take flows: a cellular
+// network, or a whitelist zone on any other.
+func (b *Brain) VKOpen(now int64) bool { return b.cellular() || b.Zone(now) }
 
 // CDNOpen reports whether CDNvideo paths and the bond may take flows: a
-// whitelist zone on a cellular network.
-func (b *Brain) CDNOpen(now int64) bool { return b.cellular() && b.Zone(now) }
+// cellular network.
+func (b *Brain) CDNOpen(now int64) bool { return b.cellular() }

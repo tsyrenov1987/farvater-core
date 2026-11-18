@@ -1033,7 +1033,7 @@ type Status struct {
 	Drops     brain.Drops   `json:"drops"`              // receipts the brain left out of the evidence, by why
 	White     bool          `json:"white,omitempty"`    // the network is a restricted (white-list) one
 	VKOpen    bool          `json:"vk_open,omitempty"`  // bare vkturn paths are allowed as primaries here
-	CDNOpen   bool          `json:"cdn_open,omitempty"` // CDNvideo paths and the bond take flows here (cellular whitelist zone)
+	CDNOpen   bool          `json:"cdn_open,omitempty"` // CDNvideo paths and the bond take flows here (a cellular network)
 	Paths     []PathStatus  `json:"paths"`
 	Skipped   []string      `json:"skipped"`
 	Journal   int           `json:"journal_entries"`
