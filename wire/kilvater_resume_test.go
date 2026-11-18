@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -390,5 +391,58 @@ func TestResumeUploadWhileTargetWritesFirst(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatalf("upload stalled: %+v", lab.srv.ResumeStats())
+	}
+}
+
+// The handshake pacing refuses the reconnect on the flow's own path (its
+// window is full): the refusal is immediate, and the flow goes on by the
+// sibling path within the resume budget.
+func TestKilvaterResumeWhenOwnPathPaced(t *testing.T) {
+	lab, spec := newKilLab(t, 5*time.Second)
+	g := newHSGate()
+	g.jitter = func() time.Duration { return 0 }
+	var refused atomic.Int32
+	paced := func(ctx context.Context) (net.Conn, error) {
+		if _, err := g.reserve(ctx, "a.example", "chrome"); err != nil {
+			refused.Add(1)
+			return nil, err
+		}
+		return lab.dial(ctx)
+	}
+	a, err := newKilWire(spec, paced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	other := &kilLab{t: t, srv: lab.srv}
+	t.Cleanup(other.cut)
+	specB := spec
+	specB.ID = "kv-b"
+	b, err := newKilWire(specB, other.dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	f := startKilFlow(t, a)
+	f.expect(t, "hello ")
+	g.mu.Lock()
+	for h := g.name("a.example"); len(h.slots) < hsPerWindow; {
+		h.slots = append(h.slots, g.now())
+	}
+	g.mu.Unlock()
+	began := time.Now()
+	lab.cut()
+	f.up <- []byte("by the other path")
+	f.expect(t, "by the other path")
+	if d := time.Since(began); d > 3*time.Second {
+		t.Fatalf("resumed after %v: the refusal should not have been waited out", d)
+	}
+	if refused.Load() == 0 {
+		t.Fatal("the own path's reconnect never met the pacing")
+	}
+	resumed, _ := KilvaterResumeCounts()
+	if resumed == 0 {
+		t.Fatal("the flow did not resume")
 	}
 }

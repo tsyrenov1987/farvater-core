@@ -156,6 +156,9 @@ func newBond(s PathSpec) (Wire, error) {
 			}
 			return nil, err
 		}
+		// A leg's handshakes are not paced (above), so the pacing never keeps
+		// a leg on a connection past its rotation limit either.
+		w.mux.held = nil
 		ws = append(ws, w)
 	}
 	return &bondWire{spec: s, legs: ws, stats: make([]legCount, len(ws))}, nil

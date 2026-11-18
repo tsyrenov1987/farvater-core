@@ -234,7 +234,9 @@ func (f *flow) serve(ctx context.Context) {
 		a = f.newAttempt(next, false)
 		sess, err = f.dialOne(ctx, a)
 		if err != nil {
-			s.observe(a.dialFail(f, err))
+			if !errors.Is(err, wire.ErrHandshakePaced) {
+				s.observe(a.dialFail(f, err))
+			}
 			return
 		}
 	}
@@ -319,7 +321,8 @@ func (f *flow) dialRace(ctx context.Context, order []string, staggerMs int64, ex
 				}
 				return r.sess, r.a, nil
 			}
-			if rctx.Err() == nil {
+			// A dial the handshake pacing refused says nothing of the path.
+			if rctx.Err() == nil && !errors.Is(r.err, wire.ErrHandshakePaced) {
 				f.s.observe(r.a.dialFail(f, r.err))
 			}
 			if launched < len(order) {
