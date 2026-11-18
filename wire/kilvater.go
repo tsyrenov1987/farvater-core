@@ -174,6 +174,9 @@ func (w *kilWire) tag(path string) string {
 // DialPacket (UDP) open it the same way; what tells them apart is the network
 // byte in the OPEN frame that follows.
 func (w *kilWire) openTunnel(ctx context.Context) (net.Conn, error) {
+	if w.spec.Mode == "split" || w.spec.Mode == "split-post" {
+		return w.openSplit(ctx) // kilvater_split.go
+	}
 	path := w.spec.Path
 	if path == "" {
 		path = "/connect"

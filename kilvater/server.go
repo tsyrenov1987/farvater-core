@@ -37,6 +37,8 @@ type Server struct {
 	// Metrics, if set, counts traffic and health per key. nil disables it.
 	Metrics *Metrics
 
+	split splitTable // live split sessions by sid (split.go)
+
 	// MaxBytesPerKey caps the total (up+down) payload bytes one key may carry
 	// before its new streams are refused; MaxStreamsPerKey caps a key's
 	// concurrent streams. Both are off at zero, both need Metrics set, and both
@@ -227,6 +229,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.Decoy.ServeHTTP(w, r)
 		return
 	}
+	if kind, sid, seq := parseSplitPath(r.URL.Path); kind != splitNone {
+		s.serveSplit(w, r, id, kind, sid, seq) // split.go
+		return
+	}
 	ks, ok := s.admit(id, time.Now())
 	if !ok {
 		s.Metrics.limitReject()
@@ -267,6 +273,13 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat, lab
 	w.WriteHeader(http.StatusOK)
 	fl.Flush()
 	down := &flushed{w: w, f: fl}
+	s.frames(r.Context(), r.Host, label, r.Body, down, ks)
+}
+
+// frames serves one tunnel stream once it is admitted: the OPEN (or JOIN)
+// frame read from up, then the flow it asks for, its frames written to down.
+// A POST stream (tunnel) and a split session (split.go) both end up here.
+func (s *Server) frames(ctx context.Context, host, label string, up io.ReadCloser, down io.Writer, ks *keyStat) {
 	WritePad(down) // vary the size of the first record the client sees
 
 	// Read the OPEN frame, but never let a client that authenticated yet never
@@ -280,7 +293,7 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat, lab
 	ch := make(chan opened, 1)
 	go func() {
 		var buf []byte
-		typ, body, err := ReadFrame(r.Body, buf)
+		typ, body, err := ReadFrame(up, buf)
 		ch <- opened{typ, body, err}
 	}()
 	var f opened
@@ -289,18 +302,18 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat, lab
 	case <-time.After(openWait()):
 		s.Metrics.openTimeout()
 		return
-	case <-r.Context().Done():
+	case <-ctx.Done():
 		return
 	}
 	if f.err == nil && f.typ == FrameJoin {
-		s.join(label, r.Host, f.body, r.Body, down, ks) // one leg of a bond (bond.go)
+		s.join(label, host, f.body, up, down, ks) // one leg of a bond (bond.go)
 		return
 	}
 	if f.err != nil || f.typ != FrameOpen || len(f.body) < 2 {
 		return
 	}
 	if f.body[0] == NetResume {
-		s.resume(f.body[1:], label, r.Body, down, ks)
+		s.resume(f.body[1:], label, up, down, ks)
 		return
 	}
 	addr, rest, err := ParseAddr(f.body[1:])
@@ -311,12 +324,12 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, ks *keyStat, lab
 	switch f.body[0] {
 	case NetTCP:
 		if sid, ok := ParseSessionExt(rest); ok && s.ResumeGrace > 0 {
-			s.tcpSession(r.Context(), addr, sessKey{label, sid}, r.Body, down, ks)
+			s.tcpSession(ctx, addr, sessKey{label, sid}, up, down, ks)
 			return
 		}
-		s.tcp(r.Context(), addr, r.Body, down, ks)
+		s.tcp(ctx, addr, up, down, ks)
 	case NetUDP:
-		s.udp(r.Context(), addr, r.Body, down, ks)
+		s.udp(ctx, addr, up, down, ks)
 	default:
 		WriteFrame(down, FrameClose, []byte{1})
 	}

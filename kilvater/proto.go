@@ -259,7 +259,14 @@ type Identity struct {
 	V2    bool
 	KeyID KeyID // set when V2
 	Index int   // the v1 key index when !V2
+
+	key Key // the key the tag verified under; set only on accept
 }
+
+// Key is the tunnel key the tag verified under: the subscriber key derived
+// from the master for v2, the listed key for v1. The split transport seals
+// its streams with it (seal.go). Zero unless the tag was accepted.
+func (id Identity) Key() Key { return id.key }
 
 // Label is the metric label for this identity: the key id for v2, or "v1" for a
 // v1 key. The flat v1 list is one shared label (the legacy shared key); the real
@@ -355,7 +362,7 @@ func (v *Verifier) verifyV1(set *keySet, b []byte, path string, now time.Time) (
 	if !v.firstSeen(b[:16], int64(binary.BigEndian.Uint64(b[:8])), now) {
 		return -1, Identity{}
 	}
-	return idx, Identity{Index: idx}
+	return idx, Identity{Index: idx, key: set.keys[idx]}
 }
 
 func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (int, Identity, string) {
@@ -379,9 +386,11 @@ func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (
 	// does not tell which ids are listed (audit KL-09).
 	tagMAC := b[off+16:]
 	hit := -1
+	var key Key
 	for i, m := range set.masters {
-		if hmac.Equal(macV2(DeriveKey(m, id), id, b[off:off+8], b[off+8:off+16], path), tagMAC) {
-			hit = i
+		k := DeriveKey(m, id)
+		if hmac.Equal(macV2(k, id, b[off:off+8], b[off+8:off+16], path), tagMAC) {
+			hit, key = i, k
 			break
 		}
 	}
@@ -402,6 +411,7 @@ func (v *Verifier) verifyV2(set *keySet, b []byte, path string, now time.Time) (
 	if hit < maxMasterHits {
 		v.masterHits[hit].Add(1)
 	}
+	claimed.key = key
 	return verifiedV2, claimed, ""
 }
 

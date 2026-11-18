@@ -50,7 +50,7 @@ type PathSpec struct {
 	SpiderX     string // reality
 	Path        string // ws / xhttp
 	HostHeader  string // ws / xhttp
-	Mode        string // xhttp mode: auto | packet-up | stream-up | stream-one
+	Mode        string // xhttp mode: auto | packet-up | stream-up | stream-one; kilvater: "" | split | split-post
 	ServiceName string // grpc
 	Authority   string // grpc :authority override
 
@@ -231,6 +231,15 @@ func ParseURI(raw string) (PathSpec, error) {
 			spec.Path = "/connect"
 		}
 		spec.HostHeader = q.Get("host")
+		// mode=split carries each flow as separate requests, for a CDN that
+		// will not stream a request body: split-post sends the uplink in POST
+		// bodies, split in GET headers (kilvater_split.go).
+		switch m := q.Get("mode"); m {
+		case "", "split", "split-post":
+			spec.Mode = m
+		default:
+			return spec, errors.New("kilvater: unknown mode " + m)
+		}
 		if spec.SNI == "" {
 			spec.SNI = spec.Host
 		}
