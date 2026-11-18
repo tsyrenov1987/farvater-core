@@ -165,6 +165,7 @@ func udpBoardOver(t *testing.T, cat *catalogue.Catalogue, lead, next, failing st
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(context.Context, []string) bool { return false }
 	for i := 0; i < 6; i++ {
 		s.observe(delivered(lead))

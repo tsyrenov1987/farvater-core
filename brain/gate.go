@@ -1,6 +1,9 @@
 package brain
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Two kinds of paths take flows only where they are meant to.
 //
@@ -18,7 +21,9 @@ import "strings"
 //
 // A whitelist zone is assumed on a cellular network until the open internet
 // proves itself there (Zone); on other networks it takes evidence. On
-// cellular the zone no longer gates: it says when the bond leads (bondLead).
+// cellular the zone no longer gates. The network is asked directly there
+// (Verdict): in a zone the bond leads (bondLead), on the open internet the
+// paid door and vkturn ride behind (backSeat).
 //
 // Outside its conditions a path stays in the catalogue and in memory and only
 // takes no flows; the moment they hold, it is back in the fan. available()
@@ -129,14 +134,30 @@ func (b *Brain) openProof(now int64) int64 {
 }
 
 // zoneEvident reports whether the whitelist zone is known rather than assumed:
-// the brain is in a restricted network, at least two paths meant for the open
-// internet failed to connect within GateWindowMs and after the open internet
-// last proved itself (with no proof, a tripped one counts too), or the zone
-// came back over a proof within ZoneRelapseMs. proof is openProof's.
+// the brain is in a restricted network, or the network itself said so when
+// asked directly (Verdict); a direct verdict of the open internet is its proof.
+// With no verdict the paths' own record decides (inferZone).
 func (b *Brain) zoneEvident(now int64) (evident bool, proof int64) {
 	if b.Restricted() {
 		return true, 0
 	}
+	switch b.Verdict(now) {
+	case VerdictZone:
+		return true, 0
+	case VerdictOpen:
+		return false, b.verdictAt
+	}
+	return b.inferZone(now)
+}
+
+// inferZone is zoneEvident from the paths' record alone: at least two paths
+// meant for the open internet failed to connect within GateWindowMs and after
+// the open internet last proved itself (with no proof, a tripped one counts
+// too), or the zone came back over a proof within ZoneRelapseMs. proof is
+// openProof's. The paths fail for reasons of their own too (an address
+// blocked, a node loaded, a poor radio), so this is a guess: it stands only
+// until the network answers a direct probe.
+func (b *Brain) inferZone(now int64) (evident bool, proof int64) {
 	proof = b.openProof(now)
 	since := now - GateWindowMs
 	if proof > 0 {
@@ -216,3 +237,159 @@ func (b *Brain) VKOpen(now int64) bool { return b.cellular() || b.Zone(now) }
 // CDNOpen reports whether CDNvideo paths and the bond may take flows: a
 // cellular network.
 func (b *Brain) CDNOpen(now int64) bool { return b.cellular() }
+
+// Verdict is what the network itself said when asked directly, past the paths
+// (switchboard.checkZone): allow-listed sites and neutral foreign sites are
+// dialled side by side.
+type Verdict int
+
+const (
+	VerdictUnknown Verdict = iota
+	VerdictZone            // allow-listed sites answer, no foreign one does
+	VerdictOpen            // both answer
+)
+
+func (v Verdict) String() string {
+	return [...]string{"unknown", "zone", "open"}[v]
+}
+
+const (
+	// VerdictConfirm is how many probes in a row must agree before the
+	// verdict changes: one lost handshake is not a zone.
+	VerdictConfirm = 2
+	// VerdictOpenAnswers is how many foreign sites must answer for the open
+	// internet; with fewer (and more than none) the probe says nothing: one
+	// of them may be on an operator's list.
+	VerdictOpenAnswers = 2
+	// VerdictKeepMs is how long a verdict stands with no probe renewing it
+	// (the phone slept, and may have moved).
+	VerdictKeepMs = 15 * 60_000
+	// How often the network is asked: until it has answered and while its
+	// last answer is not confirmed; in a zone; on the open internet; and
+	// while the paths' record disagrees with the verdict.
+	ProbeUnsureMs = 10_000
+	ProbeZoneMs   = 120_000
+	ProbeOpenMs   = 300_000
+	ProbeDoubtMs  = 60_000
+)
+
+// Verdict returns the network's direct verdict, VerdictUnknown off cellular
+// and once it is older than VerdictKeepMs.
+func (b *Brain) Verdict(now int64) Verdict {
+	if b.verdict == VerdictUnknown || !b.cellular() || now-b.verdictAt > VerdictKeepMs {
+		return VerdictUnknown
+	}
+	return b.verdict
+}
+
+// ZoneProbeDue reports whether the network is to be asked again, last asked
+// at last. Only a cellular network not known as restricted is asked: whitelists are a mobile thing,
+// and off cellular the zone gates on the paths' record as before.
+func (b *Brain) ZoneProbeDue(now, last int64) bool {
+	if !b.cellular() || b.Restricted() {
+		return false // a restricted network is a zone already, and has its own check
+	}
+	every := int64(ProbeUnsureMs)
+	if b.unclearRun >= VerdictConfirm {
+		every = ProbeDoubtMs // the probe keeps saying nothing: asking faster will not help
+	}
+	if v := b.Verdict(now); v != VerdictUnknown && b.probeLast == v {
+		every = ProbeOpenMs
+		if v == VerdictZone {
+			every = ProbeZoneMs
+		}
+		if ev, proof := b.inferZone(now); ev && v == VerdictOpen || proof > 0 && v == VerdictZone {
+			every = ProbeDoubtMs
+		}
+	}
+	return now-last >= every
+}
+
+// NoteZoneProbe takes one direct probe: whether an allow-listed site answered
+// and how many of the neutral foreign sites did. No allow-listed answer means
+// the network is down or the probe never left: it says nothing. A verdict
+// changes on VerdictConfirm probes in a row; one that agrees with it renews it.
+func (b *Brain) NoteZoneProbe(white bool, foreign int, now int64) {
+	if !white || !b.cellular() {
+		return
+	}
+	v := VerdictUnknown
+	switch {
+	case foreign >= VerdictOpenAnswers:
+		v = VerdictOpen
+	case foreign == 0:
+		v = VerdictZone
+	}
+	if v == VerdictUnknown {
+		b.probeLast, b.probeRun = VerdictUnknown, 0
+		b.unclearRun++
+		return
+	}
+	b.unclearRun = 0
+	if v == b.probeLast {
+		b.probeRun++
+	} else {
+		b.probeLast, b.probeRun = v, 1
+	}
+	was := b.Verdict(now)
+	if v != was && b.probeRun < VerdictConfirm {
+		return
+	}
+	b.verdict, b.verdictAt = v, now
+	if v == was {
+		return
+	}
+	b.J.Add(now, "zone_"+v.String(), fmt.Sprintf("asked directly: allow-listed sites answer, %d foreign; was %s", foreign, was), "")
+	if v == VerdictOpen {
+		b.stepBack(now)
+	}
+}
+
+// backSeat reports whether p rides behind on this network: on a cellular
+// network the open internet proved itself on directly, CDNvideo, the bond and
+// vkturn stay in the fan (owner, 18.11.2026) but do not lead while a path
+// meant for the open internet does the work — the door is paid and capped,
+// the VK accounts must not burn. They get the stretched floor of an off-net
+// path, are not chosen to lead anew over a free open path, and do not take
+// the lead on a quicker answer alone (a Russian entry always answers
+// sooner). Delivery still moves them: a leader that fails or is measured
+// several times slower gives way to them like to any path.
+func (b *Brain) backSeat(p PathInfo, now int64) bool {
+	return (vkGated(p) || cdnGated(p)) && b.Verdict(now) == VerdictOpen
+}
+
+// front returns the paths of avail that may lead anew: all of them, or, where
+// some ride behind (backSeat), the others the breaker has not tripped — when
+// there are any.
+func (b *Brain) front(avail []string, now int64) []string {
+	var out []string
+	for _, p := range avail {
+		if !b.backSeat(b.info(p), now) && !b.Breaker.Tripped(p, now) {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 || len(out) == len(avail) {
+		return avail
+	}
+	return out
+}
+
+// stepBack hands the lead from a path that rides behind to one meant for the
+// open internet, the moment the open internet proved itself: a phone starts
+// on cellular assuming a zone, and the paid door led from then on.
+func (b *Brain) stepBack(now int64) {
+	if b.leader == "" || !b.backSeat(b.info(b.leader), now) {
+		return
+	}
+	front := b.front(b.available(now), now)
+	if contains(front, b.leader) {
+		return // nothing else is free
+	}
+	l := b.answeredNow(front, now)
+	if l == "" {
+		l, _ = b.bestBy(front, "", false, now)
+	}
+	if l != "" {
+		b.setLeader(l, now, "lead_open", "the open internet proved itself: the paid door steps back")
+	}
+}

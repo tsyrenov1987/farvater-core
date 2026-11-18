@@ -130,3 +130,17 @@ func TestGroupLabelsTheNextLinkOnly(t *testing.T) {
 		t.Fatalf("JSON labels %+v: want group g", j.Paths[0].Labels)
 	}
 }
+
+// A "#control=" line replaces the client's control sites for the zone probe.
+func TestControlProbesLine(t *testing.T) {
+	c, err := Parse([]byte("#control=a.example, b.example,\n" + l1 + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.ControlProbes) != 2 || c.ControlProbes[0] != "a.example" || c.ControlProbes[1] != "b.example" {
+		t.Fatalf("control probes %q", c.ControlProbes)
+	}
+	if len(c.Paths) != 1 {
+		t.Fatalf("%d paths, want 1", len(c.Paths))
+	}
+}

@@ -21,6 +21,7 @@ func TestStatusCarriesVolumeAtEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(context.Context, []string) bool { return false }
 	now := nowMs()
 	s.observe(brain.Receipt{Path: "a", AtMs: now, WireReadyMs: 20, FirstByteMs: 40, Down: 20 * brain.KB, DownAtFail: 20 * brain.KB, End: brain.EndStallAbandon, Dst: "h"})
@@ -61,6 +62,7 @@ func TestStatusCarriesHandshakeGaps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(context.Context, []string) bool { return false }
 	s.noteHandshake("a", -1, wire.HandshakeOK)
 	s.noteHandshake("a", 400, wire.HandshakeFail)

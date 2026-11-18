@@ -59,7 +59,11 @@ type Catalogue struct {
 	Priors      map[string]map[string]Prior `json:"priors"`
 	FeedbackURL string                      `json:"feedback_url"`
 	RefreshSec  int                         `json:"refresh_sec"`
-	Source      string                      `json:"-"`
+	// ControlProbes replace the client's neutral foreign sites dialled to
+	// tell a whitelist zone from the open internet (switchboard.Config): a
+	// "#control=host,host" line of a plain list.
+	ControlProbes []string `json:"control_probes,omitempty"`
+	Source        string   `json:"-"`
 }
 
 // Load reads a catalogue from a URL or a local file path.
@@ -215,6 +219,15 @@ func Parse(body []byte) (*Catalogue, error) {
 			door = strings.TrimSpace(v)
 			continue
 		}
+		if v, ok := strings.CutPrefix(line, "#control="); ok {
+			c.ControlProbes = nil
+			for _, h := range strings.Split(v, ",") {
+				if h = strings.TrimSpace(h); h != "" {
+					c.ControlProbes = append(c.ControlProbes, h)
+				}
+			}
+			continue
+		}
 		if line == "#white" {
 			white = true
 			continue
@@ -255,7 +268,7 @@ func Merge(cs []*Catalogue) *Catalogue {
 	uris, ids, probes := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for i, c := range cs {
 		if i == 0 {
-			out.Title, out.Fingerprint, out.RefreshSec = c.Title, c.Fingerprint, c.RefreshSec
+			out.Title, out.Fingerprint, out.RefreshSec, out.ControlProbes = c.Title, c.Fingerprint, c.RefreshSec, c.ControlProbes
 		}
 		kept := map[string]string{} // id in c → id in out
 		for _, e := range c.Paths {

@@ -45,6 +45,7 @@ func sharedBoard(t *testing.T) (*Switchboard, string, *sharedWire) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(context.Context, []string) bool { return false }
 	for i := 0; i < 6; i++ {
 		s.observe(delivered("a")) // quick first bytes: a short first-byte deadline

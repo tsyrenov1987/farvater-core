@@ -65,6 +65,7 @@ func dethroneWhileFrozen(t *testing.T, whole bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(context.Context, []string) bool { return false }
 	ids := []string{}
 	for id := range s.wires {

@@ -43,6 +43,14 @@ type Config struct {
 	// answer means the network is up and shuts the paths out. Empty: never.
 	WhiteProbes []string
 
+	// ControlProbes are neutral foreign sites, not blocked and on no
+	// operator's list, each in a network of its own. On a cellular network
+	// they are dialled directly beside WhiteProbes: allow-listed sites
+	// answering while none of these does is a whitelist zone, both answering
+	// is the open internet (brain.Verdict). The catalogue's "#control=" line
+	// replaces them. Empty: the network is never asked.
+	ControlProbes []string
+
 	// Hosted names the kinds of path the app runs beside the core
 	// (wire.IsHosted): they start asleep and wake when the app hands their
 	// door to SetEndpoint. A path of a hosted kind not named here is skipped.
@@ -111,6 +119,9 @@ func DefaultConfig() Config {
 		ReceiptHistory:   200,
 		MemorySaveEvery:  2 * time.Minute,
 		WhiteProbes:      []string{"ya.ru", "vk.com", "gosuslugi.ru"},
+		// Wikimedia, GitHub, OSUOSL, the Internet Archive, Fastly: all five
+		// answered from a Russian network on 18.11.2026.
+		ControlProbes: []string{"www.wikipedia.org", "github.com", "www.debian.org", "archive.org", "www.python.org"},
 	}
 }
 
@@ -143,6 +154,9 @@ type Switchboard struct {
 	probing  bool   // a restricted-network check is out
 	probedAt int64
 	probe    func(ctx context.Context, hosts []string) bool
+	zprobing bool  // a zone check is out (checkZone)
+	zprobed  int64 // when the last one began
+	count    func(ctx context.Context, hosts []string) int
 	udpBack  map[string]int64 // path → until when UDP tries it last (udp.go)
 	wantTill map[string]int64 // hosted path → until when it is wanted up (Hosted)
 	ruFailed map[string]int64 // Russian site → until when it goes over the paths (ru.go)
@@ -190,7 +204,10 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 	if labTune != nil {
 		labTune(&cfg)
 	}
-	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, carried: map[string]*carried{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, udpBack: map[string]int64{}, wantTill: map[string]int64{}, ruFailed: map[string]int64{}, letGone: make(chan struct{})}
+	if len(cat.ControlProbes) > 0 {
+		cfg.ControlProbes = cat.ControlProbes
+	}
+	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, carried: map[string]*carried{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, count: probeCount, udpBack: map[string]int64{}, wantTill: map[string]int64{}, ruFailed: map[string]int64{}, letGone: make(chan struct{})}
 	var infos []brain.PathInfo
 	for _, e := range cat.Paths {
 		if wire.IsHosted(e.Spec.Kind) && !slices.Contains(cfg.Hosted, e.Spec.Kind) {
@@ -394,10 +411,55 @@ func (s *Switchboard) checkRestricted(ctxAtStart string) {
 	s.logf("no path connects; allow-listed sites answer: %v; a path answered since: %v; network %s", up && same, answered, ctxNow)
 }
 
+// checkZone asks a cellular network directly, past the paths, whether it is a
+// whitelist zone: allow-listed sites and neutral foreign sites are dialled
+// side by side, and the brain takes the count (brain.NoteZoneProbe). The
+// paths' own failures cannot tell: they fail for an address blocked, a node
+// loaded, a poor radio. A result that arrives after the network changed is
+// ignored.
+func (s *Switchboard) checkZone(ctxAtStart string) {
+	ctx, cancel := context.WithTimeout(context.Background(), whiteProbeTimeout)
+	defer cancel()
+	wc := make(chan bool, 1)
+	go func() { wc <- s.probe(ctx, s.cfg.WhiteProbes) }()
+	foreign := s.count(ctx, s.cfg.ControlProbes)
+	white := <-wc
+	s.mu.Lock()
+	s.zprobing = false
+	same := s.b.Ctx() == ctxAtStart
+	if same {
+		s.b.NoteZoneProbe(white, foreign, nowMs())
+	}
+	v := s.b.Verdict(nowMs())
+	s.mu.Unlock()
+	s.logf("zone check: allow-listed sites answer: %v; foreign sites answering: %d of %d; same network: %v; verdict %s", white, foreign, len(s.cfg.ControlProbes), same, v)
+}
+
 // probeWhite reports whether any of hosts completes a verified TLS handshake
 // on port 443, dialled directly rather than through a path. The handshake is
 // Chrome's: these go out in the open just as the paths stop answering.
 func probeWhite(ctx context.Context, hosts []string) bool {
+	res := probeHosts(ctx, hosts)
+	for range hosts {
+		if <-res {
+			return true
+		}
+	}
+	return false
+}
+
+// probeCount is probeWhite counting the hosts that answered, waiting for all.
+func probeCount(ctx context.Context, hosts []string) int {
+	res, n := probeHosts(ctx, hosts), 0
+	for range hosts {
+		if <-res {
+			n++
+		}
+	}
+	return n
+}
+
+func probeHosts(ctx context.Context, hosts []string) chan bool {
 	res := make(chan bool, len(hosts))
 	for _, h := range hosts {
 		go func() {
@@ -417,12 +479,7 @@ func probeWhite(ctx context.Context, hosts []string) bool {
 			res <- true
 		}()
 	}
-	for range hosts {
-		if <-res {
-			return true
-		}
-	}
-	return false
+	return res
 }
 
 func resolveIP(host string) string {
@@ -880,6 +937,10 @@ func (s *Switchboard) observe(r brain.Receipt) {
 	if len(s.cfg.WhiteProbes) > 0 && !s.probing && now-s.probedAt >= whiteProbeEveryMs && s.b.NetDown(now) {
 		s.probing, s.probedAt, check = true, now, s.b.Ctx()
 	}
+	zone := ""
+	if len(s.cfg.WhiteProbes) > 0 && len(s.cfg.ControlProbes) > 0 && !s.zprobing && s.b.ZoneProbeDue(now, s.zprobed) {
+		s.zprobing, s.zprobed, zone = true, now, s.b.Ctx()
+	}
 	var data []byte
 	var seq uint64
 	if every := s.cfg.MemorySaveEvery.Milliseconds(); every > 0 && now-s.savedAt >= every {
@@ -889,6 +950,9 @@ func (s *Switchboard) observe(r brain.Receipt) {
 	s.mu.Unlock()
 	if check != "" {
 		go s.checkRestricted(check)
+	}
+	if zone != "" {
+		go s.checkZone(zone)
 	}
 	_ = s.writeMemory(data, seq)
 	s.logf("receipt %s %s wire=%dms fb=%dms down=%d up=%d dur=%dms stalls=%d dst=%s", r.Path, r.End, r.WireReadyMs, r.FirstByteMs, r.Down, r.Up, r.DurMs, r.Stalls, r.Dst)
@@ -1027,13 +1091,14 @@ type Status struct {
 	Direct    int64         `json:"direct"`         // flows that went around the paths (Config.Direct)
 	Shed      int64         `json:"shed,omitempty"` // flows refused under memory pressure (Config.Pressed)
 	Dropped   int           `json:"dropped"`
-	Served    int64         `json:"served"`             // the session's receipts served, on every network, probes left out
-	Blocked   int64         `json:"blocked"`            // the session's receipts with a block signature, the same way
-	Slept     int64         `json:"slept"`              // the session's receipts of flows the device slept through, the same way
-	Drops     brain.Drops   `json:"drops"`              // receipts the brain left out of the evidence, by why
-	White     bool          `json:"white,omitempty"`    // the network is a restricted (white-list) one
-	VKOpen    bool          `json:"vk_open,omitempty"`  // bare vkturn paths are allowed as primaries here
-	CDNOpen   bool          `json:"cdn_open,omitempty"` // CDNvideo paths and the bond take flows here (a cellular network)
+	Served    int64         `json:"served"`                 // the session's receipts served, on every network, probes left out
+	Blocked   int64         `json:"blocked"`                // the session's receipts with a block signature, the same way
+	Slept     int64         `json:"slept"`                  // the session's receipts of flows the device slept through, the same way
+	Drops     brain.Drops   `json:"drops"`                  // receipts the brain left out of the evidence, by why
+	White     bool          `json:"white,omitempty"`        // the network is a restricted (white-list) one
+	VKOpen    bool          `json:"vk_open,omitempty"`      // bare vkturn paths are allowed as primaries here
+	Verdict   string        `json:"zone_verdict,omitempty"` // what a cellular network said when asked directly: zone, open
+	CDNOpen   bool          `json:"cdn_open,omitempty"`     // CDNvideo paths and the bond take flows here (a cellular network)
 	Paths     []PathStatus  `json:"paths"`
 	Skipped   []string      `json:"skipped"`
 	Journal   int           `json:"journal_entries"`
@@ -1048,7 +1113,11 @@ func (s *Switchboard) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := nowMs()
-	st := Status{
+	verdict := ""
+	if v := s.b.Verdict(now); v != brain.VerdictUnknown {
+		verdict = v.String()
+	}
+	st := Status{Verdict: verdict,
 		Version: Version, UptimeSec: int64(time.Since(s.started).Seconds()),
 		Listen: s.cfg.Listen, Ctx: s.b.Ctx(), Catalogue: s.cat.Title, Leader: s.b.Leader(),
 		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Shed: s.shed.Load(), Dropped: s.b.Dropped,

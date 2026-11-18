@@ -27,6 +27,7 @@ func hostedBoard(t *testing.T, hosted []wire.Kind, links ...string) *Switchboard
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(context.Context, []string) bool { return false }
 	return s
 }
@@ -106,6 +107,7 @@ func TestHostedWantedOnNeed(t *testing.T) {
 // path is enough when the rest of the fan sleeps.
 func TestHostedWantedWhenTheAwakePathIsShutOut(t *testing.T) {
 	s := hostedBoard(t, runOlc, deadLink, olcLink)
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(context.Context, []string) bool { return true }
 	s.observe(wireFailed("a"))
 	waitCtx(t, s, "default:wl")

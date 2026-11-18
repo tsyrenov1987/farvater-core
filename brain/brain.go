@@ -143,12 +143,17 @@ type Brain struct {
 	saved      map[string]ctxState         // networks left this session
 	mem        *Memory                     // what earlier sessions learned (nil: none)
 	priors     map[string]map[string]Prior // the catalogue's, per network
-	relapseAt  int64                       // when the zone last came back over the open internet's proof (gate.go)
-	switchedAt int64                       // last network change: flows begun before it are not evidence
-	blockedAt  int64                       // the system blocked the app's network (Blocked); 0: it has not
-	silent     map[string]bool             // restricted network: paths silent when it was entered
-	back       map[string]bool             // ...and those of them that connected since
-	upAt       int64                       // an allow-listed site last answered directly
+	verdict    Verdict                     // the network's direct verdict (gate.go), when, and the run of probes agreeing on probeLast
+	verdictAt  int64
+	probeLast  Verdict
+	probeRun   int
+	unclearRun int
+	relapseAt  int64           // when the zone last came back over the open internet's proof (gate.go)
+	switchedAt int64           // last network change: flows begun before it are not evidence
+	blockedAt  int64           // the system blocked the app's network (Blocked); 0: it has not
+	silent     map[string]bool // restricted network: paths silent when it was entered
+	back       map[string]bool // ...and those of them that connected since
+	upAt       int64           // an allow-listed site last answered directly
 	upSeen     bool
 	asleep     map[string]bool  // paths whose transport is down (Sleep)
 	demoted    map[string]int64 // when a path was dethroned for what it did
@@ -496,7 +501,7 @@ func (b *Brain) quicker(avail []string, now int64) (string, string) {
 	_, slow := b.slowLeader(now)
 	best, bestMs := "", int64(0)
 	for _, p := range avail {
-		if p == b.leader || b.held(p, now) || b.muchSlower(p, now) {
+		if p == b.leader || b.held(p, now) || b.muchSlower(p, now) || b.backSeat(b.info(p), now) {
 			continue
 		}
 		s := b.st[p]
@@ -665,9 +670,10 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 	}
 
 	if b.leader == "" || !contains(avail, b.leader) {
-		l, _ := b.bestBy(avail, "", false, now)
+		front := b.front(avail, now)
+		l, _ := b.bestBy(front, "", false, now)
 		why := "start: best by prior/memory"
-		if p := b.answeredNow(avail, now); p != "" {
+		if p := b.answeredNow(front, now); p != "" {
 			l, why = p, "answers now"
 		}
 		if p := b.bondLead(avail, now); p != "" {
@@ -705,7 +711,7 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 			continue
 		}
 		floor := b.cfg.FloorMs
-		if b.offNet(b.info(p)) {
+		if i := b.info(p); b.offNet(i) || b.backSeat(i, now) {
 			floor *= OffNetFloorFactor
 		}
 		ip := b.info(p).IP

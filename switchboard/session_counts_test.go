@@ -18,6 +18,7 @@ func TestSessionCountsSpanNetworksAndLeaveProbesOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(context.Context, []string) bool { return false }
 	s.observe(delivered("a"))
 	s.observe(delivered("a"))
@@ -58,6 +59,7 @@ func TestSessionCountsLeaveSleepOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(context.Context, []string) bool { return false }
 	asleep := wireFailed("a")
 	asleep.SleptMs = brain.SleepGraceMs

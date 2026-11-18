@@ -50,6 +50,7 @@ func TestMemoryFileCarriesNetworksAcrossSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(context.Context, []string) bool { return false }
 	for i := 0; i < 6; i++ {
 		s.observe(delivered("c"))
@@ -96,11 +97,13 @@ func TestMemoryFileCarriesNetworksAcrossSessions(t *testing.T) {
 func TestRestrictedNetworkCheck(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Ctx = "cell"
+	cfg.ControlProbes = nil // the zone check asks the allow-listed sites too (zone_test.go)
 	s, err := New(cfg, threeDead(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
+	s.count = func(context.Context, []string) int { return 1 }
 	s.probe = func(_ context.Context, hosts []string) bool {
 		calls.Add(1)
 		return len(hosts) > 0
@@ -123,6 +126,7 @@ func TestRestrictedNetworkCheck(t *testing.T) {
 
 	dead, _ := New(cfg, threeDead(t))
 	calls.Store(0)
+	dead.count = func(context.Context, []string) int { return 1 }
 	dead.probe = func(context.Context, []string) bool { calls.Add(1); return false }
 	dead.observe(wireFailed("a"))
 	dead.observe(wireFailed("b"))
@@ -144,6 +148,7 @@ func TestRestrictedNetworkCheck(t *testing.T) {
 
 	late, _ := New(cfg, threeDead(t))
 	release := make(chan struct{})
+	late.count = func(context.Context, []string) int { return 1 }
 	late.probe = func(context.Context, []string) bool { <-release; return true }
 	late.observe(wireFailed("a"))
 	late.observe(wireFailed("b"))
@@ -158,6 +163,7 @@ func TestRestrictedNetworkCheck(t *testing.T) {
 	// and the leader that answered stays.
 	answered, _ := New(cfg, threeDead(t))
 	release = make(chan struct{})
+	answered.count = func(context.Context, []string) int { return 1 }
 	answered.probe = func(context.Context, []string) bool { <-release; return true }
 	answered.observe(wireFailed("a"))
 	answered.observe(wireFailed("b"))

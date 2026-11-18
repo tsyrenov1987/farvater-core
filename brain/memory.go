@@ -175,6 +175,7 @@ func (b *Brain) enter(ctx string, now int64, act, why string) {
 	b.unheardAt, b.probeLost = nil, map[string]int64{}
 	b.quietFrom, b.quietFails, b.quietRuns = 0, 0, 0
 	b.relapseAt = 0
+	b.verdict, b.verdictAt, b.probeLast, b.probeRun, b.unclearRun = VerdictUnknown, 0, VerdictUnknown, 0, 0
 	if cs, ok := b.saved[ctx]; ok {
 		delete(b.saved, ctx)
 		b.st, b.leader, b.leaderSince, b.Breaker, b.Diag = cs.st, cs.leader, cs.leaderSince, cs.breaker, cs.diag
