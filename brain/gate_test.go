@@ -16,6 +16,13 @@ func gateBrain(ctx string) *Brain {
 	}, 1)
 }
 
+// openEvidence gives the open internet its proof: quick clean answers over a
+// path meant for it.
+func openEvidence(b *Brain, at int64) {
+	b.st["de3-reality"].noteOpen(at - 1)
+	b.st["de3-reality"].noteOpen(at)
+}
+
 // zoneEvidence makes the open paths silent: a whitelist zone by evidence.
 func zoneEvidence(b *Brain, now int64) {
 	b.Diag.lastWireFail["de3-reality"] = now - 5000
@@ -26,7 +33,7 @@ func TestGateOpenInternetCell(t *testing.T) {
 	b := gateBrain("cell:25002")
 	now := int64(1_000_000)
 	b.st["Orden-ru8"].AnsweredAt = now - 1000
-	b.st["de3-reality"].AnsweredAt = now - 2000 // foreign answers: no whitelist zone
+	openEvidence(b, now-2000) // foreign answers quickly: no whitelist zone
 	if b.Zone(now) || b.VKOpen(now) || b.CDNOpen(now) {
 		t.Fatal("gate open while the open internet answers")
 	}
@@ -71,20 +78,130 @@ func TestGateVKWithoutCDNvideo(t *testing.T) {
 	}
 }
 
-// CDNvideo evidence does not make a zone: its own answers are left out.
-func TestGateCDNvideoAnswerIsNotZoneEvidence(t *testing.T) {
+// Quick answers over the white, CDNvideo, bond and vk paths prove nothing
+// about the open internet.
+func TestGateWhiteAnswersAreNoProof(t *testing.T) {
 	b := gateBrain("cell:25002")
 	now := int64(1_000_000)
-	b.st["Orden-ru8"].AnsweredAt = now - 1000
-	b.st["de3-kilbond"].AnsweredAt = now - 1000
-	b.st["de3-vk"].AnsweredAt = now - 1000
-	b.st["wl2"].AnsweredAt = now - 1000
-	if b.Zone(now) {
-		t.Fatal("zone without any open path failing")
+	for _, id := range []string{"Orden-ru8", "de3-kilbond", "de3-vk", "wl2"} {
+		b.st[id].AnsweredAt = now - 1000
+		b.st[id].noteOpen(now - 1000)
+		b.st[id].noteOpen(now - 500)
 	}
-	zoneEvidence(b, now)
-	if !b.Zone(now) {
+	if !b.Zone(now) || !b.CDNOpen(now) {
+		t.Fatal("white paths answering cancelled the zone on cellular")
+	}
+	w := gateBrain("wifi:ab12")
+	for _, id := range []string{"Orden-ru8", "wl2"} {
+		w.st[id].noteOpen(now - 1000)
+		w.st[id].noteOpen(now - 500)
+	}
+	if w.Zone(now) {
+		t.Fatal("zone on Wi-Fi without any open path failing")
+	}
+	zoneEvidence(w, now)
+	if !w.Zone(now) {
 		t.Fatal("white paths answering must not cancel the zone")
+	}
+}
+
+// A phone starting on cellular knows nothing yet: CDNvideo, the bond and vk
+// are in the fan from the first flow (iOS 68 on МТС, 18.11.2026: they were
+// out, and the phone dialled only dead foreign paths, 15 s a try).
+func TestGateCellStartKeepsZonePathsIn(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(1_000_000)
+	if !b.Zone(now) || !b.VKOpen(now) || !b.CDNOpen(now) {
+		t.Fatal("gate closed at a cellular start with no evidence")
+	}
+	av := b.available(now)
+	for _, id := range []string{"de3-vk", "Orden-ru8", "de3-kilbond", "de3-reality"} {
+		if !contains(av, id) {
+			t.Fatalf("%s not in the fan at a cellular start: %v", id, av)
+		}
+	}
+}
+
+// Off cellular nothing changes: the zone takes evidence.
+func TestGateWifiStartKeepsVKOut(t *testing.T) {
+	b := gateBrain("wifi:ab12")
+	now := int64(1_000_000)
+	if b.Zone(now) || contains(b.available(now), "de3-vk") {
+		t.Fatal("vk open on Wi-Fi with no evidence of a zone")
+	}
+}
+
+// One answer, or slow answers, over a foreign path is a trickle through the
+// lists, not the open internet: the zone holds.
+func TestGateTrickleKeepsZone(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(1_000_000)
+	zoneEvidence(b, now)
+	for i, ms := range []int64{4000, 6500, 9000} { // answers in 2–9 s, a few KB
+		at := now + int64(i)*1000
+		b.Observe(Receipt{Path: "de3-xhttp", AtMs: at, WireReadyMs: 900, FirstByteMs: ms, AnswerMs: ms, Down: 3 * KB, DurMs: ms + 2000, End: EndRemoteFin, DownAtFail: -1})
+	}
+	later := now + 3000
+	if b.st["de3-xhttp"].AnsweredAt == 0 {
+		t.Fatal("the slow answers were not taken")
+	}
+	if !b.Zone(later) || !b.CDNOpen(later) {
+		t.Fatal("slow foreign answers cancelled the zone")
+	}
+	b.st["de3-reality"].noteOpen(later) // one quick answer is not proof yet
+	if !b.Zone(later) {
+		t.Fatal("one quick answer cancelled the zone")
+	}
+}
+
+// Quick answers through the receipts close the gate.
+func TestGateQuickAnswersProveOpen(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(1_000_000)
+	for i := int64(0); i < 2; i++ {
+		b.Observe(Receipt{Path: "de3-reality", AtMs: now + i*100, WireReadyMs: 60, FirstByteMs: 300, AnswerMs: 300, Down: 200 * KB, DurMs: 900, End: EndRemoteFin, DownAtFail: -1})
+	}
+	at := now + 200
+	if b.Zone(at) || b.CDNOpen(at) || contains(b.available(at), "Orden-ru8") {
+		t.Fatal("gate open after the open internet answered quickly")
+	}
+}
+
+// A path cut at 16 KB proves nothing.
+func TestGateCut16IsNoProof(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(1_000_000)
+	openEvidence(b, now)
+	b.st["de3-reality"].Cut16 = true
+	if !b.Zone(now) {
+		t.Fatal("a path cut at 16 KB cancelled the zone")
+	}
+}
+
+// The lists coming down on the same network: two open paths failing after
+// the proof bring the zone back at once, not when the proof ages out.
+func TestGateZoneReturnsAfterProof(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(1_000_000)
+	openEvidence(b, now)
+	if b.Zone(now) {
+		t.Fatal("zone despite the proof")
+	}
+	b.Diag.lastWireFail["de3-reality"] = now - 50_000 // before the proof: ignored
+	b.Diag.lastWireFail["de3-xhttp"] = now + 5000
+	if b.Zone(now + 6000) {
+		t.Fatal("one failure after the proof brought the zone back")
+	}
+	b.Diag.lastWireFail["de3-reality"] = now + 7000
+	if !b.Zone(now+8000) || !b.CDNOpen(now+8000) {
+		t.Fatal("the zone did not come back after two failures past the proof")
+	}
+	// An idle phone on the open internet: the proof ages out and the zone is
+	// assumed again until the next quick answers.
+	c := gateBrain("cell:25002")
+	openEvidence(c, now)
+	if !c.Zone(now + OpenProofKeepMs + 1000) {
+		t.Fatal("the proof held past OpenProofKeepMs")
 	}
 }
 
@@ -123,7 +240,7 @@ func TestGateClosesWhenZoneEnds(t *testing.T) {
 		t.Fatal("zone not seen")
 	}
 	later := now + 1000
-	b.st["de3-reality"].AnsweredAt = later // the open internet is back
+	openEvidence(b, later) // the open internet is back
 	if b.CDNOpen(later) || b.VKOpen(later) || contains(b.available(later), "Orden-ru8") {
 		t.Fatal("gate stays open after the open internet answered")
 	}

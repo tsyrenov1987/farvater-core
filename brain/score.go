@@ -20,7 +20,8 @@ type PathState struct {
 	failBytes          []int64
 	bigOK              int
 	LastEvidenceMs     int64
-	AnsweredAt         int64 // when a flow on the path last got an answer with no block signature
+	AnsweredAt         int64   // when a flow on the path last got an answer with no block signature
+	openAt             []int64 // when flows on it got a quick clean answer (gate.go, OpenAnswerMs), the last openKeep
 	lastDecayMs        int64
 	fbTimes            []int64
 	answers            []stamped // Receipt.AnswerMs, the last answerKeep
@@ -135,6 +136,9 @@ func (s *PathState) Observe(r Receipt, now, halfLifeMs int64) {
 	}
 	if r.FirstByte() && r.Sig() == SigNone {
 		s.AnsweredAt = max(s.AnsweredAt, now)
+		if r.AnswerMs > 0 && r.AnswerMs <= OpenAnswerMs && r.SleptMs < SleepGraceMs {
+			s.noteOpen(now)
+		}
 	}
 	if r.Delivered() && r.Down >= 64*KB {
 		s.bigOK++
