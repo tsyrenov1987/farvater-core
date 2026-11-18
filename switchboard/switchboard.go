@@ -992,12 +992,13 @@ type Status struct {
 	Direct    int64         `json:"direct"`         // flows that went around the paths (Config.Direct)
 	Shed      int64         `json:"shed,omitempty"` // flows refused under memory pressure (Config.Pressed)
 	Dropped   int           `json:"dropped"`
-	Served    int64         `json:"served"`            // the session's receipts served, on every network, probes left out
-	Blocked   int64         `json:"blocked"`           // the session's receipts with a block signature, the same way
-	Slept     int64         `json:"slept"`             // the session's receipts of flows the device slept through, the same way
-	Drops     brain.Drops   `json:"drops"`             // receipts the brain left out of the evidence, by why
-	White     bool          `json:"white,omitempty"`   // the network is a restricted (white-list) one
-	VKOpen    bool          `json:"vk_open,omitempty"` // bare vkturn paths are allowed as primaries here
+	Served    int64         `json:"served"`             // the session's receipts served, on every network, probes left out
+	Blocked   int64         `json:"blocked"`            // the session's receipts with a block signature, the same way
+	Slept     int64         `json:"slept"`              // the session's receipts of flows the device slept through, the same way
+	Drops     brain.Drops   `json:"drops"`              // receipts the brain left out of the evidence, by why
+	White     bool          `json:"white,omitempty"`    // the network is a restricted (white-list) one
+	VKOpen    bool          `json:"vk_open,omitempty"`  // bare vkturn paths are allowed as primaries here
+	CDNOpen   bool          `json:"cdn_open,omitempty"` // CDNvideo paths and the bond take flows here (cellular whitelist zone)
 	Paths     []PathStatus  `json:"paths"`
 	Skipped   []string      `json:"skipped"`
 	Journal   int           `json:"journal_entries"`
@@ -1017,7 +1018,7 @@ func (s *Switchboard) Status() Status {
 		Listen: s.cfg.Listen, Ctx: s.b.Ctx(), Catalogue: s.cat.Title, Leader: s.b.Leader(),
 		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Shed: s.shed.Load(), Dropped: s.b.Dropped,
 		Skipped: s.Skipped, Journal: len(s.b.J.Entries()), Served: s.served, Blocked: s.blocked, Slept: s.slept, Drops: s.b.Drops,
-		White: s.b.Restricted(), VKOpen: s.b.VKOpen(now),
+		White: s.b.Restricted(), VKOpen: s.b.VKOpen(now), CDNOpen: s.b.CDNOpen(now),
 	}
 	exits := map[string]string{}
 	for _, e := range s.cat.Paths {
