@@ -27,8 +27,10 @@ import (
 const (
 	// Per uplink piece: the raw bytes a GET carries in its headers, cut into
 	// headers of splitHeaderChars base64 characters, and what a POST carries.
-	// Not yet measured on Yandex Cloud CDN: keep under nginx's 8 KB per line.
-	splitGetPiece    = 6 << 10
+	// Yandex Cloud CDN passed 64 KB of request headers to the origin, 16
+	// headers of 4000 characters or one of 32000 (measured 18.11); a piece
+	// takes half of that, 32 KB of base64 in 8 headers.
+	splitGetPiece    = 24 << 10
 	splitHeaderChars = 4 << 10
 	splitPostPiece   = 64 << 10
 

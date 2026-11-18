@@ -42,7 +42,8 @@ const (
 	// that has not arrived yet). Past it the session is broken.
 	splitMaxPending = 4 << 20
 	// The downlink sends a PAD after this much quiet, so a CDN or proxy that
-	// drops idle responses does not cut the stream.
+	// drops idle responses does not cut the stream. Yandex Cloud CDN kept a
+	// response through 40 s of quiet and cut it at 70 s (measured 18.11).
 	splitKeepalive = 15 * time.Second
 )
 
