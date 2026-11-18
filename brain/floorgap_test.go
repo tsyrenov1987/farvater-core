@@ -12,7 +12,7 @@ import (
 func TestFloorSpacesFlowsToOneAddress(t *testing.T) {
 	var paths []PathInfo
 	for i := range 40 {
-		paths = append(paths, PathInfo{ID: fmt.Sprintf("x%d", i), SNI: fmt.Sprintf("x%d.cdn", i), IP: "78.159.245.140", Rail: "xhttp"})
+		paths = append(paths, PathInfo{ID: fmt.Sprintf("x%d", i), SNI: fmt.Sprintf("x%d.cdn", i), IP: "203.0.113.140", Rail: "xhttp"})
 	}
 	paths = append(paths, PathInfo{ID: "N", SNI: "n", IP: "5.5.5.5", Rail: "reality"})
 	cfg := DefaultConfig()
@@ -28,7 +28,7 @@ func TestFloorSpacesFlowsToOneAddress(t *testing.T) {
 		if d.Reason != "explore_floor" {
 			continue
 		}
-		if b.info(d.Primary).IP != "78.159.245.140" {
+		if b.info(d.Primary).IP != "203.0.113.140" {
 			continue
 		}
 		if last >= 0 && now-last < 2000 { // a literal: FloorGapMs set to 0 must fail here

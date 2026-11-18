@@ -9,10 +9,10 @@ func gateBrain(ctx string) *Brain {
 	return New(DefaultConfig(), ctx, []PathInfo{
 		{ID: "de3-reality", Rail: "reality", IP: "1.1.1.1"},
 		{ID: "de3-xhttp", Rail: "xhttp", IP: "1.1.1.2"},
-		{ID: "Orden-ru8", Rail: "xhttp", IP: "78.159.245.140", White: true, Net: "cell", Door: DoorCDNvideo},
+		{ID: "door-ru1", Rail: "xhttp", IP: "203.0.113.140", White: true, Net: "cell", Door: DoorCDNvideo},
 		{ID: "wl2", Rail: "xhttp", IP: "51.250.3.90", White: true, Net: "cell"},
 		{ID: "de3-vk", Rail: "vkturn", IP: "2.2.2.2", White: true},
-		{ID: "de3-kilbond", Rail: "kilbond", IP: "78.159.245.140", White: true, Net: "cell", Door: DoorCDNvideo},
+		{ID: "de3-kilbond", Rail: "kilbond", IP: "203.0.113.140", White: true, Net: "cell", Door: DoorCDNvideo},
 	}, 1)
 }
 
@@ -48,7 +48,7 @@ func TestGateOpenInternetCell(t *testing.T) {
 		}
 	}
 	u := b.UDPOrder(now)
-	for _, id := range []string{"de3-vk", "Orden-ru8", "de3-kilbond"} {
+	for _, id := range []string{"de3-vk", "door-ru1", "de3-kilbond"} {
 		if !contains(u, id) {
 			t.Fatalf("%s not in the UDP order: %v", id, u)
 		}
@@ -63,7 +63,7 @@ func TestGateZoneCellOpensAll(t *testing.T) {
 		t.Fatal("gate closed on a cellular network in a whitelist zone")
 	}
 	av := b.available(now)
-	for _, id := range []string{"de3-vk", "Orden-ru8", "de3-kilbond", "wl2"} {
+	for _, id := range []string{"de3-vk", "door-ru1", "de3-kilbond", "wl2"} {
 		if !contains(av, id) {
 			t.Fatalf("%s not in the fan in the zone: %v", id, av)
 		}
@@ -75,7 +75,7 @@ func TestGateVKWithoutCDNvideo(t *testing.T) {
 	b := gateBrain("cell:25002")
 	now := int64(1_000_000)
 	zoneEvidence(b, now)
-	b.Diag.lastWireFail["Orden-ru8"] = now - 1000 // CDNvideo fails too
+	b.Diag.lastWireFail["door-ru1"] = now - 1000 // CDNvideo fails too
 	if !b.VKOpen(now) || !contains(b.available(now), "de3-vk") {
 		t.Fatal("vk closed in the zone while CDNvideo is down")
 	}
@@ -86,7 +86,7 @@ func TestGateVKWithoutCDNvideo(t *testing.T) {
 func TestGateWhiteAnswersAreNoProof(t *testing.T) {
 	b := gateBrain("cell:25002")
 	now := int64(1_000_000)
-	for _, id := range []string{"Orden-ru8", "de3-kilbond", "de3-vk", "wl2"} {
+	for _, id := range []string{"door-ru1", "de3-kilbond", "de3-vk", "wl2"} {
 		b.st[id].AnsweredAt = now - 1000
 		b.st[id].noteOpen(now - 1000)
 		b.st[id].noteOpen(now - 500)
@@ -95,7 +95,7 @@ func TestGateWhiteAnswersAreNoProof(t *testing.T) {
 		t.Fatal("white paths answering cancelled the zone on cellular")
 	}
 	w := gateBrain("wifi:ab12")
-	for _, id := range []string{"Orden-ru8", "wl2"} {
+	for _, id := range []string{"door-ru1", "wl2"} {
 		w.st[id].noteOpen(now - 1000)
 		w.st[id].noteOpen(now - 500)
 	}
@@ -118,7 +118,7 @@ func TestGateCellStartKeepsZonePathsIn(t *testing.T) {
 		t.Fatal("gate closed at a cellular start with no evidence")
 	}
 	av := b.available(now)
-	for _, id := range []string{"de3-vk", "Orden-ru8", "de3-kilbond", "de3-reality"} {
+	for _, id := range []string{"de3-vk", "door-ru1", "de3-kilbond", "de3-reality"} {
 		if !contains(av, id) {
 			t.Fatalf("%s not in the fan at a cellular start: %v", id, av)
 		}
@@ -169,7 +169,7 @@ func TestGateQuickAnswersProveOpen(t *testing.T) {
 	if b.Zone(at) {
 		t.Fatal("zone after the open internet answered quickly")
 	}
-	if !contains(b.available(at), "Orden-ru8") || !contains(b.available(at), "de3-vk") {
+	if !contains(b.available(at), "door-ru1") || !contains(b.available(at), "de3-vk") {
 		t.Fatal("a path left the fan on cellular when the zone ended")
 	}
 }
@@ -221,7 +221,7 @@ func TestGateWifiZoneKeepsCDNvideoOut(t *testing.T) {
 			t.Fatalf("%s: CDNvideo open off cellular", ctx)
 		}
 		av := b.available(now)
-		if contains(av, "Orden-ru8") || contains(av, "de3-kilbond") {
+		if contains(av, "door-ru1") || contains(av, "de3-kilbond") {
 			t.Fatalf("%s: CDNvideo or the bond in the fan: %v", ctx, av)
 		}
 		if !b.VKOpen(now) || !contains(av, "de3-vk") {
@@ -253,7 +253,7 @@ func TestGateClosesWhenZoneEnds(t *testing.T) {
 		if b.Zone(later) {
 			t.Fatalf("%s: zone after the open internet answered", ctx)
 		}
-		if b.VKOpen(later) != open || contains(b.available(later), "de3-vk") != open || contains(b.available(later), "Orden-ru8") != open {
+		if b.VKOpen(later) != open || contains(b.available(later), "de3-vk") != open || contains(b.available(later), "door-ru1") != open {
 			t.Fatalf("%s: vk open %v, fan %v", ctx, b.VKOpen(later), b.available(later))
 		}
 	}
@@ -320,7 +320,7 @@ func TestGateBondLeadsInEvidentZone(t *testing.T) {
 	b := gateBrain("cell:25002")
 	now := int64(1_000_000)
 	zoneEvidence(b, now)
-	b.st["Orden-ru8"].AnsweredAt = now - 100
+	b.st["door-ru1"].AnsweredAt = now - 100
 	b.Pick(now, "example.com:443", 0)
 	if b.Leader() != "de3-kilbond" {
 		t.Fatalf("leader %s, want the bond", b.Leader())
@@ -350,7 +350,7 @@ func TestGateBondLeadNeedsHealthyBond(t *testing.T) {
 	if !b.Breaker.Tripped("de3-kilbond", now) {
 		t.Fatal("breaker did not trip the bond")
 	}
-	b.st["Orden-ru8"].AnsweredAt = now - 100
+	b.st["door-ru1"].AnsweredAt = now - 100
 	b.Pick(now, "example.com:443", 0)
 	if b.Leader() == "de3-kilbond" {
 		t.Fatal("a tripped bond took the lead")
@@ -367,15 +367,15 @@ func TestGateDeliveringBondKeepsLead(t *testing.T) {
 		t.Fatalf("leader %s", b.Leader())
 	}
 	for i := 0; i < 30; i++ {
-		b.st["Orden-ru8"].evDelivA++
-		b.st["Orden-ru8"].evFbA++
-		b.st["Orden-ru8"].recent = append(b.st["Orden-ru8"].recent, now)
+		b.st["door-ru1"].evDelivA++
+		b.st["door-ru1"].evFbA++
+		b.st["door-ru1"].recent = append(b.st["door-ru1"].recent, now)
 	}
 	later := now + b.cfg.MinLeadMs + 1000
 	zoneEvidence(b, later)
-	b.st["Orden-ru8"].recent = nil
+	b.st["door-ru1"].recent = nil
 	for i := 0; i < 30; i++ {
-		b.st["Orden-ru8"].recent = append(b.st["Orden-ru8"].recent, later-1000)
+		b.st["door-ru1"].recent = append(b.st["door-ru1"].recent, later-1000)
 	}
 	b.st["de3-kilbond"].AnsweredAt = later - 500
 	b.Pick(later, "example.com:443", 0)

@@ -142,9 +142,9 @@ func TestVerdictOpenPutsPaidDoorBehind(t *testing.T) {
 func TestVerdictOpenTakesLeadFromPaidDoor(t *testing.T) {
 	b := gateBrain("cell:25002")
 	now := int64(1_000_000)
-	b.setLeader("Orden-ru8", now, "test", "")
+	b.setLeader("door-ru1", now, "test", "")
 	b.NoteZoneProbe(true, 2, now+1000)
-	if b.Leader() != "Orden-ru8" {
+	if b.Leader() != "door-ru1" {
 		t.Fatal("one probe moved the lead")
 	}
 	b.NoteZoneProbe(true, 2, now+11_000)
@@ -153,13 +153,13 @@ func TestVerdictOpenTakesLeadFromPaidDoor(t *testing.T) {
 	}
 	// With every open path tripped the paid door keeps the lead.
 	c := gateBrain("cell:25002")
-	c.setLeader("Orden-ru8", now, "test", "")
+	c.setLeader("door-ru1", now, "test", "")
 	for _, p := range []string{"de3-reality", "de3-xhttp", "wl2"} {
 		c.Breaker.rail(p).trippedUntil = now + 600_000
 	}
 	c.NoteZoneProbe(true, 2, now+1000)
 	c.NoteZoneProbe(true, 2, now+11_000)
-	if c.Leader() != "Orden-ru8" {
+	if c.Leader() != "door-ru1" {
 		t.Fatalf("leader %s: nothing else was free", c.Leader())
 	}
 }

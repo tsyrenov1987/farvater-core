@@ -3,7 +3,7 @@ package catalogue
 import "testing"
 
 func TestDoorLabel(t *testing.T) {
-	c, err := Parse([]byte("#door=cdnv\n#net=cell\n#white\nvless://u@78.159.245.140:443?security=tls&type=xhttp#Orden-ru8\nvless://u@1.1.1.1:443?security=tls&type=xhttp#de3\n"))
+	c, err := Parse([]byte("#door=cdnv\n#net=cell\n#white\nvless://u@203.0.113.140:443?security=tls&type=xhttp#door-ru1\nvless://u@1.1.1.1:443?security=tls&type=xhttp#de3\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -601,7 +601,7 @@ const LeadFreshMs = 10000
 // FloorMs later; the next flows then went one to each path, each a fresh
 // handshake. The CDN entry carries some forty paths on one address: a page's
 // burst of flows made forty ClientHellos to it within half a second, every
-// FloorMs (wl5 capture 14.11.2026: one MTS client, 37 SYNs in 0.5 s, the
+// FloorMs (relay capture 14.11.2026: one mobile client, 37 SYNs in 0.5 s, the
 // answers to the first 24 never reached it). Spaced, the paths of one address
 // still get their floor flow each, a few seconds apart.
 const FloorGapMs = 3000
