@@ -9,7 +9,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,7 +43,8 @@ func bondOver(t *testing.T, legs int, dead map[int]bool) *bondWire {
 		}
 		ws = append(ws, w)
 	}
-	bw := &bondWire{spec: PathSpec{ID: "bond", Kind: KindBond}, legs: ws, stats: make([]legCount, len(ws))}
+	bw := &bondWire{spec: PathSpec{ID: "bond", Kind: KindBond}, legs: ws, stats: make([]legCount, len(ws)),
+		restTill: make([]atomic.Int64, len(ws)), restFor: make([]atomic.Int64, len(ws))}
 	t.Cleanup(func() { bw.Close() })
 	return bw
 }
@@ -222,7 +225,8 @@ func bondCtl(t *testing.T, ctl []*legCtl) *bondWire {
 		}
 		ws = append(ws, w)
 	}
-	bw := &bondWire{spec: PathSpec{ID: "bond", Kind: KindBond}, legs: ws, stats: make([]legCount, len(ws))}
+	bw := &bondWire{spec: PathSpec{ID: "bond", Kind: KindBond}, legs: ws, stats: make([]legCount, len(ws)),
+		restTill: make([]atomic.Int64, len(ws)), restFor: make([]atomic.Int64, len(ws))}
 	t.Cleanup(func() { bw.Close() })
 	return bw
 }
@@ -289,7 +293,7 @@ func TestBondLegRejoinsAfterOutage(t *testing.T) {
 		t.Fatalf("leg 1 never came back: dials %d→%d, read %d→%d", afterDials, d, afterRead, r)
 	}
 	st := w.BondStats()
-	if len(st) != 2 || st[1].Drops < 1 || st[1].Backs < 1 || st[1].Fails < 1 || st[0].Down == 0 || st[1].Down == 0 {
+	if len(st) < 2 || st[1].Drops < 1 || st[1].Backs < 1 || st[1].Fails < 1 || st[0].Down == 0 || st[1].Down == 0 || len(st[1].Why) == 0 || st[1].Ms == 0 {
 		t.Fatalf("leg stats don't show the outage: %+v", st)
 	}
 }
@@ -339,5 +343,51 @@ func TestBondAloneLegGivesUp(t *testing.T) {
 		res <- err
 	case <-time.After(3 * time.Second):
 		t.Fatal("flow hung with every route down")
+	}
+}
+
+// A leg that never got into a flow is left alone by the next flows for a
+// while (it does not knock on its door from every flow), is tried again once
+// the rest is over, and rests no more after it got in.
+func TestBondLegRestsBetweenFlows(t *testing.T) {
+	defer func(a, b time.Duration) { bondLegRest, bondLegRestMax = a, b }(bondLegRest, bondLegRestMax)
+	bondLegRest, bondLegRestMax = 2*time.Second, 2*time.Second
+	ctl := []*legCtl{{}, {}}
+	w := shrunk(bondCtl(t, ctl), 3)
+	ctl[0].cut()
+	flow := func() { pacedEcho(t, w, 512<<10, 10*time.Millisecond, func() {}) }
+	tries := func() int64 { return w.BondStats()[0].Fails }
+	flow()
+	first := tries()
+	if first == 0 || w.resting(0) <= 0 {
+		t.Fatalf("the dead leg: %d fails, resting %v", first, w.resting(0))
+	}
+	flow()
+	if n := tries(); n != first {
+		t.Fatalf("a resting leg was tried by the next flow: fails %d -> %d", first, n)
+	}
+	ctl[0].heal()
+	time.Sleep(w.resting(0) + 50*time.Millisecond)
+	pacedEcho(t, w, 2<<20, 2*time.Millisecond, func() {})
+	st := w.BondStats()[0]
+	if st.Down == 0 || w.resting(0) > 0 {
+		t.Fatalf("the leg did not come back after its rest: %+v, resting %v", st, w.resting(0))
+	}
+}
+
+// spare= marks the legs to spare; all of them at once is none.
+func TestBondParseSpare(t *testing.T) {
+	leg := func(n string) string {
+		return "leg=" + base64.RawURLEncoding.EncodeToString([]byte("kilvater://"+strings.Repeat("ab", 32)+"@h"+n+".example:443#l"+n))
+	}
+	base := "kilbond://b@h:443?" + leg("0") + "&" + leg("1")
+	for in, want := range map[string][2]bool{"": {false, false}, "&spare=0": {true, false}, "&spare=1,7,x": {false, true}, "&spare=0&spare=1": {false, false}} {
+		spec, err := ParseURI(base + in + "#b")
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if got := [2]bool{spec.Legs[0].Spare, spec.Legs[1].Spare}; got != want {
+			t.Errorf("%q: spare %v, want %v", in, got, want)
+		}
 	}
 }

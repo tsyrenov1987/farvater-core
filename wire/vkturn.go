@@ -110,6 +110,26 @@ var turnTunnels = struct {
 	m map[string]*turnEntry
 }{m: map[string]*turnEntry{}}
 
+// CloseTURNTunnels closes every open tunnel, giving its relay allocations
+// back: for a process about to exit (an allocation left behind holds its place
+// in the account's quota until the relay times it out, ten minutes).
+func CloseTURNTunnels() {
+	turnTunnels.Lock()
+	es := make([]*turnEntry, 0, len(turnTunnels.m))
+	for _, e := range turnTunnels.m {
+		es = append(es, e)
+	}
+	turnTunnels.Unlock()
+	for _, e := range es {
+		e.mu.Lock()
+		if e.tun != nil {
+			e.tun.Close()
+			e.tun = nil
+		}
+		e.mu.Unlock()
+	}
+}
+
 type turnEntry struct {
 	mu        sync.Mutex
 	server    string
