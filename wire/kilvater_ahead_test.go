@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -169,6 +170,71 @@ func TestKilvaterWarmRevalidates(t *testing.T) {
 				t.Fatalf("round 2: %s was not revalidated: %+v", p, r)
 			}
 		}
+		// The answers are remembered after they are read, in the background.
+		for i := 0; i < 200; i++ {
+			w.cacheMu.Lock()
+			n := len(w.cache)
+			w.cacheMu.Unlock()
+			if n >= 3 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 		cc.Close()
+	}
+}
+
+// The first connection waits for the page's headers, which give the server's
+// clock; later ones, with the clock known, do not wait for the page at all,
+// and none waits for the page's body.
+func TestKilvaterWarmWaits(t *testing.T) {
+	const slow = 300 * time.Millisecond
+	var headerDelay, bodyDelay atomic.Int64
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(time.Duration(headerDelay.Load()))
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Date", time.Now().UTC().Format(http.TimeFormat))
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(time.Duration(bodyDelay.Load()))
+		w.Write([]byte("<html></html>"))
+	})
+	dial := func(ctx context.Context) (net.Conn, error) {
+		c, s := net.Pipe()
+		go (&http2.Server{}).ServeConn(s, &http2.ServeConnOpts{Handler: h})
+		return c, nil
+	}
+	_, hexKey := kilTestKey(t)
+	w, err := newKilWire(kilTestSpec(hexKey), dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	warm := func() time.Duration {
+		c, _ := dial(context.Background())
+		cc, err := w.mux.tr.NewClientConn(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { cc.Close() })
+		start := time.Now()
+		w.warm(context.Background(), cc)
+		return time.Since(start)
+	}
+
+	headerDelay.Store(int64(slow))
+	bodyDelay.Store(int64(slow))
+	if d := warm(); d < slow || d >= 2*slow {
+		t.Fatalf("first connection warmed in %v: want the page's headers (%v) and not its body", d, slow)
+	}
+	if !w.clocked.Load() {
+		t.Fatal("the page's Date was not taken")
+	}
+	if d := warm(); d >= slow/2 {
+		t.Fatalf("second connection warmed in %v: want no wait for the page", d)
 	}
 }

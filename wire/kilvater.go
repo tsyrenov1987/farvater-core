@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -36,6 +37,7 @@ type kilWire struct {
 	cache   map[string]validator // by path
 	assets  []pageAsset          // the page's, from its last full fetch
 	skew    atomic.Int64         // the server's clock minus ours, from the last page fetched
+	clocked atomic.Bool          // skew has been read from a page
 
 	// resumeNo is when (UnixNano) a server last showed it does not keep
 	// sessions; 0 is never (kilvater_resume.go).
@@ -221,32 +223,69 @@ const (
 )
 
 // warm opens a new connection the way a browser opens a site: the page
-// first, then a couple of its assets, and the tunnel request after them, as a
-// script on a page that has loaded would make it, along with the favicon a
-// browser asks for once a page has loaded. The page's Date gives the
-// server's clock, which tags are made with from then on, so a client whose
-// clock is off by more than the tag window still gets in.
+// first, then the tunnel request, as a script on a page that is still loading
+// would make it; the rest of the page, a couple of its assets and the favicon
+// follow in the background. The page's Date gives the server's clock, which
+// tags are made with from then on, so a client whose clock is off by more
+// than the tag window still gets in.
+//
+// How long the tunnel waits is what a cold connection costs the first flow.
+// Waiting for the whole page and its assets put kilvater 230 ms behind xhttp
+// on paths carrying few flows (fvlog 14-18.11); a 66 KB page alone took a
+// round trip past its headers (ams1, 18.11). So the first connection of a
+// path waits for the page's headers only, for the clock, and later ones,
+// whose clock is known, only for the page's request to be written.
 func (w *kilWire) warm(ctx context.Context, cc *http2.ClientConn) {
 	ctx, cancel := context.WithTimeout(ctx, warmTimeout)
 	defer cancel()
+	wrote, headers := make(chan struct{}, 1), make(chan struct{})
+	go w.loadPage(cc, wrote, headers)
+	wait := headers
+	if w.clocked.Load() {
+		wait = wrote
+	}
+	select {
+	case <-wait:
+	case <-ctx.Done():
+	}
+}
+
+// loadPage fetches the page, then its assets and the favicon, as a browser
+// loads a site. wrote gets a value once the page's request is on the
+// connection; headers is closed once its answer's headers are in, or it has
+// failed. It outlives warm: nothing waits for the body or the assets.
+func (w *kilWire) loadPage(cc *http2.ClientConn, wrote chan<- struct{}, headers chan<- struct{}) {
+	ctx, cancel := context.WithTimeout(context.Background(), assetTimeout)
+	defer cancel()
+	var once sync.Once
+	signal := func() { once.Do(func() { wrote <- struct{}{} }) }
+	defer signal()
+	closed := false
+	done := func() {
+		if !closed {
+			closed = true
+			close(headers)
+		}
+	}
+	defer done()
 	origin := "https://" + w.authority()
 	h := http.Header{}
 	browserHeaders(h, "navigate")
 	w.conditional(h, "/")
-	req, err := newGet(ctx, origin+"/", h)
+	req, err := newGet(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{WroteHeaders: signal}), origin+"/", h)
 	if err != nil {
 		return
 	}
-	start := time.Now()
 	resp, err := cc.RoundTrip(req)
 	if err != nil {
 		return
 	}
-	rtt := time.Since(start)
 	defer resp.Body.Close()
 	if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
 		w.skew.Store(int64(d.Sub(w.now())))
+		w.clocked.Store(true)
 	}
+	done()
 	var assets []pageAsset
 	if resp.StatusCode == http.StatusNotModified {
 		// The page has not changed: its assets are the ones it had.
@@ -254,30 +293,12 @@ func (w *kilWire) warm(ctx context.Context, cc *http2.ClientConn) {
 		assets = w.assets
 		w.cacheMu.Unlock()
 	} else if assets, err = w.readPage(resp); err != nil {
-		return
+		assets = nil
 	}
-	// Wait for the assets as the page's load would, but no longer than twice
-	// what the page took: a slow asset must not hold the tunnel up. Those not
-	// done by then finish in the background.
-	done := make(chan struct{}, len(assets))
 	for _, a := range assets {
-		go func() {
-			w.fetchAsset(cc, origin, a)
-			done <- struct{}{}
-		}()
+		go w.fetchAsset(cc, origin, a)
 	}
-	defer func() { go w.fetchAsset(cc, origin, pageAsset{"/favicon.ico", "favicon"}) }()
-	limit := time.NewTimer(max(2*rtt, 200*time.Millisecond))
-	defer limit.Stop()
-	for range assets {
-		select {
-		case <-done:
-		case <-limit.C:
-			return
-		case <-ctx.Done():
-			return
-		}
-	}
+	w.fetchAsset(cc, origin, pageAsset{"/favicon.ico", "favicon"})
 }
 
 // validator is what a response gave to revalidate it with.
