@@ -29,13 +29,16 @@ const (
 	// headers of splitHeaderChars base64 characters, and what a POST carries.
 	// Yandex Cloud CDN passed 64 KB of request headers to the origin, 16
 	// headers of 4000 characters or one of 32000 (measured 18.11); a piece
-	// takes half of that, 32 KB of base64 in 8 headers.
-	splitGetPiece    = 24 << 10
+	// takes 54 KB of base64 in 14 headers, under that with the rest of the
+	// request. Through that CDN 24 KB pieces, four at a time, went up at
+	// 6 Mbit/s and 40 KB ones, twelve at a time, at 15-19 (18.11, from NSK).
+	splitGetPiece    = 40 << 10
 	splitHeaderChars = 4 << 10
 	splitPostPiece   = 64 << 10
 
-	// Pieces in flight at once; the server puts them back in order.
-	splitInFlight = 4
+	// Pieces in flight at once; the server puts them back in order. Sixteen
+	// went no faster than twelve.
+	splitInFlight = 12
 	// What Write holds before it blocks, waiting for pieces to go up.
 	splitUpBuffer = 1 << 20
 	// A piece that gets no answer in this long breaks the stream.

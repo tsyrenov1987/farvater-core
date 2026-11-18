@@ -254,11 +254,39 @@ func (s *Server) serveSplit(w http.ResponseWriter, r *http.Request, id Identity,
 		h.Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
 		fl.Flush()
-		ka := newKeepalive(NewSealWriter(&flushed{w: w, f: fl}, ss.key, ss.sid, SealDown), splitKeepalive)
+		ka := newKeepalive(NewSealWriter(&tailFlushed{w: w, f: fl}, ss.key, ss.sid, SealDown), splitKeepalive)
 		defer ka.stop()
 		up := io.NopCloser(NewSealReader(ss.pr, ss.key, ss.sid, SealUp))
 		s.frames(r.Context(), r.Host, ss.label, &splitUpReader{Reader: up, ss: ss}, ka, ks)
 	}
+}
+
+// tailFlushed writes each sealed record as two chunks, all but its last
+// byte and then that byte. Yandex Cloud CDN passes the head of a large chunk
+// at once but holds the rest until the next chunk from the origin arrives
+// (measured 18.11: of a 5885-byte chunk 1.3-2.6 KB came at once and the rest
+// only with the next chunk, four seconds on); a TLS handshake's last flight
+// then sat at the edge and the flow stalled. A one-byte chunk after it lets
+// the whole record through, and passes itself.
+type tailFlushed struct {
+	w http.ResponseWriter
+	f http.Flusher
+}
+
+func (fw *tailFlushed) Write(p []byte) (int, error) {
+	if len(p) < 2 {
+		n, err := fw.w.Write(p)
+		fw.f.Flush()
+		return n, err
+	}
+	n, err := fw.w.Write(p[:len(p)-1])
+	fw.f.Flush()
+	if err != nil {
+		return n, err
+	}
+	m, err := fw.w.Write(p[len(p)-1:])
+	fw.f.Flush()
+	return n + m, err
 }
 
 // splitUpReader closes the session's pipe when the tunnel is done with it.
