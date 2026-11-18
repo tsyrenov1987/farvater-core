@@ -174,6 +174,7 @@ func (b *Brain) enter(ctx string, now int64, act, why string) {
 	b.doubtAt, b.slowAt, b.raceLost, b.raceDoubt, b.askedAt = 0, nil, 0, 0, 0 // a sweep's reasons are the network's left
 	b.unheardAt, b.probeLost = nil, map[string]int64{}
 	b.quietFrom, b.quietFails, b.quietRuns = 0, 0, 0
+	b.relapseAt = 0
 	if cs, ok := b.saved[ctx]; ok {
 		delete(b.saved, ctx)
 		b.st, b.leader, b.leaderSince, b.Breaker, b.Diag = cs.st, cs.leader, cs.leaderSince, cs.breaker, cs.diag

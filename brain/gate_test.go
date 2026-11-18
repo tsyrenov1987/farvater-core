@@ -17,10 +17,10 @@ func gateBrain(ctx string) *Brain {
 }
 
 // openEvidence gives the open internet its proof: quick clean answers over a
-// path meant for it.
+// paths meant for it at two entry addresses.
 func openEvidence(b *Brain, at int64) {
 	b.st["de3-reality"].noteOpen(at - 1)
-	b.st["de3-reality"].noteOpen(at)
+	b.st["de3-xhttp"].noteOpen(at)
 }
 
 // zoneEvidence makes the open paths silent: a whitelist zone by evidence.
@@ -158,8 +158,9 @@ func TestGateTrickleKeepsZone(t *testing.T) {
 func TestGateQuickAnswersProveOpen(t *testing.T) {
 	b := gateBrain("cell:25002")
 	now := int64(1_000_000)
-	for i := int64(0); i < 2; i++ {
-		b.Observe(Receipt{Path: "de3-reality", AtMs: now + i*100, WireReadyMs: 60, FirstByteMs: 300, AnswerMs: 300, Down: 200 * KB, DurMs: 900, End: EndRemoteFin, DownAtFail: -1})
+	for i, id := range []string{"de3-reality", "de3-xhttp"} { // two entry addresses
+		i := int64(i)
+		b.Observe(Receipt{Path: id, AtMs: now + i*100, WireReadyMs: 60, FirstByteMs: 300, AnswerMs: 300, Down: 200 * KB, DurMs: 900, End: EndRemoteFin, DownAtFail: -1})
 	}
 	at := now + 200
 	if b.Zone(at) || b.CDNOpen(at) || contains(b.available(at), "Orden-ru8") {
@@ -255,5 +256,118 @@ func TestGateNeverEmptiesTheFan(t *testing.T) {
 		if av := b.available(1_000_000); len(av) != 1 {
 			t.Fatalf("a catalogue of only gated paths must keep them: %v", av)
 		}
+	}
+}
+
+// iOS 69 on МТС, 18.11.2026: one CDN front answered twice in two seconds, the
+// zone was declared over, vkturn and the bond left the fan with the leader,
+// and the front then failed eleven flows. One address proves only itself.
+func TestGateOneAddressIsNoProof(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(1_000_000)
+	b.st["de3-reality"].noteOpen(now - 2000)
+	b.st["de3-reality"].noteOpen(now - 1000)
+	if !b.Zone(now) || !b.CDNOpen(now) {
+		t.Fatal("two answers at one address ended the zone")
+	}
+	b.st["de3-xhttp"].noteOpen(now - 500)
+	if b.Zone(now) {
+		t.Fatal("answers at two addresses did not prove the open internet")
+	}
+}
+
+// The zone that came back over a proof does not take the next one for
+// ZoneRelapseMs: the open paths of such a line answer in bursts.
+func TestGateRelapseHoldsZone(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(10_000_000)
+	openEvidence(b, now)
+	if b.Zone(now + 1000) {
+		t.Fatal("no proof taken")
+	}
+	b.Diag.lastWireFail["de3-reality"] = now + 2000
+	b.Diag.lastWireFail["de3-xhttp"] = now + 3000
+	if !b.Zone(now + 4000) {
+		t.Fatal("the zone did not come back")
+	}
+	later := now + 5*60_000 // the failures are out of GateWindowMs
+	openEvidence(b, later)
+	if !b.Zone(later+1000) || !contains(b.available(later+1000), "de3-kilbond") {
+		t.Fatal("a second proof inside ZoneRelapseMs ended the zone")
+	}
+	after := now + 4000 + ZoneRelapseMs + 1000
+	openEvidence(b, after)
+	if b.Zone(after + 1000) {
+		t.Fatal("a fresh proof after ZoneRelapseMs was not taken")
+	}
+}
+
+// Owner, 18.11.2026: in the zone on cellular CDNvideo and VK work together.
+// A leader chosen anew there is the bond, though another path answers now.
+func TestGateBondLeadsInEvidentZone(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(1_000_000)
+	zoneEvidence(b, now)
+	b.st["Orden-ru8"].AnsweredAt = now - 100
+	b.Pick(now, "example.com:443", 0)
+	if b.Leader() != "de3-kilbond" {
+		t.Fatalf("leader %s, want the bond", b.Leader())
+	}
+}
+
+// With the zone only assumed (a cellular start, no evidence) the leader is
+// chosen as before: an open network's phone does not start on the bond.
+func TestGateBondNotForcedOnAssumedZone(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(1_000_000)
+	b.st["de3-reality"].AnsweredAt = now - 100
+	b.Pick(now, "example.com:443", 0)
+	if b.Leader() != "de3-reality" {
+		t.Fatalf("leader %s, want the path that answers now", b.Leader())
+	}
+}
+
+// A tripped bond is not chosen, and off cellular the bond is gated anyway.
+func TestGateBondLeadNeedsHealthyBond(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(1_000_000)
+	zoneEvidence(b, now)
+	for i := 0; i < 8; i++ {
+		b.Breaker.NoteSig("de3-kilbond", SigReset, now-10)
+	}
+	if !b.Breaker.Tripped("de3-kilbond", now) {
+		t.Fatal("breaker did not trip the bond")
+	}
+	b.st["Orden-ru8"].AnsweredAt = now - 100
+	b.Pick(now, "example.com:443", 0)
+	if b.Leader() == "de3-kilbond" {
+		t.Fatal("a tripped bond took the lead")
+	}
+}
+
+// A bond that leads and delivers keeps the lead against a longer record.
+func TestGateDeliveringBondKeepsLead(t *testing.T) {
+	b := gateBrain("cell:25002")
+	now := int64(1_000_000)
+	zoneEvidence(b, now)
+	b.Pick(now, "example.com:443", 0)
+	if b.Leader() != "de3-kilbond" {
+		t.Fatalf("leader %s", b.Leader())
+	}
+	for i := 0; i < 30; i++ {
+		b.st["Orden-ru8"].evDelivA++
+		b.st["Orden-ru8"].evFbA++
+		b.st["Orden-ru8"].recent = append(b.st["Orden-ru8"].recent, now)
+	}
+	later := now + b.cfg.MinLeadMs + 1000
+	zoneEvidence(b, later)
+	b.st["Orden-ru8"].recent = nil
+	for i := 0; i < 30; i++ {
+		b.st["Orden-ru8"].recent = append(b.st["Orden-ru8"].recent, later-1000)
+	}
+	b.st["de3-kilbond"].AnsweredAt = later - 500
+	b.Pick(later, "example.com:443", 0)
+	if b.Leader() != "de3-kilbond" {
+		t.Fatalf("the delivering bond lost the lead to %s", b.Leader())
 	}
 }

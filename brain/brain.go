@@ -143,6 +143,7 @@ type Brain struct {
 	saved      map[string]ctxState         // networks left this session
 	mem        *Memory                     // what earlier sessions learned (nil: none)
 	priors     map[string]map[string]Prior // the catalogue's, per network
+	relapseAt  int64                       // when the zone last came back over the open internet's proof (gate.go)
 	switchedAt int64                       // last network change: flows begun before it are not evidence
 	blockedAt  int64                       // the system blocked the app's network (Blocked); 0: it has not
 	silent     map[string]bool             // restricted network: paths silent when it was entered
@@ -441,7 +442,7 @@ func (b *Brain) measured(path string, now int64) {
 	if cand, why := b.faster(avail, now); cand == path && cand != "" {
 		b.demoted[b.leader] = now
 		b.setLeader(cand, now, "lead_slow", why)
-	} else if cand, why := b.quicker(avail, now); cand == path && cand != "" && b.settled(b.st[b.leader], now) {
+	} else if cand, why := b.quicker(avail, now); cand == path && cand != "" && b.settled(b.st[b.leader], now) && !b.bondHolds(now) {
 		b.demoted[b.leader] = now
 		b.setLeader(cand, now, "lead_lag", why)
 	}
@@ -669,13 +670,16 @@ func (b *Brain) Pick(now int64, dst string, class DstClass) Decision {
 		if p := b.answeredNow(avail, now); p != "" {
 			l, why = p, "answers now"
 		}
+		if p := b.bondLead(avail, now); p != "" {
+			l, why = p, "zone on cellular: the bond carries CDNvideo and VK together"
+		}
 		if s := b.soonestFree(avail, now); s != "" {
 			l, why = s, "every path tripped: the earliest trip"
 		}
 		b.setLeader(l, now, "lead_init", why)
 	} else {
 		ls := b.st[b.leader]
-		settled := b.settled(ls, now)
+		settled := b.settled(ls, now) && !b.bondHolds(now)
 		if cand, m := b.bestBy(avail, b.leader, true, now); settled && cand != "" && m >= ls.Mean()+b.cfg.LeaderDelta && !b.muchSlower(cand, now) && !b.muchLaggier(cand, now) && !b.held(cand, now) {
 			b.setLeader(cand, now, "lead_switch", fmt.Sprintf("posterior %.2f vs %.2f of %s", m, ls.Mean(), b.leader))
 		} else if ls.ConsecutiveStalls() >= b.cfg.LeaderStallStrikes {

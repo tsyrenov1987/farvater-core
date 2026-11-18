@@ -84,45 +84,57 @@ func (s *PathState) noteOpen(now int64) {
 // whose answers and failures tell a whitelist zone from the open internet.
 func openPath(p PathInfo) bool { return !p.White && !vkGated(p) && !cdnGated(p) }
 
+// ZoneRelapseMs is how long the open internet's proof is not taken again
+// after the zone came back over one: on a line where the open paths answer in
+// bursts and die again (МТС, 18.11.2026) each burst used to end the zone,
+// take CDNvideo, the bond and vkturn out of the fan with their leader, and
+// the next two failures brought them back — eight times an hour.
+const ZoneRelapseMs = 30 * 60_000
+
 // openProof returns when the open internet last proved itself on this network:
-// the latest of at least OpenProofAnswers quick clean answers over paths meant
-// for it, within OpenProofKeepMs; 0 when there is no such proof. A path whose
-// flows are cut at 16 KB proves nothing.
+// the latest of quick clean answers over paths meant for it at no fewer than
+// OpenProofAnswers entry addresses, within OpenProofKeepMs; 0 when there is no
+// such proof. One address answering proves that address: a CDN front that
+// answered twice and then failed eleven flows ended the zone (iOS 69 on МТС,
+// 18.11.2026). A path whose flows are cut at 16 KB proves nothing, nor does an
+// answer the zone's return has refuted, nor any for ZoneRelapseMs after it.
 func (b *Brain) openProof(now int64) int64 {
-	n, last := 0, int64(0)
+	if b.relapseAt > 0 && now-b.relapseAt < ZoneRelapseMs {
+		return 0
+	}
+	addrs, last := map[string]bool{}, int64(0)
 	for _, p := range b.paths {
 		s := b.st[p.ID]
 		if !openPath(p) || s == nil || s.Cut16 {
 			continue
 		}
 		for _, t := range s.openAt {
-			if t >= now-OpenProofKeepMs && t <= now {
-				n++
+			if t >= now-OpenProofKeepMs && t <= now && t > b.relapseAt {
+				addr := p.IP
+				if addr == "" {
+					addr = p.ID
+				}
+				addrs[addr] = true
 				last = max(last, t)
 			}
 		}
 	}
-	if n < OpenProofAnswers {
+	if len(addrs) < OpenProofAnswers {
 		return 0
 	}
 	return last
 }
 
-// Zone reports whether the network is a whitelist zone:
-//   - the brain is in a restricted network; or
-//   - at least two paths meant for the open internet failed to connect within
-//     GateWindowMs and after the open internet last proved itself (with no
-//     proof, a tripped one counts too); or
-//   - the network is cellular and the open internet has not proved itself on
-//     it (openProof). A phone starting on cellular does not know yet; until
-//     it does, CDNvideo, the bond and vkturn stay in the fan. Starting with
-//     them gated left a phone in a whitelist zone dialling only dead foreign
-//     paths, 15 s a try (iOS 68 / Android 60, 18.11.2026).
-func (b *Brain) Zone(now int64) bool {
+// zoneEvident reports whether the whitelist zone is known rather than assumed:
+// the brain is in a restricted network, at least two paths meant for the open
+// internet failed to connect within GateWindowMs and after the open internet
+// last proved itself (with no proof, a tripped one counts too), or the zone
+// came back over a proof within ZoneRelapseMs. proof is openProof's.
+func (b *Brain) zoneEvident(now int64) (evident bool, proof int64) {
 	if b.Restricted() {
-		return true
+		return true, 0
 	}
-	proof := b.openProof(now)
+	proof = b.openProof(now)
 	since := now - GateWindowMs
 	if proof > 0 {
 		since = max(since, proof+1)
@@ -137,9 +149,61 @@ func (b *Brain) Zone(now int64) bool {
 		}
 	}
 	if silent >= 2 {
-		return true
+		if proof > 0 {
+			b.relapseAt = now // the proof did not hold
+			b.J.Add(now, "zone_back", "open paths failed after the open internet's proof", "")
+			proof = 0
+		}
+		return true, proof
 	}
-	return proof == 0 && b.cellular()
+	return b.relapseAt > 0 && now-b.relapseAt < ZoneRelapseMs, proof
+}
+
+// Zone reports whether the network is a whitelist zone: the zone is evident
+// (zoneEvident), or the network is cellular and the open internet has not
+// proved itself on it (openProof). A phone starting on cellular does not know
+// yet; until it does, CDNvideo, the bond and vkturn stay in the fan. Starting
+// with them gated left a phone in a whitelist zone dialling only dead foreign
+// paths, 15 s a try (iOS 68 / Android 60, 18.11.2026).
+func (b *Brain) Zone(now int64) bool {
+	evident, proof := b.zoneEvident(now)
+	return evident || proof == 0 && b.cellular()
+}
+
+// bondLead returns the bond to lead with when the leader is to be chosen anew
+// on a cellular network in an evident whitelist zone: there CDNvideo and VK
+// carry the flows together (owner, 18.11.2026), and one leg failing does not
+// cost the flow. A bond the breaker tripped or just dethroned is not it; ""
+// outside those conditions.
+func (b *Brain) bondLead(avail []string, now int64) string {
+	if !b.cellular() {
+		return ""
+	}
+	if evident, _ := b.zoneEvident(now); !evident {
+		return ""
+	}
+	best, bestM := "", -1.0
+	for _, p := range avail {
+		if b.info(p).Rail != "kilbond" || b.Breaker.Tripped(p, now) || b.held(p, now) {
+			continue
+		}
+		if m := b.st[p].Mean(); m > bestM {
+			best, bestM = p, m
+		}
+	}
+	return best
+}
+
+// bondHolds reports whether the leader is a bond that delivers: no flow of it
+// left unanswered, its goodput not measured slow. Another path's longer record
+// or quicker answer does not take the lead from it then; a trip, stalls, a
+// run of failed flows, a sweep or a path measured several times faster do.
+func (b *Brain) bondHolds(now int64) bool {
+	if b.leader == "" || b.info(b.leader).Rail != "kilbond" {
+		return false
+	}
+	_, slow := b.slowLeader(now)
+	return !slow && !b.leaderUnheard(now)
 }
 
 // VKOpen reports whether plain vkturn paths may take flows: a whitelist zone.
