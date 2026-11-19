@@ -2,6 +2,7 @@ package brain
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -53,6 +54,9 @@ func cdnGated(p PathInfo) bool { return p.Door == DoorCDNvideo || p.Rail == "kil
 // gated returns the paths kept out of the fan right now (nil: none).
 func (b *Brain) gated(now int64) map[string]bool {
 	cell := b.cellular()
+	if cell && !b.hasYCDN() {
+		return nil // nothing is gated on cellular but the Yandex CDN entry
+	}
 	zone := b.Zone(now)
 	var out map[string]bool
 	for _, p := range b.paths {
@@ -68,6 +72,16 @@ func (b *Brain) gated(now int64) map[string]bool {
 		}
 	}
 	return out
+}
+
+// hasYCDN reports whether the catalogue holds a Yandex CDN entry.
+func (b *Brain) hasYCDN() bool {
+	for _, p := range b.paths {
+		if ycdnGated(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // cellular reports whether the current network is a cellular one.
@@ -122,7 +136,11 @@ func (b *Brain) openProof(now int64) int64 {
 	if b.relapseAt > 0 && now-b.relapseAt < ZoneRelapseMs {
 		return 0
 	}
-	addrs, last := map[string]bool{}, int64(0)
+	// Only whether OpenProofAnswers distinct addresses answered matters, not
+	// which: the first ones are kept, with no map of every path's address
+	// (this runs on each pick of the fan, over the whole catalogue).
+	var addrs [OpenProofAnswers]string
+	n, last := 0, int64(0)
 	for _, p := range b.paths {
 		s := b.st[p.ID]
 		if !openPath(p) || s == nil || s.Cut16 {
@@ -134,12 +152,15 @@ func (b *Brain) openProof(now int64) int64 {
 				if addr == "" {
 					addr = p.ID
 				}
-				addrs[addr] = true
+				if n < len(addrs) && !slices.Contains(addrs[:n], addr) {
+					addrs[n] = addr
+					n++
+				}
 				last = max(last, t)
 			}
 		}
 	}
-	if len(addrs) < OpenProofAnswers {
+	if n < OpenProofAnswers {
 		return 0
 	}
 	return last

@@ -430,3 +430,24 @@ func TestGateYandexCDNAnswersAreNoProof(t *testing.T) {
 		t.Fatal("Yandex CDN answers cancelled the zone")
 	}
 }
+
+// On cellular with no Yandex CDN entry nothing is gated, and picking the fan
+// does not ask the zone: its relapse mark stays as it was.
+func TestGateCellNoYandexCDNSkipsZone(t *testing.T) {
+	now := int64(1_000_000)
+	b := gateBrain("cell:25002")
+	openEvidence(b, now-20_000)
+	zoneEvidence(b, now)
+	if g := b.gated(now); g != nil {
+		t.Fatalf("gated on cellular without ycdn: %v", g)
+	}
+	if b.relapseAt != 0 {
+		t.Fatalf("relapseAt = %d, want 0: the zone was asked", b.relapseAt)
+	}
+	y := ycdnBrain("cell:25002")
+	openEvidence(y, now-20_000)
+	zoneEvidence(y, now)
+	if y.gated(now)["advin-ycdn"] == y.Zone(now) {
+		t.Fatalf("ycdn gate disagrees with Zone")
+	}
+}
