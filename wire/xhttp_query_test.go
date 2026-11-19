@@ -22,7 +22,7 @@ func TestXQueryLinkAndURL(t *testing.T) {
 	if x.PadKey != "t" || x.ContentType == "" {
 		t.Fatalf("defaults: %+v", x)
 	}
-	u, _ := url.Parse(x.url(url.URL{Scheme: "https", Host: "cdn.example", Path: path, RawQuery: query}, "abc", "7"))
+	u, _ := url.Parse(x.request(url.URL{Scheme: "https", Host: "cdn.example", Path: path, RawQuery: query}, "abc", "7", nil).url)
 	if u.Path != "/content/media/stream.m3u8" {
 		t.Fatalf("path %q: a file path keeps no trailing slash", u.Path)
 	}
@@ -37,7 +37,7 @@ func TestXQueryLinkAndURL(t *testing.T) {
 		t.Fatal("no X runs")
 	}
 	x.PadKey = "-"
-	if u2, _ := url.Parse(x.url(url.URL{Path: path}, "abc", "")); u2.Query().Has("t") || u2.Query().Has("n") {
+	if u2, _ := url.Parse(x.request(url.URL{Path: path}, "abc", "", nil).url); u2.Query().Has("t") || u2.Query().Has("n") {
 		t.Fatalf("no padding, no seq on the GET: %v", u2.Query())
 	}
 }

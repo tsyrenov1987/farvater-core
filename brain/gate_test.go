@@ -451,3 +451,36 @@ func TestGateCellNoYandexCDNSkipsZone(t *testing.T) {
 		t.Fatalf("ycdn gate disagrees with Zone")
 	}
 }
+
+// A door named "<name>@zone" is gated as the Yandex CDN entry, "<name>@paid"
+// as CDNvideo: a new CDN takes its rule from the catalogue line.
+func TestGateDoorSuffixes(t *testing.T) {
+	now := int64(1_000_000)
+	with := func(ctx string, p PathInfo) *Brain {
+		b := gateBrain(ctx)
+		return New(DefaultConfig(), ctx, append(append([]PathInfo{}, b.paths...), p), 1)
+	}
+	z := PathInfo{ID: "de4-cdntw", Rail: "xhttp", IP: "188.72.112.2", Door: "cdntw" + doorZoneSuffix}
+	for _, ctx := range []string{"cell:25002", "wifi:ab12"} {
+		b := with(ctx, z)
+		openEvidence(b, now-2000)
+		if contains(b.available(now), z.ID) {
+			t.Fatalf("%s: @zone door in the fan on the open internet", ctx)
+		}
+		w := with(ctx, z)
+		zoneEvidence(w, now)
+		if !contains(w.available(now), z.ID) {
+			t.Fatalf("%s: @zone door out of the fan in a zone", ctx)
+		}
+	}
+	p := PathInfo{ID: "de4-paid", Rail: "xhttp", IP: "188.72.112.3", Door: "cdnx" + doorPaidSuffix}
+	if b := with("wifi:ab12", p); contains(b.available(now), p.ID) {
+		t.Fatal("@paid door in the fan off cellular")
+	}
+	if b := with("cell:25002", p); !contains(b.available(now), p.ID) {
+		t.Fatal("@paid door out of the fan on cellular")
+	}
+	if b := with("wifi:ab12", PathInfo{ID: "plain", Rail: "xhttp", IP: "188.72.112.4", Door: "cdntw"}); !contains(b.available(now), "plain") {
+		t.Fatal("a door without a suffix got gated")
+	}
+}

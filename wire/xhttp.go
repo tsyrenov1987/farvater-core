@@ -3,6 +3,7 @@ package wire
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -212,15 +213,31 @@ var _ net.Conn = (*xhttpPacketUp)(nil)
 // xhttpSettings sessionPlacement/seqPlacement/xPaddingPlacement "query",
 // sessionKey "sid", seqKey "page", xPaddingKey "t", xPaddingMethod
 // "tokenish", obfs mode on, uplinkHTTPMethod POST, uplinkDataPlacement body.
+// A key left out of another placement takes Xray's default for it.
 func xqDefaults(x XQuerySpec) XQuerySpec {
+	x.SessPlace = first(x.SessPlace, "query")
+	x.SeqPlace = first(x.SeqPlace, "query")
+	x.PadPlace = first(x.PadPlace, "query")
+	x.PadMethod = first(x.PadMethod, "tokenish")
+	x.UpMethod = first(x.UpMethod, http.MethodPost)
+	x.DataPlace = first(x.DataPlace, "body")
 	if x.SessionKey == "" {
-		x.SessionKey = "sid"
+		x.SessionKey = map[string]string{"query": "sid", "header": "X-Session", "cookie": "x_session"}[x.SessPlace]
 	}
 	if x.SeqKey == "" {
-		x.SeqKey = "page"
+		x.SeqKey = map[string]string{"query": "page", "header": "X-Seq", "cookie": "x_seq"}[x.SeqPlace]
 	}
 	if x.PadKey == "" {
-		x.PadKey = "t"
+		x.PadKey = "x_padding"
+		if x.PadPlace == "query" {
+			x.PadKey = "t"
+		}
+	}
+	if x.PadHeader == "" {
+		x.PadHeader = "X-Padding"
+		if x.PadPlace == "queryInHeader" {
+			x.PadHeader = "Referer"
+		}
 	}
 	if x.PadMax == 0 {
 		// 200–600 base62 characters: a base62 character takes 5 to 7
@@ -230,8 +247,27 @@ func xqDefaults(x XQuerySpec) XQuerySpec {
 	if x.ContentType == "" {
 		x.ContentType = "application/octet-stream"
 	}
+	if x.DataKey == "" {
+		x.DataKey = "X-Data"
+		if x.DataPlace == "cookie" {
+			x.DataKey = "x_data"
+		}
+	}
+	if x.DataChunk == 0 {
+		x.DataChunk = 3072
+		if x.DataPlace == "cookie" {
+			x.DataChunk = 2048
+		}
+	}
 	if x.ChunkKiB == 0 {
 		x.ChunkKiB = 256
+		if x.DataPlace != "body" {
+			// Headers and cookies: Xray's server caps a request's headers
+			// at 8192 bytes unless serverMaxHeaderBytes says more, CDNs at
+			// 8–32 KB, and base64 adds a third: 3 KiB is 4096 characters
+			// beside ~1.5 KB of browser headers and padding.
+			x.ChunkKiB = 3
+		}
 	}
 	if x.InFlight == 0 {
 		x.InFlight = 4
@@ -258,27 +294,89 @@ func randBase62(n int) string {
 	return string(b)
 }
 
-// url is base with the session (and the sequence, for an upload) and a fresh
-// padding added to its query.
-func (x XQuerySpec) url(base url.URL, session, seq string) string {
-	q := base.Query()
-	q.Set(x.SessionKey, session)
-	if seq != "" {
-		q.Set(x.SeqKey, seq)
-	}
-	if x.PadKey != "-" {
-		q.Set(x.PadKey, randBase62(x.PadMin+mrandN(x.PadMax-x.PadMin+1)))
-	}
-	base.RawQuery = q.Encode()
-	return base.String()
+// xqRequest is one request of the xquery shape: where it goes, its headers
+// and (for an upload with the data in the body) its body.
+type xqRequest struct {
+	url    string
+	header http.Header
+	body   []byte
 }
 
-// xqHeaders is the browser "fetch" set alone: no Referer padding, which CDN
-// filters read as a probe.
-func xqHeaders() http.Header {
+// request builds a request of the profile: the session (and the sequence and
+// data, for an upload), a fresh padding, the extra headers, each where the
+// profile puts it; the node's xhttpSettings read them from the same places
+// (Xray's ExtractMetaFromRequest, ExtractXPaddingFromRequest).
+func (x XQuerySpec) request(base url.URL, session, seq string, data []byte) xqRequest {
 	h := http.Header{}
+	for _, kv := range x.Headers {
+		h.Set(kv[0], kv[1])
+	}
 	browserHeaders(h, "fetch")
-	return h
+	q := base.Query()
+	var cookies []string
+	place := func(where, key, v string) {
+		switch where {
+		case "query":
+			q.Set(key, v)
+		case "header":
+			h.Set(key, v)
+		case "cookie":
+			cookies = append(cookies, key+"="+v)
+		case "path":
+			if !strings.HasSuffix(base.Path, "/") {
+				base.Path += "/"
+			}
+			base.Path += v
+		}
+	}
+	place(x.SessPlace, x.SessionKey, session)
+	if seq != "" {
+		place(x.SeqPlace, x.SeqKey, seq)
+	}
+	if x.PadKey != "-" {
+		n := x.PadMin + mrandN(x.PadMax-x.PadMin+1)
+		pad := randBase62(n)
+		if x.PadMethod == "repeat-x" {
+			pad = strings.Repeat("X", n)
+		}
+		switch x.PadPlace {
+		case "header":
+			h.Set(x.PadHeader, pad)
+		case "queryInHeader":
+			// The page the request seems to come from, as Xray's client sets
+			// it: the request's own URL with only the padding as its query.
+			ref := base
+			ref.RawQuery = x.PadKey + "=" + pad
+			h.Set(x.PadHeader, ref.String())
+		default:
+			place(x.PadPlace, x.PadKey, pad)
+		}
+	}
+	r := xqRequest{}
+	if data != nil {
+		switch x.DataPlace {
+		case "header", "cookie":
+			enc := base64.RawURLEncoding.EncodeToString(data)
+			for i := 0; len(enc) > 0; i++ {
+				n := min(x.DataChunk, len(enc))
+				if x.DataPlace == "header" {
+					h.Set(x.DataKey+"-"+strconv.Itoa(i), enc[:n])
+				} else {
+					cookies = append(cookies, x.DataKey+"_"+strconv.Itoa(i)+"="+enc[:n])
+				}
+				enc = enc[n:]
+			}
+		default:
+			h.Set("Content-Type", x.ContentType)
+			r.body = data
+		}
+	}
+	if len(cookies) > 0 {
+		h.Set("Cookie", strings.Join(cookies, "; "))
+	}
+	base.RawQuery = q.Encode()
+	r.url, r.header = base.String(), h
+	return r
 }
 
 // dialXHTTPQuery runs packet-up in the xquery shape: a GET for the downlink
@@ -290,7 +388,8 @@ func dialXHTTPQuery(ctx context.Context, m *h2Mux, base url.URL, x XQuerySpec) (
 		return nil, err
 	}
 	session := hex.EncodeToString(sid[:])
-	st, err := m.openStream(ctx, http.MethodGet, x.url(base, session, ""), xqHeaders())
+	down := x.request(base, session, "", nil)
+	st, err := m.openStream(ctx, http.MethodGet, down.url, down.header)
 	if err != nil {
 		return nil, err
 	}
@@ -371,9 +470,8 @@ func (c *xhttpQuery) sendLoop() {
 		}
 		go func(seq int64, chunk []byte) {
 			defer func() { <-c.slots }()
-			h := xqHeaders()
-			h.Set("Content-Type", c.x.ContentType)
-			err := c.mux.post(c.ctx, c.x.url(c.base, c.session, strconv.FormatInt(seq, 10)), h, chunk)
+			r := c.x.request(c.base, c.session, strconv.FormatInt(seq, 10), chunk)
+			err := c.mux.do(c.ctx, c.x.UpMethod, r.url, r.header, r.body)
 			if err != nil {
 				c.mu.Lock()
 				if c.err == nil && !c.closed {

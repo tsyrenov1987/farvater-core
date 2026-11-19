@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -104,14 +105,39 @@ type PathSpec struct {
 	Spare bool
 }
 
-// XQuerySpec names what the xquery shape puts in the query and how it pads.
+// XQuerySpec names what the xquery shape puts where and how it pads: the
+// request profile. Every knob mirrors an Xray xhttpSettings field, so a new CDN
+// (or a CDN's new filter) is a catalogue line plus the node's own settings —
+// no app update.
 //
 //	xsk  session key (default sid)     xqk  sequence key (default page)
 //	xpk  padding key (default t; "-" = no padding)
-//	xpad padding length in base62 characters, "min-max" (default 200-600)
+//	xpad padding length in characters, "min-max" (default 200-600)
 //	xct  uplink Content-Type (default application/octet-stream)
-//	xchunk  largest uplink POST in KiB (default 256)
-//	xinfl   uplink POSTs in flight (default 4)
+//	xchunk  largest uplink request in KiB (default 256; 3 when the data
+//	        rides headers or cookies: Xray's serverMaxHeaderBytes is 8192
+//	        unless the node sets more)
+//	xinfl   uplink requests in flight (default 4)
+//
+// The profile (sessionPlacement, seqPlacement, xPaddingPlacement, ...):
+//
+//	xsp  session placement: query (default) | path | header | cookie
+//	xqp  sequence placement: query (default) | path | header | cookie
+//	xpp  padding placement: query (default) | header | queryInHeader | cookie
+//	xph  padding header (xPaddingHeader; default X-Padding, Referer for queryInHeader)
+//	xpm  padding method: tokenish (default) | repeat-x
+//	xum  uplink HTTP method (uplinkHTTPMethod; default POST, GET only with
+//	     the data in headers or cookies)
+//	xdp  uplink data placement: body (default) | header | cookie
+//	xdk  uplink data key (uplinkDataKey; default X-Data, x_data for cookies)
+//	xdc  one header's or cookie's share of the data in characters
+//	     (uplinkChunkSize; default 3072 for headers, 2048 for cookies)
+//	xh   extra request headers, "Name:Value|Name:Value" (headers)
+//
+// Keys left out follow the placement as Xray's do (X-Session / x_session,
+// X-Seq / x_seq, x_padding), except the query defaults the nodes use (sid,
+// page, t). A value the core does not know drops the link (ParseURI fails),
+// so a profile an older build cannot speak never reaches it half-understood.
 type XQuerySpec struct {
 	SessionKey  string
 	SeqKey      string
@@ -121,10 +147,23 @@ type XQuerySpec struct {
 	ContentType string
 	ChunkKiB    int
 	InFlight    int
+
+	SessPlace string
+	SeqPlace  string
+	PadPlace  string
+	PadHeader string
+	PadMethod string
+	UpMethod  string
+	DataPlace string
+	DataKey   string
+	DataChunk int
+	Headers   [][2]string
 }
 
-func parseXQuerySpec(q url.Values) XQuerySpec {
-	x := XQuerySpec{SessionKey: q.Get("xsk"), SeqKey: q.Get("xqk"), PadKey: q.Get("xpk"), ContentType: q.Get("xct")}
+func parseXQuerySpec(q url.Values) (XQuerySpec, error) {
+	x := XQuerySpec{SessionKey: q.Get("xsk"), SeqKey: q.Get("xqk"), PadKey: q.Get("xpk"), ContentType: q.Get("xct"),
+		SessPlace: q.Get("xsp"), SeqPlace: q.Get("xqp"), PadPlace: q.Get("xpp"), PadHeader: q.Get("xph"),
+		PadMethod: q.Get("xpm"), UpMethod: strings.ToUpper(q.Get("xum")), DataPlace: q.Get("xdp"), DataKey: q.Get("xdk")}
 	if a, b, ok := strings.Cut(q.Get("xpad"), "-"); ok {
 		lo, e1 := strconv.Atoi(a)
 		hi, e2 := strconv.Atoi(b)
@@ -132,13 +171,49 @@ func parseXQuerySpec(q url.Values) XQuerySpec {
 			x.PadMin, x.PadMax = lo, hi
 		}
 	}
-	if n, err := strconv.Atoi(q.Get("xchunk")); err == nil && n >= 4 && n <= 4096 {
+	if n, err := strconv.Atoi(q.Get("xchunk")); err == nil && n >= 1 && n <= 4096 {
 		x.ChunkKiB = n
 	}
 	if n, err := strconv.Atoi(q.Get("xinfl")); err == nil && n >= 1 && n <= 16 {
 		x.InFlight = n
 	}
-	return x
+	if n, err := strconv.Atoi(q.Get("xdc")); err == nil && n >= 64 && n <= 16384 {
+		x.DataChunk = n
+	}
+	for _, kv := range strings.Split(q.Get("xh"), "|") {
+		if kv == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(kv, ":")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" || strings.EqualFold(k, "host") || strings.ContainsAny(k, " :\r\n") || strings.ContainsAny(v, "\r\n") {
+			return x, errors.New("xquery: bad header " + kv)
+		}
+		x.Headers = append(x.Headers, [2]string{k, strings.TrimSpace(v)})
+	}
+	return x, x.check()
+}
+
+// check refuses a profile value this core does not know.
+func (x XQuerySpec) check() error {
+	in := func(v string, ok ...string) bool { return v == "" || slices.Contains(ok, v) }
+	switch {
+	case !in(x.SessPlace, "query", "path", "header", "cookie"):
+		return errors.New("xquery: xsp " + x.SessPlace)
+	case !in(x.SeqPlace, "query", "path", "header", "cookie"):
+		return errors.New("xquery: xqp " + x.SeqPlace)
+	case !in(x.PadPlace, "query", "header", "queryInHeader", "cookie"):
+		return errors.New("xquery: xpp " + x.PadPlace)
+	case !in(x.PadMethod, "tokenish", "repeat-x"):
+		return errors.New("xquery: xpm " + x.PadMethod)
+	case !in(x.UpMethod, "POST", "PUT", "PATCH", "GET"):
+		return errors.New("xquery: xum " + x.UpMethod)
+	case !in(x.DataPlace, "body", "header", "cookie"):
+		return errors.New("xquery: xdp " + x.DataPlace)
+	case x.UpMethod == "GET" && (x.DataPlace == "" || x.DataPlace == "body"):
+		return errors.New("xquery: a GET uplink needs xdp header or cookie")
+	}
+	return nil
 }
 
 // Rail is the informational label of the path's transport.
@@ -363,7 +438,11 @@ func parseStream(q url.Values, spec *PathSpec, security string) error {
 	spec.Mode = first(q.Get("mode"), "auto")
 	spec.XQuery = q.Get("xquery") == "1"
 	if spec.XQuery {
-		spec.XQ = parseXQuerySpec(q)
+		x, err := parseXQuerySpec(q)
+		if err != nil {
+			return err
+		}
+		spec.XQ = x
 	}
 	spec.ServiceName = q.Get("serviceName")
 	spec.Authority = q.Get("authority")

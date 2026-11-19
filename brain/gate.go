@@ -45,11 +45,23 @@ const DoorCDNvideo = "cdnv"
 // DoorYandexCDN is the catalogue's "#door=" name of the Yandex CDN entry.
 const DoorYandexCDN = "ycdn"
 
-func ycdnGated(p PathInfo) bool { return p.Door == DoorYandexCDN }
+// A door name ending in "@zone" or "@paid" gates its paths as the Yandex CDN
+// entry or the CDNvideo entry are gated: a new CDN takes the rule it needs
+// from the catalogue line, without an app update.
+const (
+	doorZoneSuffix = "@zone"
+	doorPaidSuffix = "@paid"
+)
+
+func ycdnGated(p PathInfo) bool {
+	return p.Door == DoorYandexCDN || strings.HasSuffix(p.Door, doorZoneSuffix)
+}
 
 func vkGated(p PathInfo) bool { return p.Rail == "vkturn" }
 
-func cdnGated(p PathInfo) bool { return p.Door == DoorCDNvideo || p.Rail == "kilbond" }
+func cdnGated(p PathInfo) bool {
+	return p.Door == DoorCDNvideo || strings.HasSuffix(p.Door, doorPaidSuffix) || p.Rail == "kilbond"
+}
 
 // gated returns the paths kept out of the fan right now (nil: none).
 func (b *Brain) gated(now int64) map[string]bool {

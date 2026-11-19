@@ -105,7 +105,11 @@ func Fetch(u string) ([]byte, error) {
 // so the worker hands CDN lines of that shape only to cores that name it.
 // "kilext" says kilvater links may carry "ext=ts" (split paths end in a file
 // extension, for CDN Timeweb); an older core refuses the link outright.
-var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ") ycdn-zone xquery kilext"
+// "xprof" says the core reads the xquery request profile (xsp, xqp, xpp, xph,
+// xpm, xum, xdp, xdk, xdc, xh: wire/spec.go) and "#door=<name>@zone" /
+// "@paid" lines (brain/gate.go): a new CDN's line with them goes only to such
+// cores, since an older one would drop the profile and send the old shape.
+var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ") ycdn-zone xquery kilext xprof"
 
 // Device is what the subscription fetch says about the device, in the headers
 // Remnawave and Marzban panels read from any client: x-hwid, x-device-os,

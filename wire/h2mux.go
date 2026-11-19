@@ -468,6 +468,12 @@ func (m *h2Mux) openStreamFunc(ctx context.Context, method, reqURL string, heade
 // response — the per-chunk upload packet-up XHTTP uses. The body is whole, so
 // it rides one stream on the shared connection and opens no new handshake.
 func (m *h2Mux) post(ctx context.Context, reqURL string, header http.Header, body []byte) error {
+	return m.do(ctx, http.MethodPost, reqURL, header, body)
+}
+
+// do sends one short request (an upload: POST, or another method a node's
+// uplinkHTTPMethod names) and waits for its 200; a nil body sends none.
+func (m *h2Mux) do(ctx context.Context, method, reqURL string, header http.Header, body []byte) error {
 	u, err := url.Parse(reqURL)
 	if err != nil {
 		return err
@@ -476,8 +482,11 @@ func (m *h2Mux) post(ctx context.Context, reqURL string, header http.Header, bod
 	if err != nil {
 		return err
 	}
-	req := (&http.Request{Method: http.MethodPost, URL: u, Host: u.Host, Header: header,
-		Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body))}).WithContext(ctx)
+	req := &http.Request{Method: method, URL: u, Host: u.Host, Header: header}
+	if body != nil {
+		req.Body, req.ContentLength = io.NopCloser(bytes.NewReader(body)), int64(len(body))
+	}
+	req = req.WithContext(ctx)
 	resp, err := cc.RoundTrip(req)
 	if err != nil {
 		return err
