@@ -49,6 +49,20 @@ const (
 
 var errSplitPending = errors.New("kilvater: split uplink too far ahead")
 
+// SplitExtOK says whether e (without the dot) may end a split path: one to
+// five lowercase letters or digits, the way a media file's extension looks.
+func SplitExtOK(e string) bool {
+	if len(e) < 1 || len(e) > 5 {
+		return false
+	}
+	for i := 0; i < len(e); i++ {
+		if c := e[i]; (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
 type splitKind int
 
 const (
@@ -62,6 +76,12 @@ const (
 func parseSplitPath(p string) (kind splitKind, sid string, seq uint64) {
 	parts := strings.Split(p, "/")
 	n := len(parts)
+	// A client behind a CDN that wants files ("ext=ts" on the link) ends the
+	// last segment in an extension: <sid>/d.ts, <sid>/u/<n>.ts. The tag still
+	// covers the path as sent.
+	if i := strings.LastIndexByte(parts[n-1], '.'); i > 0 && SplitExtOK(parts[n-1][i+1:]) {
+		parts[n-1] = parts[n-1][:i]
+	}
 	switch {
 	case n >= 3 && parts[n-1] == "d" && len(parts[n-2]) == SplitSIDLen:
 		return splitDown, parts[n-2], 0

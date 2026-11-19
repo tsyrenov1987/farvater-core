@@ -103,7 +103,9 @@ func Fetch(u string) ([]byte, error) {
 // XHTTP (wire/xhttp.go: file path without a trailing slash, session and padding
 // in the query): an older core would send such a line with a "/" a CDN refuses,
 // so the worker hands CDN lines of that shape only to cores that name it.
-var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ") ycdn-zone xquery"
+// "kilext" says kilvater links may carry "ext=ts" (split paths end in a file
+// extension, for CDN Timeweb); an older core refuses the link outright.
+var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ") ycdn-zone xquery kilext"
 
 // Device is what the subscription fetch says about the device, in the headers
 // Remnawave and Marzban panels read from any client: x-hwid, x-device-os,

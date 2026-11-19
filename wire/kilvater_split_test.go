@@ -116,3 +116,56 @@ func TestKilvaterSplitModeParsed(t *testing.T) {
 		t.Fatalf("an unknown mode passed: %v", err)
 	}
 }
+
+// fileOnly is a CDN Timeweb edge (CDNvideo): it refuses a path whose last
+// segment has no file extension (403, x-reason-code 7, measured 19.11).
+type fileOnly struct{ h http.Handler }
+
+func (f fileOnly) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	last := r.URL.Path[strings.LastIndexByte(r.URL.Path, '/')+1:]
+	if !strings.Contains(last, ".") {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	f.h.ServeHTTP(w, r)
+}
+
+// With ext=ts every split request ends in ".ts" and passes such an edge;
+// without it the same edge refuses the downlink.
+func TestKilvaterSplitExtThroughFileEdge(t *testing.T) {
+	key, hexKey := kilTestKey(t)
+	edge := &splitOnly{h: fileOnly{kilServerFor(key)}, allow: http.MethodPost}
+	s, err := ParseURI("kilvater://" + hexKey + "@kv.test:443/content/media/live?mode=split-post&ext=ts#x")
+	if err != nil || s.SplitExt != ".ts" {
+		t.Fatalf("ext=ts: %q %v", s.SplitExt, err)
+	}
+	spec := kilTestSpec(hexKey)
+	spec.Mode, spec.Path, spec.SplitExt = "split-post", s.Path, s.SplitExt
+	w, err := newKilWire(spec, splitDial(t, edge))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	flowEchoOver(t, w)()
+
+	spec.SplitExt = ""
+	w2, err := newKilWire(spec, splitDial(t, &splitOnly{h: fileOnly{kilServerFor(key)}, allow: http.MethodPost}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+	if st, err := w2.Dial(context.Background()); err == nil {
+		if _, err = st.Run(context.Background(), Target{Host: "127.0.0.1", Port: 9}, nil, make(chan []byte), io.Discard, nopMeter{}); err == nil {
+			t.Fatal("a split path without an extension went through a file-only edge")
+		}
+	}
+}
+
+func TestKilvaterSplitExtParsed(t *testing.T) {
+	_, hexKey := kilTestKey(t)
+	for _, bad := range []string{"TS", "t/s", "toolong", "t.s"} {
+		if _, err := ParseURI("kilvater://" + hexKey + "@kv.test:443/connect?mode=split&ext=" + bad + "#x"); err == nil {
+			t.Fatalf("ext=%s passed", bad)
+		}
+	}
+}

@@ -49,6 +49,11 @@ func TestSplitPath(t *testing.T) {
 		"/connect":                 splitNone,
 		"/connect/" + sid + "/u/x": splitNone,
 		"/connect/short/d":         splitNone,
+		// ext=ts on the link (CDN Timeweb wants a file): the extension is not part of the kind
+		"/content/media/live/" + sid + "/d.ts":   splitDown,
+		"/content/media/live/" + sid + "/u/7.ts": splitUp,
+		"/connect/" + sid + "/u/7.TS":            splitNone,
+		"/connect/" + sid + "/d.toolong":         splitNone,
 	} {
 		if k, _, _ := parseSplitPath(p); k != want {
 			t.Fatalf("%s: %v, want %v", p, k, want)

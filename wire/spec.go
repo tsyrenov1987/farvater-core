@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/tsyrenov1987/farvater-core/kilvater"
 )
 
 // Kind is the protocol family of a path.
@@ -51,6 +53,11 @@ type PathSpec struct {
 	Path        string // ws / xhttp
 	HostHeader  string // ws / xhttp
 	Mode        string // xhttp mode: auto | packet-up | stream-up | stream-one; kilvater: "" | split | split-post
+	// SplitExt, set by a kilvater link's "ext=ts", ends every split request's
+	// path in a file extension (<sid>/d.ts, <sid>/u/<n>.ts): CDN Timeweb
+	// (CDNvideo edges) refuses a path whose last segment has none (403,
+	// x-reason-code 7, measured 19.11).
+	SplitExt string
 	// XQuery, set by the link's "xquery=1", is the CDN shape of xhttp
 	// packet-up: the path is a file and stays without a trailing slash, the
 	// session and sequence ride the query (sid, page) and the padding is a
@@ -286,6 +293,12 @@ func ParseURI(raw string) (PathSpec, error) {
 			spec.Mode = m
 		default:
 			return spec, errors.New("kilvater: unknown mode " + m)
+		}
+		if e := q.Get("ext"); e != "" {
+			if !kilvater.SplitExtOK(e) {
+				return spec, errors.New("kilvater: bad ext " + e)
+			}
+			spec.SplitExt = "." + e
 		}
 		if spec.SNI == "" {
 			spec.SNI = spec.Host

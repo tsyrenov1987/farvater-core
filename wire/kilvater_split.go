@@ -56,12 +56,12 @@ func (w *kilWire) openSplit(ctx context.Context) (net.Conn, error) {
 		base = "/connect"
 	}
 	base = trimSlash(base) + "/" + sid
-	c := &splitConn{w: w, base: base, sid: raw[:], post: w.spec.Mode == "split-post"}
+	c := &splitConn{w: w, base: base, sid: raw[:], post: w.spec.Mode == "split-post", ext: w.spec.SplitExt}
 	c.cond = sync.NewCond(&c.mu)
 	c.sw = kilvater.NewSealWriter(splitBuf{c}, w.key, c.sid, kilvater.SealUp)
 	c.ctx, c.cancel = context.WithCancel(context.Background())
-	down, err := w.mux.openStreamFunc(ctx, http.MethodGet, w.splitURL(base+"/d"), func() http.Header {
-		return w.splitHeader(base + "/d")
+	down, err := w.mux.openStreamFunc(ctx, http.MethodGet, w.splitURL(base+"/d"+c.ext), func() http.Header {
+		return w.splitHeader(base + "/d" + c.ext)
 	})
 	if err != nil {
 		c.cancel()
@@ -102,6 +102,7 @@ type splitConn struct {
 	base string
 	sid  []byte
 	post bool
+	ext  string // ".ts" etc. after every path (spec.SplitExt), or ""
 
 	down net.Conn
 	rd   *kilvater.SealReader
@@ -232,7 +233,7 @@ func (c *splitConn) sendLoop() {
 }
 
 func (c *splitConn) send(seq uint64, piece []byte, last bool) error {
-	path := c.base + "/u/" + strconv.FormatUint(seq, 10)
+	path := c.base + "/u/" + strconv.FormatUint(seq, 10) + c.ext
 	u, err := url.Parse(c.w.splitURL(path))
 	if err != nil {
 		return err
