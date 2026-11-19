@@ -48,6 +48,8 @@ func (s *Session) Handle(line []byte) []byte {
 		return toJSON(s.prefsReply())
 	case "autostart":
 		s.setAutostart(r.On)
+	case "direct":
+		return toJSON(map[string]any{"ok": true, "names": s.setDirect(r.Input)})
 	default:
 		return toJSON(map[string]any{"ok": false, "error": "unknown op"})
 	}
@@ -112,7 +114,7 @@ func (s *Session) prefsReply() map[string]any {
 	if p.Provider != nil {
 		provider = string(toJSON(p.Provider))
 	}
-	return map[string]any{"source": p.Source, "title": p.Title, "paths": p.Paths, "updatedMs": p.UpdatedMs, "provider": provider, "autostart": p.Autostart}
+	return map[string]any{"source": p.Source, "title": p.Title, "paths": p.Paths, "updatedMs": p.UpdatedMs, "provider": provider, "autostart": p.Autostart, "direct": p.Direct}
 }
 
 func (s *Session) setAutostart(on bool) {

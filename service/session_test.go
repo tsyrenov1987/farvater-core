@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -508,5 +509,43 @@ func TestEveryMs(t *testing.T) {
 	}
 	if everyMs(nil) != time.Hour {
 		t.Error("nil")
+	}
+}
+
+func TestDirectListSwapsWithoutReconnecting(t *testing.T) {
+	dir := t.TempDir()
+	w := newWorld(t)
+	s := New(dir, w.hooks(), t.Logf)
+	t.Cleanup(func() { s.Close(false) })
+	s.prefs.Source = "https://joinorden.com/hsub/ORDEN-AAAAA-BBBBB"
+	s.Connect()
+	waitState(t, s, "on")
+	s.mu.Lock()
+	l := s.live
+	s.mu.Unlock()
+	before := l.current()
+
+	out := call(t, s, `{"op":"direct","input":"steampowered.com, *.steamcontent.com\nhttps://store.steampowered.com/app/1 gstatic.com"}`)
+	if out["ok"] != true || len(out["names"].([]any)) != 4 {
+		t.Fatalf("direct = %v", out)
+	}
+	if l.current() == before {
+		t.Fatal("the open tunnel kept the switchboard without the list")
+	}
+	if w.ups.Load() != 1 || w.sys.down.Load() != 0 || s.CurrentState().State != "on" {
+		t.Fatalf("reconnected: ups=%d down=%d state=%s", w.ups.Load(), w.sys.down.Load(), s.CurrentState().State)
+	}
+	l.mu.Lock()
+	cat := l.cat
+	l.mu.Unlock()
+	// gstatic.com covers the fallback probe: it stays on the paths.
+	if got := s.config(cat, "u", "p", "").Direct; !slices.Equal(got, []string{"steampowered.com", "steamcontent.com", "store.steampowered.com"}) {
+		t.Fatalf("cfg.Direct = %v", got)
+	}
+	if p := call(t, s, `{"op":"prefs"}`); !strings.Contains(p["direct"].(string), "steamcontent") {
+		t.Fatalf("prefs = %v", p)
+	}
+	if !strings.Contains(New(dir, newWorld(t).hooks(), t.Logf).prefs.Direct, "steampowered") {
+		t.Fatal("the list did not outlive the service")
 	}
 }

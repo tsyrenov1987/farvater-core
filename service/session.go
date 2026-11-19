@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -96,6 +97,9 @@ type Prefs struct {
 	// Wanted is a connection the person left on: a service restarted after a
 	// crash brings it back, as the phones' sticky service does.
 	Wanted bool `json:"wanted,omitempty"`
+	// Direct is the person's own list of sites that go around the tunnel
+	// (Steam's downloads, say), as typed: switchboard.DirectNames reads it.
+	Direct string `json:"direct,omitempty"`
 }
 
 // System is the machine routed into the tunnel (*desktop.System).
@@ -418,6 +422,10 @@ func (s *Session) config(cat *catalogue.Catalogue, user, pass, network string) s
 	if len(cat.ProbeURLs) > 0 {
 		cfg.ProbeURL = cat.ProbeURLs[0]
 	}
+	s.mu.Lock()
+	direct := s.prefs.Direct
+	s.mu.Unlock()
+	cfg.Direct = withoutProbes(switchboard.DirectNames(direct), append([]string{defaultProbe, fallbackProbe}, cat.ProbeURLs...))
 	cfg.MemoryFile = filepath.Join(s.dir, "memory.json")
 	return cfg
 }
@@ -426,6 +434,9 @@ func (s *Session) config(cat *catalogue.Catalogue, user, pass, network string) s
 // open tunnel.
 type live struct {
 	user, pass string
+	run        context.Context // the session's run: a swapped-in switchboard lives under it
+
+	swap sync.Mutex // one switchboard change at a time (catalogue refresh, direct list)
 
 	mu     sync.Mutex
 	sb     *switchboard.Switchboard
@@ -478,7 +489,7 @@ func (s *Session) run(ctx context.Context) {
 		return
 	}
 
-	l := &live{user: rand.Text(), pass: rand.Text(), cat: cat}
+	l := &live{user: rand.Text(), pass: rand.Text(), cat: cat, run: ctx}
 	sb, err := switchboard.New(s.config(cat, l.user, l.pass, ""), cat)
 	if err != nil {
 		s.fail(ctx, reasonCatalogue, err.Error())
@@ -616,24 +627,36 @@ func (s *Session) savedCopyGone(ctx context.Context) {
 // with what the session has learned, and the flows open on the old one
 // finish there.
 func (s *Session) reload(ctx context.Context, l *live, cat *catalogue.Catalogue) (bool, error) {
+	l.swap.Lock()
+	defer l.swap.Unlock()
 	l.mu.Lock()
-	old, had := l.sb, l.cat
+	had := l.cat
 	l.mu.Unlock()
 	if samePaths(had, cat) {
 		return false, nil
 	}
+	return true, s.replace(ctx, l, cat)
+}
+
+// replace hands the open tunnel a new switchboard built from cat and the
+// session's settings now; the flows open on the old one finish there. The
+// caller holds l.swap.
+func (s *Session) replace(ctx context.Context, l *live, cat *catalogue.Catalogue) error {
+	l.mu.Lock()
+	old := l.sb
+	l.mu.Unlock()
 	restricted := old.Restricted()
 	_ = old.SaveMemory()
 	next, err := switchboard.New(s.config(cat, l.user, l.pass, strings.TrimSuffix(old.Ctx(), brain.RestrictedSuffix)), cat)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if restricted { // the new one starts where the old one stood
 		next.EnterRestricted()
 	}
 	if ctx.Err() != nil {
 		next.Discard()
-		return false, ctx.Err()
+		return ctx.Err()
 	}
 	next.Inherit(old)
 	life, cancel := context.WithCancel(ctx)
@@ -646,7 +669,7 @@ func (s *Session) reload(ctx context.Context, l *live, cat *catalogue.Catalogue)
 		next.SetNetwork(n) // the machine moved while the new one was built
 	}
 	go drain(old, oldLife, oldCancel)
-	return true, nil
+	return nil
 }
 
 func drain(old *switchboard.Switchboard, ctx context.Context, c context.CancelFunc) {
@@ -680,5 +703,47 @@ func pathKeys(c *catalogue.Catalogue) []string {
 		out = append(out, e.ID+"\x00"+e.URI+"\x00"+string(l))
 	}
 	slices.Sort(out)
+	return out
+}
+
+// setDirect keeps the person's list of sites around the tunnel and, with the
+// tunnel open, gives it a switchboard that knows the list: nothing is
+// reconnected, flows already open finish as they began.
+func (s *Session) setDirect(text string) []string {
+	s.mu.Lock()
+	s.prefs.Direct = text
+	s.writePrefs()
+	l := s.live
+	s.mu.Unlock()
+	if l != nil {
+		l.swap.Lock()
+		l.mu.Lock()
+		cat := l.cat
+		l.mu.Unlock()
+		if err := s.replace(l.run, l, cat); err != nil {
+			s.logf("direct list: %v", err)
+		}
+		l.swap.Unlock()
+	}
+	return switchboard.DirectNames(text)
+}
+
+// withoutProbes leaves out the direct names that cover a delivery probe's
+// host: a probe that went around the paths would prove a delivery no path
+// made (mobile.withoutProbes on the phones).
+func withoutProbes(names, probeURLs []string) []string {
+	out := []string{}
+	for _, n := range names {
+		covers := false
+		for _, p := range probeURLs {
+			if u, err := url.Parse(p); err == nil {
+				h := strings.ToLower(u.Hostname())
+				covers = covers || h == n || strings.HasSuffix(h, "."+n)
+			}
+		}
+		if !covers {
+			out = append(out, n)
+		}
+	}
 	return out
 }
