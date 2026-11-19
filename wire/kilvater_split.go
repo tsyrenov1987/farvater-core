@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tsyrenov1987/farvater-core/kilvater"
+	"golang.org/x/net/http2"
 )
 
 // Split mode (mode=split / split-post on the link) carries a tunnel stream
@@ -34,7 +36,12 @@ const (
 	// 6 Mbit/s and 40 KB ones, twelve at a time, at 15-19 (18.11, from NSK).
 	splitGetPiece    = 40 << 10
 	splitHeaderChars = 4 << 10
-	splitPostPiece   = 64 << 10
+	// CDN Timeweb's edge ends an h2 connection with GOAWAY after about 200
+	// requests (measured 19.11 from NSK: 64 KB pieces hit it every 12 MB);
+	// 256 KB ones carry 50 MB in as many, past the mux's own turnover
+	// (kilSplitConnMaxBytes). Twelve in flight stay under the server's 4 MB
+	// of pieces held out of order, and each under its 1 MB a piece.
+	splitPostPiece = 256 << 10
 
 	// Pieces in flight at once; the server puts them back in order. Sixteen
 	// went no faster than twelve.
@@ -43,6 +50,8 @@ const (
 	splitUpBuffer = 1 << 20
 	// A piece that gets no answer in this long breaks the stream.
 	splitPieceTimeout = 30 * time.Second
+	// The wait before a piece the server never took goes again (h2Unsent).
+	splitPieceRetry = 200 * time.Millisecond
 )
 
 // openSplit opens one split tunnel stream: it starts the downlink GET and
@@ -240,14 +249,34 @@ func (c *splitConn) sendLoop() {
 	}
 }
 
+// send puts one piece up. A piece the server never took (its connection
+// ended with GOAWAY before it, or a new connection's handshake was held back)
+// goes again on another: the server keeps pieces by seq and drops repeats, so
+// the stream goes on rather than breaking at every turnover of the edge.
 func (c *splitConn) send(seq uint64, piece []byte, last bool) error {
+	ctx, cancel := context.WithTimeout(c.ctx, splitPieceTimeout)
+	defer cancel()
+	for {
+		err := c.sendOnce(ctx, seq, piece, last)
+		if err == nil || !h2Unsent(err) {
+			return err
+		}
+		t := time.NewTimer(splitPieceRetry)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return err
+		case <-t.C:
+		}
+	}
+}
+
+func (c *splitConn) sendOnce(ctx context.Context, seq uint64, piece []byte, last bool) error {
 	path := c.base + "/u/" + strconv.FormatUint(seq, 10) + c.ext
 	u, err := url.Parse(c.w.splitURL(path))
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(c.ctx, splitPieceTimeout)
-	defer cancel()
 	cc, _, err := c.w.mux.client(ctx)
 	if err != nil {
 		return err
@@ -286,3 +315,23 @@ func (c *splitConn) RemoteAddr() net.Addr               { return c.down.RemoteAd
 func (c *splitConn) SetDeadline(t time.Time) error      { return nil }
 func (c *splitConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *splitConn) SetWriteDeadline(t time.Time) error { return nil }
+
+// h2Unsent reports an error after which the request certainly did not reach
+// the server, so it may go again: the connection's GOAWAY came before the
+// stream (x/net/http2 names these errors but does not export them), the
+// stream was refused, or a new connection's handshake was held back.
+func h2Unsent(err error) bool {
+	if errors.Is(err, ErrHandshakePaced) {
+		return true
+	}
+	var se http2.StreamError
+	if errors.As(err, &se) && se.Code == http2.ErrCodeRefusedStream {
+		return true
+	}
+	switch err.Error() {
+	case "http2: Transport received Server's graceful shutdown GOAWAY",
+		"http2: client conn not usable":
+		return true
+	}
+	return false
+}
