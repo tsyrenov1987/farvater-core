@@ -51,6 +51,16 @@ type PathSpec struct {
 	Path        string // ws / xhttp
 	HostHeader  string // ws / xhttp
 	Mode        string // xhttp mode: auto | packet-up | stream-up | stream-one; kilvater: "" | split | split-post
+	// XQuery, set by the link's "xquery=1", is the CDN shape of xhttp
+	// packet-up: the path is a file and stays without a trailing slash, the
+	// session and sequence ride the query (sid, page) and the padding is a
+	// base62 query value (t). CDN filters drop the default shape (a path
+	// ending in "/", 'X' runs in the Referer).
+	XQuery bool
+	// XQ is the xquery shape's knobs, all from the link, so a new CDN (or a
+	// CDN's new filter) is a catalogue change, not an app update. Zero
+	// values are the defaults the nodes use today (see xqDefaults).
+	XQ          XQuerySpec
 	ServiceName string // grpc
 	Authority   string // grpc :authority override
 
@@ -85,6 +95,43 @@ type PathSpec struct {
 	Legs []PathSpec
 	// Spare, on a bond's leg: a route to spare (see kilvater.JoinSpare).
 	Spare bool
+}
+
+// XQuerySpec names what the xquery shape puts in the query and how it pads.
+//
+//	xsk  session key (default sid)     xqk  sequence key (default page)
+//	xpk  padding key (default t; "-" = no padding)
+//	xpad padding length in base62 characters, "min-max" (default 200-600)
+//	xct  uplink Content-Type (default application/octet-stream)
+//	xchunk  largest uplink POST in KiB (default 256)
+//	xinfl   uplink POSTs in flight (default 4)
+type XQuerySpec struct {
+	SessionKey  string
+	SeqKey      string
+	PadKey      string
+	PadMin      int
+	PadMax      int
+	ContentType string
+	ChunkKiB    int
+	InFlight    int
+}
+
+func parseXQuerySpec(q url.Values) XQuerySpec {
+	x := XQuerySpec{SessionKey: q.Get("xsk"), SeqKey: q.Get("xqk"), PadKey: q.Get("xpk"), ContentType: q.Get("xct")}
+	if a, b, ok := strings.Cut(q.Get("xpad"), "-"); ok {
+		lo, e1 := strconv.Atoi(a)
+		hi, e2 := strconv.Atoi(b)
+		if e1 == nil && e2 == nil && lo >= 0 && hi >= lo && hi <= 4000 {
+			x.PadMin, x.PadMax = lo, hi
+		}
+	}
+	if n, err := strconv.Atoi(q.Get("xchunk")); err == nil && n >= 4 && n <= 4096 {
+		x.ChunkKiB = n
+	}
+	if n, err := strconv.Atoi(q.Get("xinfl")); err == nil && n >= 1 && n <= 16 {
+		x.InFlight = n
+	}
+	return x
 }
 
 // Rail is the informational label of the path's transport.
@@ -301,6 +348,10 @@ func parseStream(q url.Values, spec *PathSpec, security string) error {
 	spec.Path = first(q.Get("path"), "/")
 	spec.HostHeader = q.Get("host")
 	spec.Mode = first(q.Get("mode"), "auto")
+	spec.XQuery = q.Get("xquery") == "1"
+	if spec.XQuery {
+		spec.XQ = parseXQuerySpec(q)
+	}
 	spec.ServiceName = q.Get("serviceName")
 	spec.Authority = q.Get("authority")
 	if spec.Security == "reality" && (len(spec.PublicKey) == 0 || spec.SNI == "") {
