@@ -25,6 +25,11 @@ import (
 // (Verdict): in a zone the bond leads (bondLead), on the open internet the
 // paid door and vkturn ride behind (backSeat).
 //
+// The Yandex CDN entry (catalogue "#door=ycdn", kilvater in split mode)
+// takes flows only in a whitelist zone (Zone), on every network, cellular
+// too (owner, 19.11.2026): elsewhere it stays out. Its answers prove nothing
+// about the open internet.
+//
 // Outside its conditions a path stays in the catalogue and in memory and only
 // takes no flows; the moment they hold, it is back in the fan. available()
 // never narrows the fan to nothing, so a catalogue of only gated paths still
@@ -36,19 +41,26 @@ const GateWindowMs = 180_000
 // DoorCDNvideo is the catalogue's "#door=" name of the CDNvideo entry.
 const DoorCDNvideo = "cdnv"
 
+// DoorYandexCDN is the catalogue's "#door=" name of the Yandex CDN entry.
+const DoorYandexCDN = "ycdn"
+
+func ycdnGated(p PathInfo) bool { return p.Door == DoorYandexCDN }
+
 func vkGated(p PathInfo) bool { return p.Rail == "vkturn" }
 
 func cdnGated(p PathInfo) bool { return p.Door == DoorCDNvideo || p.Rail == "kilbond" }
 
 // gated returns the paths kept out of the fan right now (nil: none).
 func (b *Brain) gated(now int64) map[string]bool {
-	if b.cellular() {
-		return nil
-	}
+	cell := b.cellular()
 	zone := b.Zone(now)
 	var out map[string]bool
 	for _, p := range b.paths {
-		if vkGated(p) && !zone || cdnGated(p) && !vkGated(p) {
+		off := ycdnGated(p) && !zone
+		if !cell {
+			off = off || vkGated(p) && !zone || cdnGated(p) && !vkGated(p)
+		}
+		if off {
 			if out == nil {
 				out = map[string]bool{}
 			}
@@ -90,7 +102,7 @@ func (s *PathState) noteOpen(now int64) {
 
 // openPath reports whether a path is meant for the open internet: the ones
 // whose answers and failures tell a whitelist zone from the open internet.
-func openPath(p PathInfo) bool { return !p.White && !vkGated(p) && !cdnGated(p) }
+func openPath(p PathInfo) bool { return !p.White && !vkGated(p) && !cdnGated(p) && !ycdnGated(p) }
 
 // ZoneRelapseMs is how long the open internet's proof is not taken again
 // after the zone came back over one: on a line where the open paths answer in

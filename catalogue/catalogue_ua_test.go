@@ -19,7 +19,7 @@ func TestFetchUserAgentNamesOS(t *testing.T) {
 	if _, err := Fetch(srv.URL); err != nil {
 		t.Fatal(err)
 	}
-	if want := "farvater-core/0.1 (" + runtime.GOOS + ")"; got != want {
+	if want := "farvater-core/0.1 (" + runtime.GOOS + ") ycdn-zone"; got != want {
 		t.Fatalf("User-Agent %q, want %q", got, want)
 	}
 }

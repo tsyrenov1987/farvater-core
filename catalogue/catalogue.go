@@ -96,7 +96,11 @@ func Fetch(u string) ([]byte, error) {
 // UserAgent names the OS the core runs on ("farvater-core/0.1 (ios)"): one core
 // serves the iPhone and the Android app, and a provider could not otherwise tell
 // which app a subscriber uses. Same "name/version (os)" shape panels already parse.
-var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ")"
+//
+// The trailing "ycdn-zone" tells the provider this core keeps "#door=ycdn"
+// paths to a whitelist zone (brain/gate.go): the worker hands the Yandex CDN
+// line only to such cores.
+var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ") ycdn-zone"
 
 // Device is what the subscription fetch says about the device, in the headers
 // Remnawave and Marzban panels read from any client: x-hwid, x-device-os,

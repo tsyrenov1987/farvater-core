@@ -383,3 +383,50 @@ func TestGateDeliveringBondKeepsLead(t *testing.T) {
 		t.Fatalf("the delivering bond lost the lead to %s", b.Leader())
 	}
 }
+
+// Owner, 19.11.2026: the Yandex CDN entry (#door=ycdn) takes flows only in a
+// whitelist zone, on every network; its answers are no proof of the open
+// internet.
+func ycdnBrain(ctx string) *Brain {
+	b := gateBrain(ctx)
+	p := PathInfo{ID: "advin-ycdn", Rail: "kilvater", IP: "188.72.112.1", Door: DoorYandexCDN}
+	return New(DefaultConfig(), ctx, append(append([]PathInfo{}, b.paths...), p), 1)
+}
+
+func TestGateYandexCDNOnlyInZone(t *testing.T) {
+	now := int64(1_000_000)
+	for _, ctx := range []string{"cell:25002", "wifi:ab12"} {
+		b := ycdnBrain(ctx)
+		openEvidence(b, now-2000)
+		if b.Zone(now) || contains(b.available(now), "advin-ycdn") {
+			t.Fatalf("%s: Yandex CDN in the fan on the open internet", ctx)
+		}
+		if ctx == "cell:25002" && !contains(b.available(now), "door-ru1") {
+			t.Fatal("the ycdn gate took CDNvideo off cellular")
+		}
+		z := ycdnBrain(ctx)
+		zoneEvidence(z, now)
+		if !z.Zone(now) || !contains(z.available(now), "advin-ycdn") {
+			t.Fatalf("%s: Yandex CDN out of the fan in a whitelist zone", ctx)
+		}
+	}
+	// A cellular start assumes the zone: in from the first flow.
+	if s := ycdnBrain("cell:25002"); !contains(s.available(now), "advin-ycdn") {
+		t.Fatal("Yandex CDN out at a cellular start")
+	}
+	// Wi-Fi with no evidence is no zone.
+	if w := ycdnBrain("wifi:ab12"); contains(w.available(now), "advin-ycdn") {
+		t.Fatal("Yandex CDN in on Wi-Fi with no zone")
+	}
+}
+
+func TestGateYandexCDNAnswersAreNoProof(t *testing.T) {
+	now := int64(1_000_000)
+	b := ycdnBrain("cell:25002")
+	b.st["advin-ycdn"].noteOpen(now - 1000)
+	b.st["advin-ycdn"].noteOpen(now - 500)
+	b.st["de3-reality"].noteOpen(now - 400)
+	if !b.Zone(now) {
+		t.Fatal("Yandex CDN answers cancelled the zone")
+	}
+}
