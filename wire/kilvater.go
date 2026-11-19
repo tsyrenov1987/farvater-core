@@ -73,11 +73,24 @@ const (
 	kilConnSpread = 0.3
 	kilConnAhead  = 0.8
 
+	// A split path runs through a CDN, and CDN Timeweb's edge cuts a
+	// connection once it has carried about 50 MiB (19.11, from NSK: four cuts
+	// in a row at 52.4 to 53.4 MB counted on our side, whatever the streams on
+	// it). So a split path's connections turn over at 32 MiB (22 to 42 MiB
+	// with the spread), and a stream still on one past kilSplitRollBytes moves
+	// to the next connection on its own (kilResume.roll), before the edge cuts.
+	kilSplitConnMaxBytes = 32 << 20
+
 	// A connection with nothing to read is PINGed after 15 to 25 s, drawn
 	// once per path: not the same number on every client.
 	kilPingAfterIdle  = 15 * time.Second
 	kilPingIdleJitter = 10 * time.Second
 )
+
+// kilSplitRollBytes: past this many bytes on its connection, a split
+// stream's flow moves to a new stream on the next connection (see
+// kilSplitConnMaxBytes). A variable for tests.
+var kilSplitRollBytes = func() *atomic.Int64 { v := new(atomic.Int64); v.Store(44 << 20); return v }()
 
 func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilWire, error) {
 	k, err := kilvater.ParseKey(s.Key)
@@ -110,6 +123,10 @@ func newKilWire(s PathSpec, dial func(context.Context) (net.Conn, error)) (*kilW
 	w.mux.warm = w.warm
 	w.mux.held = w.gateHeld
 	w.mux.maxAge, w.mux.maxBytes = kilConnMaxAge, kilConnMaxBytes
+	if s.Mode == "split" || s.Mode == "split-post" {
+		w.mux.maxBytes = kilSplitConnMaxBytes
+		handshakes.allow(s.ServerSNI(), hsSplitPerWindow)
+	}
 	w.mux.spread, w.mux.ahead = kilConnSpread, kilConnAhead
 	w.joinPeers()
 	return w, nil

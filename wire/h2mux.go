@@ -592,6 +592,15 @@ type h2MuxStream struct {
 	ready   chan struct{}
 }
 
+// connBytes is what the stream's connection has carried so far, both ways,
+// streams and all; -1 when it is not counted.
+func (s *h2MuxStream) connBytes() int64 {
+	if c, ok := s.conn.(*countConn); ok && c != nil && c.n != nil {
+		return c.n.Load()
+	}
+	return -1
+}
+
 func (s *h2MuxStream) Read(p []byte) (int, error) {
 	<-s.ready
 	if s.downErr != nil {

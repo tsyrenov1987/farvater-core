@@ -41,13 +41,34 @@ var (
 	kilEndWait = 500 * time.Millisecond
 )
 
-var kilResumed, kilResumeFailed atomic.Int64
+var kilResumed, kilResumeFailed, kilRolled atomic.Int64
+
+// kilRollRetry is how long a flow whose move to a new stream failed, or landed
+// on the same connection (the handshake for a fresh one is paced), stays on
+// it before it tries again.
+var kilRollRetry = 3 * time.Second
+
+// kilResumePacedWait bounds how long a flow whose stream was cut waits for a
+// handshake slot to the name (hsgate), in steps of kilResumePacedStep; it is
+// under the server's resume grace (kilvater.DefaultResumeGrace, 30 s).
+var (
+	kilResumePacedWait = 25 * time.Second
+	kilResumePacedStep = time.Second
+)
+
+// kilRollable is a stream that can tell when its flow should move to a new
+// one before the path cuts it (splitConn.rollDue).
+type kilRollable interface{ rollDue() bool }
 
 // KilvaterResumeCounts reports how many times a flow went on over a new
 // stream, and how many times it could not.
 func KilvaterResumeCounts() (resumed, failed int64) {
 	return kilResumed.Load(), kilResumeFailed.Load()
 }
+
+// KilvaterRollCount reports how many times a flow moved to a new stream
+// before its path could cut the old one.
+func KilvaterRollCount() int64 { return kilRolled.Load() }
 
 // kilPeers lists the live kilvater wires by key: wires with the same v2 key
 // lead to the same node (the key is bound to it), so a flow that lost its
@@ -164,6 +185,7 @@ type kilResume struct {
 	buf, rem []byte
 	got      bool
 	refused  bool
+	rollNot  time.Time // no move to a new stream before this (a move failed)
 }
 
 func newKilResume(w *kilWire, st net.Conn, sh *kilvater.Shaper) (*kilResume, error) {
@@ -232,6 +254,22 @@ func (r *kilResume) Read(p []byte) (int, error) {
 		r.mu.Lock()
 		st, sh, gen := r.st, r.sh, r.gen
 		r.mu.Unlock()
+		if rs, ok := st.(kilRollable); ok && rs.rollDue() && time.Now().After(r.rollNot) {
+			// Between frames: the flow moves to a new stream before the
+			// path cuts this one, and the server sends on from what we have.
+			moved := r.roll(gen)
+			r.mu.Lock()
+			now := r.st
+			r.mu.Unlock()
+			if ns, ok := now.(kilRollable); !moved || (ok && ns.rollDue()) {
+				// It failed, or landed on the same connection (the handshake
+				// for a fresh one is paced): wait before the next try.
+				r.rollNot = time.Now().Add(kilRollRetry)
+			}
+			if moved {
+				continue
+			}
+		}
 		typ, body, err := kilvater.ReadFrame(st, r.buf)
 		if err != nil {
 			if r.recover(gen) == nil {
@@ -243,6 +281,14 @@ func (r *kilResume) Read(p []byte) (int, error) {
 		switch typ {
 		case kilvater.FrameData:
 			r.mu.Lock()
+			if r.gen != gen || r.recovering {
+				// The writer is putting the flow on a new stream (its side of
+				// this one broke while ours still reads), or has: the server
+				// sends from the count it was given, which this frame is past.
+				// Taking it would deliver its bytes twice.
+				r.mu.Unlock()
+				continue
+			}
 			if !r.peer && !r.off {
 				r.unsupportedLocked() // DATA before any ACK: an older server
 			}
@@ -328,6 +374,40 @@ func (r *kilResume) Close() error {
 
 var errKilNoResume = errors.New("kilvater: the flow cannot be resumed")
 
+// roll moves the flow from the stream of generation gen, which still works,
+// to a new one, as recover does for a lost stream; the reader calls it
+// between frames. The old stream is closed only once the server has taken
+// the new one (the generation moved); a move that got nowhere leaves the flow
+// where it was, and roll reports false.
+func (r *kilResume) roll(gen uint64) bool {
+	r.mu.Lock()
+	if r.recovering || r.closed || r.gen != gen || !r.peer || r.off {
+		r.mu.Unlock()
+		return false
+	}
+	r.recovering = true
+	oldSt, oldSh := r.st, r.sh
+	r.mu.Unlock()
+
+	err := r.reattach()
+
+	r.mu.Lock()
+	r.recovering = false
+	moved := r.gen != gen
+	if err == nil {
+		kilRolled.Add(1)
+	}
+	r.cond.Broadcast()
+	r.mu.Unlock()
+	if moved {
+		// The server writes to the new stream now; a new one that failed
+		// after that is the reader's to recover from.
+		oldSh.Close()
+		oldSt.Close()
+	}
+	return moved
+}
+
 // recover puts the flow on a new stream after the one of generation gen
 // failed. The writer and the reader may both ask; one of them does the work
 // and the other waits for it. nil means the flow goes on.
@@ -354,6 +434,21 @@ func (r *kilResume) recover(gen uint64) error {
 	oldSt.Close()
 
 	err := r.reattach()
+	for waited := time.Duration(0); errors.Is(err, ErrHandshakePaced) && waited < kilResumePacedWait; waited += kilResumePacedStep {
+		// The cut took the connection, and a new one to the name is held
+		// back (hsgate): the server keeps the session for its grace, so the
+		// flow waits for a handshake slot rather than ends.
+		t := time.NewTimer(kilResumePacedStep)
+		select {
+		case <-r.ctx.Done():
+		case <-t.C:
+		}
+		t.Stop()
+		if r.ctx.Err() != nil {
+			break
+		}
+		err = r.reattach()
+	}
 
 	r.mu.Lock()
 	r.recovering = false

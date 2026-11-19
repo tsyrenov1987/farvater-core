@@ -51,7 +51,12 @@ const (
 	hsGapJitter = time.Second
 	hsWindow    = time.Minute
 	hsPerWindow = 4 // the gap alone already keeps out a burst (>3 in ~350 ms)
-	hsFPHold    = 10 * time.Minute
+	// A split path's CDN edge cuts its connections (CDN Timeweb: about every
+	// 50 MiB, kilSplitConnMaxBytes), so at 4 a minute a flow could not go
+	// past ~3 MB/s; a browser fetching media from that edge reconnects at
+	// the same rate. The gap still holds.
+	hsSplitPerWindow = 12
+	hsFPHold         = 10 * time.Minute
 )
 
 type hsName struct {
@@ -59,6 +64,14 @@ type hsName struct {
 	slots  []time.Time // the paced handshakes' slots still inside the window
 	failAt time.Time   // when a handshake to the name last failed
 	failFP string      // and the fingerprint it went out with
+	limit  int         // paced handshakes allowed in hsWindow, hsPerWindow if 0
+}
+
+func (h *hsName) perWindow() int {
+	if h.limit > 0 {
+		return h.limit
+	}
+	return hsPerWindow
 }
 
 type hsGate struct {
@@ -113,9 +126,29 @@ func (g *hsGate) name(n string) *hsName {
 	return h
 }
 
+// allow lets paced handshakes to name reach n in hsWindow (never fewer than
+// hsPerWindow), for a name whose own server drops connections often: a
+// browser on it opens a new one as often (hsSplitPerWindow).
+func (g *hsGate) allow(name string, n int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if h := g.name(name); n > h.limit {
+		h.limit = n
+	}
+}
+
 func (g *hsGate) forget() {
 	g.mu.Lock()
+	limits := map[string]int{}
+	for n, h := range g.names {
+		if h.limit > 0 {
+			limits[n] = h.limit
+		}
+	}
 	g.names = map[string]*hsName{}
+	for n, l := range limits {
+		g.names[n] = &hsName{limit: l}
+	}
 	g.mu.Unlock()
 }
 
@@ -139,12 +172,13 @@ func (g *hsGate) held(name, fp string) bool {
 			n++
 		}
 	}
-	if n < hsPerWindow {
+	per := h.perWindow()
+	if n < per {
 		return false
 	}
-	// The slots are in order: the one hsPerWindow back from the end opens
-	// the window.
-	oldest := h.slots[len(h.slots)-hsPerWindow]
+	// The slots are in order: the one per back from the end opens the
+	// window.
+	oldest := h.slots[len(h.slots)-per]
 	return oldest.Add(hsWindow).Sub(now) > hsMinGap+hsGapJitter
 }
 
@@ -170,8 +204,8 @@ func (g *hsGate) reserve(ctx context.Context, name, fp string) (time.Time, error
 		if t := h.slots[n-1].Add(hsMinGap + g.jitter()); t.After(slot) {
 			slot = t
 		}
-		if n >= hsPerWindow {
-			if t := h.slots[n-hsPerWindow].Add(hsWindow); t.After(slot) {
+		if per := h.perWindow(); n >= per {
+			if t := h.slots[n-per].Add(hsWindow); t.After(slot) {
 				slot = t
 			}
 		}

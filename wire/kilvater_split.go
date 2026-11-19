@@ -140,6 +140,14 @@ func (b splitBuf) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// rollDue reports that the connection the downlink rides has carried enough
+// that the CDN may cut it soon: the flow on this stream should move to a new
+// one (kilResume.roll), which the mux puts on a fresh connection.
+func (c *splitConn) rollDue() bool {
+	b, ok := c.down.(interface{ connBytes() int64 })
+	return ok && b.connBytes() >= kilSplitRollBytes.Load()
+}
+
 func (c *splitConn) Read(p []byte) (int, error) { return c.rd.Read(p) }
 
 func (c *splitConn) Write(p []byte) (int, error) { return c.sw.Write(p) }

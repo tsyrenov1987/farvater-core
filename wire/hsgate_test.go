@@ -340,3 +340,32 @@ func TestH2MuxHeldHandshakeIsTold(t *testing.T) {
 		t.Fatalf("openStream: %v, want ErrHandshakePaced", err)
 	}
 }
+
+// A name allowed more (a split path's CDN) takes that many paced handshakes
+// in a minute, still a gap apart, and keeps the allowance across forget.
+func TestHandshakeGateAllow(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	g, now := fakeGate(start)
+	g.allow("cdn.example", hsSplitPerWindow)
+	g.allow("cdn.example", 2) // never narrowed
+	g.forget()
+	for i := 1; i <= hsSplitPerWindow; i++ {
+		if err := reserveNow(g, "cdn.example", "chrome"); err != nil {
+			t.Fatalf("handshake %d, a second after the one before: %v", i, err)
+		}
+		*now = now.Add(time.Second)
+	}
+	*now = now.Add(10 * time.Second)
+	if err := reserveNow(g, "cdn.example", "chrome"); !errors.Is(err, ErrHandshakePaced) {
+		t.Fatalf("handshake %d in a minute: %v, want ErrHandshakePaced", hsSplitPerWindow+1, err)
+	}
+	for i := 1; i <= hsPerWindow; i++ {
+		if err := reserveNow(g, "other.example", "chrome"); err != nil {
+			t.Fatalf("other name, handshake %d: %v", i, err)
+		}
+		*now = now.Add(time.Second)
+	}
+	if err := reserveNow(g, "other.example", "chrome"); !errors.Is(err, ErrHandshakePaced) {
+		t.Fatalf("other name keeps hsPerWindow: %v", err)
+	}
+}
