@@ -109,7 +109,10 @@ func Fetch(u string) ([]byte, error) {
 // xpm, xum, xdp, xdk, xdc, xh: wire/spec.go) and "#door=<name>@zone" /
 // "@paid" lines (brain/gate.go): a new CDN's line with them goes only to such
 // cores, since an older one would drop the profile and send the old shape.
-var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ") ycdn-zone xquery kilext xprof"
+// "kilroll" says a kilvater split flow outlives the CDN cutting its
+// connections (it moves to a new stream before the cut, and waits out the
+// handshake pacing after one): field journals tell such cores apart.
+var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ") ycdn-zone xquery kilext xprof kilroll"
 
 // Device is what the subscription fetch says about the device, in the headers
 // Remnawave and Marzban panels read from any client: x-hwid, x-device-os,
