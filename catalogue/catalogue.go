@@ -99,8 +99,11 @@ func Fetch(u string) ([]byte, error) {
 //
 // The trailing "ycdn-zone" tells the provider this core keeps "#door=ycdn"
 // paths to a whitelist zone (brain/gate.go): the worker hands the Yandex CDN
-// line only to such cores.
-var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ") ycdn-zone"
+// line only to such cores. "xquery" says the core speaks the xquery=1 shape of
+// XHTTP (wire/xhttp.go: file path without a trailing slash, session and padding
+// in the query): an older core would send such a line with a "/" a CDN refuses,
+// so the worker hands CDN lines of that shape only to cores that name it.
+var UserAgent = "farvater-core/0.1 (" + runtime.GOOS + ") ycdn-zone xquery"
 
 // Device is what the subscription fetch says about the device, in the headers
 // Remnawave and Marzban panels read from any client: x-hwid, x-device-os,
