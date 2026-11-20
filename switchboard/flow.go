@@ -81,8 +81,9 @@ type attempt struct {
 	explore bool
 	start   time.Time // carries the monotonic reading sleptMs needs
 	startMs int64
-	readyMs int64 // 0 = never
-	dialAt  int64 // when the dial began, its pacing waited out; 0 = never
+	readyMs int64       // 0 = never
+	dialAt  int64       // when the dial began, its pacing waited out; 0 = never
+	dialed  atomic.Bool // the dial went out: read by the race while the dial still runs
 	m       *meter
 	// condemned: closed while stuck on a path the breaker condemned
 	condemned bool
@@ -256,6 +257,7 @@ func (f *flow) dialOne(ctx context.Context, a *attempt) (wire.Session, error) {
 		return nil, err
 	}
 	a.dialAt = nowMs()
+	a.dialed.Store(true)
 	dctx, cancel := context.WithTimeout(ctx, f.s.cfg.DialTimeout)
 	defer cancel()
 	sess, err := w.Dial(dctx)
@@ -319,8 +321,10 @@ func (f *flow) dialRace(ctx context.Context, order []string, staggerMs int64, ex
 				cancelAll()
 				go f.drain(results, launched-finished)
 				// The first dial lost the race if it still hung (one that
-				// failed on its own filed its receipt).
-				if r.a == first || !firstDone {
+				// failed on its own filed its receipt). One still waiting its
+				// turn with the governor never went out: the wait is the
+				// core's own and says nothing of the path.
+				if r.a == first || !firstDone && first.dialed.Load() {
 					f.s.noteRace(first.path, r.a != first, first.startMs)
 				}
 				return r.sess, r.a, nil
