@@ -805,6 +805,12 @@ func (s *Switchboard) pick(now int64, dst string, class brain.DstClass) brain.De
 
 // pace waits for the governor's slot when dialling path means a handshake.
 func (s *Switchboard) pace(ctx context.Context, path string) error {
+	return s.paceQueued(ctx, path, nil)
+}
+
+// paceQueued is pace that raises queued while the dial waits its turn with
+// the governor: the wait is the core's own, not the path's.
+func (s *Switchboard) paceQueued(ctx context.Context, path string, queued *atomic.Bool) error {
 	if !s.wires[path].NeedsHandshake() {
 		return nil
 	}
@@ -814,6 +820,10 @@ func (s *Switchboard) pace(ctx context.Context, path string) error {
 	}
 	at := s.acquire(path)
 	if wait := at - nowMs(); wait > 0 {
+		if queued != nil {
+			queued.Store(true)
+			defer queued.Store(false)
+		}
 		select {
 		case <-time.After(time.Duration(wait) * time.Millisecond):
 		case <-ctx.Done():
