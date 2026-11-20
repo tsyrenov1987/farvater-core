@@ -227,20 +227,26 @@ func (s *Switchboard) openUDP(ctx context.Context, a *udpAssoc, d datagram) bool
 }
 
 // udpOrder is the brain's UDP order with the paths that recently refused UDP
-// moved to the back, each part keeping its order.
+// moved to the back, and ahead of the rest those that carry datagrams as
+// datagrams on a connection that is up and just delivered (wire.DatagramWire):
+// over a stream a lost packet holds back every datagram behind it, which a
+// game or a call feels as a jump in delay. Each part keeps its order, and
+// every path stays in the list.
 func (s *Switchboard) udpOrder() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := nowMs()
-	var front, back []string
+	var ready, front, back []string
 	for _, id := range s.b.UDPOrder(now) {
 		if s.udpBack[id] > now {
 			back = append(back, id)
+		} else if d, ok := s.wires[id].(wire.DatagramWire); ok && d.DatagramsReady() {
+			ready = append(ready, id)
 		} else {
 			front = append(front, id)
 		}
 	}
-	return append(front, back...)
+	return append(append(ready, front...), back...)
 }
 
 // pumpDown writes the path's datagrams back to the app until either side ends.

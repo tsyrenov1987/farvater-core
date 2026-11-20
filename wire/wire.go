@@ -126,6 +126,16 @@ type PacketWire interface {
 	DialPacket(ctx context.Context) (PacketSession, error)
 }
 
+// DatagramWire is a PacketWire that carries each datagram as a datagram of
+// its own (QUIC), not as a record in a stream: one lost packet does not hold
+// back the ones after it.
+type DatagramWire interface {
+	// DatagramsReady reports that an association opened now would ride a
+	// connection that is up and delivered bytes a moment ago: no dial to wait
+	// for, and the path is proven to pass.
+	DatagramsReady() bool
+}
+
 // Build makes a wire for a parsed path.
 func Build(spec PathSpec) (Wire, error) {
 	switch spec.Kind {

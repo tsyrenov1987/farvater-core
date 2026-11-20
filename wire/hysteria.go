@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apernet/hysteria/core/v2/client"
@@ -29,6 +30,19 @@ type hyWire struct {
 	spec PathSpec
 	mu   sync.Mutex
 	cl   client.Client
+	rx   atomic.Int64 // unix ms the connection last delivered bytes (DatagramsReady)
+}
+
+// hyProven: a connection that delivered bytes this recently is taken as up.
+const hyProven = 15 * time.Second
+
+// DatagramsReady reports that the QUIC connection is up and delivered bytes
+// within hyProven (see DatagramWire).
+func (w *hyWire) DatagramsReady() bool {
+	w.mu.Lock()
+	up := w.cl != nil
+	w.mu.Unlock()
+	return up && time.Now().UnixMilli()-w.rx.Load() < hyProven.Milliseconds()
 }
 
 func newHysteria(spec PathSpec) (*hyWire, error) {
@@ -213,6 +227,7 @@ func (s *hySession) Run(ctx context.Context, target Target, prelude []byte, up <
 		for {
 			n, err := c.Read(p)
 			if n > 0 {
+				s.w.rx.Store(time.Now().UnixMilli())
 				m.Down(p[:n])
 				if _, werr := down.Write(p[:n]); werr != nil {
 					downErr <- appGone{werr}
@@ -287,6 +302,7 @@ func (s *hyPacketSession) ReadPacket() ([]byte, Target, error) {
 	if err != nil {
 		return nil, Target{}, err
 	}
+	s.w.rx.Store(time.Now().UnixMilli())
 	var from Target
 	if h, port, err := net.SplitHostPort(addr); err == nil {
 		from.Host = h
