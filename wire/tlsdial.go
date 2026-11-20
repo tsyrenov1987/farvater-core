@@ -88,18 +88,100 @@ func clientHello(fp string) utls.ClientHelloID {
 }
 
 // dialTCP connects with a browser's socket defaults: 16 s to connect,
-// keepalive probes after 45 s of quiet.
+// keepalive probes after 45 s of quiet. A server given by name is asked of
+// DNS once: the address that connected is kept (addrs) and dialled straight
+// the next time, as a browser's host cache spares a lookup a connection.
 func dialTCP(ctx context.Context, host string, port int) (net.Conn, error) {
 	d := net.Dialer{
 		Control:         SocketControl,
 		Timeout:         16 * time.Second,
 		KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: 45 * time.Second, Interval: 45 * time.Second, Count: -1},
 	}
-	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	p := strconv.Itoa(port)
+	named := net.ParseIP(host) == nil
+	if named {
+		if ip := addrs.get(host); ip != "" {
+			// Bounded, so an address gone dead leaves time to ask DNS again.
+			kctx, cancel := context.WithTimeout(ctx, addrKeptDial)
+			c, err := d.DialContext(kctx, "tcp", net.JoinHostPort(ip, p))
+			cancel()
+			if err == nil {
+				return &recordConn{Conn: c}, nil
+			}
+			addrs.drop(host, ip)
+			if ctx.Err() != nil {
+				return nil, err
+			}
+		}
+	}
+	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, p))
 	if err != nil {
 		return nil, err
 	}
+	if named {
+		if a, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+			addrs.put(host, a.IP.String())
+		}
+	}
 	return &recordConn{Conn: c}, nil
+}
+
+// addrKept: how long the address a name last connected at is dialled without
+// asking DNS. addrKeptDial bounds a connect to it.
+const (
+	addrKept     = 5 * time.Minute
+	addrKeptDial = 3 * time.Second
+)
+
+// addrCache keeps, per server name, the address that last connected.
+type addrCache struct {
+	mu  sync.Mutex
+	m   map[string]keptAddr
+	now func() time.Time
+}
+
+type keptAddr struct {
+	ip string
+	at time.Time
+}
+
+var addrs = &addrCache{m: map[string]keptAddr{}, now: time.Now}
+
+func (a *addrCache) get(host string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	k, ok := a.m[host]
+	if !ok || a.now().Sub(k.at) >= addrKept {
+		delete(a.m, host)
+		return ""
+	}
+	return k.ip
+}
+
+// put keeps ip for host; an address already kept keeps its age, so every
+// name is asked of DNS again once in addrKept.
+func (a *addrCache) put(host, ip string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if k, ok := a.m[host]; !ok || k.ip != ip {
+		a.m[host] = keptAddr{ip, a.now()}
+	}
+}
+
+func (a *addrCache) drop(host, ip string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.m[host].ip == ip {
+		delete(a.m, host)
+	}
+}
+
+// ForgetAddrs drops the kept server addresses: on a new network a name may
+// answer with other ones.
+func ForgetAddrs() {
+	addrs.mu.Lock()
+	defer addrs.mu.Unlock()
+	clear(addrs.m)
 }
 
 // handshakeTLS runs a TLS client handshake over c that looks like the

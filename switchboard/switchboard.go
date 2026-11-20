@@ -361,6 +361,7 @@ func (s *Switchboard) SetNetwork(ctx string) {
 	_ = s.writeMemory(data, seq)
 	// A filter counts handshakes by the client's address, and that is new.
 	wire.ForgetHandshakes()
+	wire.ForgetAddrs() // a name may answer with other addresses here
 	// Dials begun on the network left behind hang to their timeout: end them.
 	s.newEpoch()
 	// Connections shared across flows were made on the network left behind.
