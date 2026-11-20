@@ -84,6 +84,15 @@ type h2Mux struct {
 	// with a PING instead of retiring it.
 	held func() bool
 
+	// probeIdle, when above 0, has a stream that takes the connection after
+	// it handed out none this long send a PING beside its request, as a
+	// browser does before it reuses a connection gone quiet: one that died in
+	// silence is closed within probePing, the stream on it fails and the flow
+	// goes to another path, instead of waiting out its first-byte timeout.
+	// It costs nothing while the device is idle, unlike a PING on a timer.
+	probeIdle time.Duration
+	used      time.Time // when cc last took a stream (under mu)
+
 	mu   sync.Mutex
 	cc   *http2.ClientConn
 	conn *countConn
@@ -141,6 +150,7 @@ func (m *h2Mux) newConn(ctx context.Context) (*muxConn, error) {
 func (m *h2Mux) adoptLocked(c *muxConn) {
 	old, oldConn := m.cc, m.conn
 	m.cc, m.conn, m.at, m.n = c.cc, c.conn, time.Now(), c.n
+	m.used = m.at
 	m.ageLim, m.byteLim = spreadDuration(m.maxAge, m.spread), int64(spreadDuration(time.Duration(m.maxBytes), m.spread))
 	if old != nil {
 		m.retire(old, oldConn)
@@ -267,6 +277,11 @@ func (m *h2Mux) client(ctx context.Context) (*http2.ClientConn, net.Conn, error)
 		if m.dueLocked() {
 			m.spareAheadLocked()
 		}
+		now := time.Now()
+		if m.probeIdle > 0 && now.Sub(m.used) >= m.probeIdle {
+			m.check(m.cc, m.conn, probePing)
+		}
+		m.used = now
 		return m.cc, m.conn, nil
 	}
 	if c := m.takeSpareLocked(); c != nil {
@@ -383,7 +398,7 @@ func (m *h2Mux) refresh(t time.Time) {
 	if m.held != nil && m.held() {
 		// No fresh connection can be made now: keep this one if it answers.
 		m.mu.Unlock()
-		m.check(old, oldConn)
+		m.check(old, oldConn, m.retirePing)
 		return
 	}
 	m.cc, m.conn = nil, nil
@@ -391,10 +406,13 @@ func (m *h2Mux) refresh(t time.Time) {
 	m.retire(old, oldConn)
 }
 
-// check closes a connection that does not answer a PING and leaves a live one
-// as it is.
-func (m *h2Mux) check(cc *http2.ClientConn, conn *countConn) {
-	ping := m.retirePing
+// probePing: a connection reused after a quiet spell (probeIdle) that does not
+// answer a PING this long is taken for dead.
+const probePing = 2 * time.Second
+
+// check closes a connection that does not answer a PING within ping and
+// leaves a live one as it is.
+func (m *h2Mux) check(cc *http2.ClientConn, conn *countConn, ping time.Duration) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), ping)
 		err := cc.Ping(ctx)

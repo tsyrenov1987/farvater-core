@@ -24,14 +24,17 @@ type outerTransport struct {
 
 func newOuterTransport(s PathSpec) *outerTransport { return &outerTransport{spec: s} }
 
-// h2 returns the shared HTTP/2 connection manager, made on first use. Pings are
-// left off (the library default): this layer only reuses the connection, so the
-// wire looks as it did before bar the saved handshakes, and a gRPC server
-// closes a connection that pings it often (grpc-go's too_many_pings).
-// Freeze-detection pacing is a kilvater concern, tuned there. Instead a
-// connection left with no streams for h2IdleClose is closed, as Xray's XHTTP
-// client closes its idle ones (ConnIdleTimeout): one that sat idle while the
-// phone slept may have died in silence, and the next flow dials afresh.
+// h2 returns the shared HTTP/2 connection manager, made on first use. Pings on
+// a timer are left off (the library default): this layer only reuses the
+// connection, so the wire looks as it did before bar the saved handshakes, and
+// a gRPC server closes a connection that pings it often (grpc-go's
+// too_many_pings). Freeze-detection pacing is a kilvater concern, tuned there.
+// A connection reused after h2ProbeIdle of quiet is checked with one PING
+// beside the request (probeIdle), which the server's answer to the request
+// clears from its count. And a connection left with no streams for
+// h2IdleClose is closed, as Xray's XHTTP client closes its idle ones
+// (ConnIdleTimeout): one that sat idle while the phone slept may have died in
+// silence, and the next flow dials afresh.
 func (t *outerTransport) h2() *h2Mux {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -41,6 +44,7 @@ func (t *outerTransport) h2() *h2Mux {
 			return dialSecure(ctx, s, false)
 		}, 0, 0)
 		t.mux.tr.IdleConnTimeout = h2IdleClose
+		t.mux.probeIdle = h2ProbeIdle
 		t.mux.onEnd = t.watch
 	}
 	return t.mux
@@ -56,6 +60,10 @@ func (t *outerTransport) WatchConns(f func(end ConnEnd, bytes int64, made time.T
 
 // h2IdleClose: a shared connection with no streams this long is closed.
 const h2IdleClose = 5 * time.Minute
+
+// h2ProbeIdle: a shared connection that took no stream this long is checked
+// with a PING when the next one takes it.
+const h2ProbeIdle = 10 * time.Second
 
 // Refresh leaves the shared connection behind if it was made before at (see Refresher).
 func (t *outerTransport) Refresh(at time.Time) {
