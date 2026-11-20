@@ -382,9 +382,11 @@ func (s *Switchboard) SetBlocked(blocked bool) {
 		s.mu.Unlock()
 		return
 	}
-	s.b.Unblocked(nowMs())
+	was := s.b.Unblocked(nowMs())
 	s.mu.Unlock()
-	s.newEpoch() // dials begun while blocked went nowhere
+	if was {
+		s.newEpoch() // dials begun while blocked went nowhere
+	}
 	s.refreshAll(time.Now())
 }
 

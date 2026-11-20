@@ -999,14 +999,15 @@ func (b *Brain) Blocked(now int64) {
 
 // Unblocked ends Blocked: flows begun before now are not evidence (as after a
 // network change), and nothing tripped while the network was blocked.
-func (b *Brain) Unblocked(now int64) {
+func (b *Brain) Unblocked(now int64) bool {
 	if b.blockedAt == 0 {
-		return
+		return false
 	}
 	b.forgive(b.blockedAt - BlockSlackMs)
 	b.blockedAt = 0
 	b.switchedAt = now
 	b.J.Add(now, "net_unblocked", "the system gave the app its network back", b.leader)
+	return true
 }
 
 func (b *Brain) forgive(since int64) {

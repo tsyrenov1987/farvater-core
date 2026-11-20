@@ -63,3 +63,32 @@ func TestADialLeftOnTheOldNetworkIsMadeAgainAtOnce(t *testing.T) {
 		t.Fatalf("%d dials, want the hung one and one more", n)
 	}
 }
+
+// The platform says "not blocked" on every network callback: with no block
+// before it, a dial under way is left alone.
+func TestUnblockedWithNoBlockLeavesDialsAlone(t *testing.T) {
+	cat, err := catalogue.Parse([]byte("vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?security=tls&sni=a.example.com&type=tcp#a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(DefaultConfig(), cat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dctx, cancel, left := s.dialCtx(context.Background())
+	defer cancel()
+	s.SetBlocked(false)
+	if dctx.Err() != nil || left() {
+		t.Fatal("a dial was ended by an unblock with no block before it")
+	}
+	s.SetBlocked(true)
+	s.SetBlocked(false)
+	select {
+	case <-dctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("a dial begun while blocked was not ended when the block lifted")
+	}
+	if !left() {
+		t.Fatal("the ended dial is not told it is worth making again")
+	}
+}
