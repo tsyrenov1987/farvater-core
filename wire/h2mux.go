@@ -109,6 +109,15 @@ type muxConn struct {
 // spareDialTimeout bounds the making of the next connection in the background.
 const spareDialTimeout = 30 * time.Second
 
+// A GET the server never took goes again (openStreamFunc) for this long, this
+// far apart: long enough to wait out a held-back handshake (ErrHandshakePaced
+// frees within seconds when a minute's dials are spent), short of the
+// switchboard giving up on the flow.
+const (
+	h2GetRetryFor   = 10 * time.Second
+	h2GetRetryPause = 200 * time.Millisecond
+)
+
 // newConn dials and warms one connection. It takes no lock.
 func (m *h2Mux) newConn(ctx context.Context) (*muxConn, error) {
 	raw, err := m.dial(ctx)
@@ -438,9 +447,32 @@ func (m *h2Mux) openStreamFunc(ctx context.Context, method, reqURL string, heade
 	if body != nil {
 		req.Body = body
 	}
-	s := &h2MuxStream{up: up, conn: conn, cancel: cancel, ready: make(chan struct{})}
+	s := &h2MuxStream{up: up, cancel: cancel, ready: make(chan struct{})}
+	s.conn.Store(&conn)
 	go func() {
 		resp, err := cc.RoundTrip(req)
+		// A GET the server never took (its connection's GOAWAY came first, as
+		// CDN Timeweb's edge sends one every ~200 requests) goes again on
+		// another connection: it has no body to lose, and a split flow's
+		// downlink would otherwise break before its first byte.
+		for retry := time.Now().Add(h2GetRetryFor); err != nil && body == nil && h2Unsent(err) && time.Now().Before(retry); {
+			select {
+			case <-sctx.Done():
+			case <-time.After(h2GetRetryPause):
+			}
+			if sctx.Err() != nil {
+				break
+			}
+			rctx, rcancel := context.WithDeadline(sctx, retry)
+			cc2, conn2, cerr := m.client(rctx)
+			rcancel()
+			if cerr != nil {
+				err = cerr
+				continue
+			}
+			s.conn.Store(&conn2)
+			resp, err = cc2.RoundTrip(req)
+		}
 		if err != nil {
 			s.downErr = err
 			close(s.ready)
@@ -585,7 +617,7 @@ type h2Upstream interface {
 type h2MuxStream struct {
 	up     h2Upstream // nil on a GET
 	down   io.ReadCloser
-	conn   net.Conn // the shared connection, for addresses only; never closed here
+	conn   atomic.Pointer[net.Conn] // the shared connection, for addresses only; never closed here
 	cancel context.CancelFunc
 
 	downErr error
@@ -595,7 +627,7 @@ type h2MuxStream struct {
 // connBytes is what the stream's connection has carried so far, both ways,
 // streams and all; -1 when it is not counted.
 func (s *h2MuxStream) connBytes() int64 {
-	if c, ok := s.conn.(*countConn); ok && c != nil && c.n != nil {
+	if c, ok := (*s.conn.Load()).(*countConn); ok && c != nil && c.n != nil {
 		return c.n.Load()
 	}
 	return -1
@@ -650,8 +682,8 @@ func (s *h2MuxStream) Close() error {
 	return nil
 }
 
-func (s *h2MuxStream) LocalAddr() net.Addr                { return s.conn.LocalAddr() }
-func (s *h2MuxStream) RemoteAddr() net.Addr               { return s.conn.RemoteAddr() }
+func (s *h2MuxStream) LocalAddr() net.Addr                { return (*s.conn.Load()).LocalAddr() }
+func (s *h2MuxStream) RemoteAddr() net.Addr               { return (*s.conn.Load()).RemoteAddr() }
 func (s *h2MuxStream) SetDeadline(t time.Time) error      { return nil }
 func (s *h2MuxStream) SetReadDeadline(t time.Time) error  { return nil }
 func (s *h2MuxStream) SetWriteDeadline(t time.Time) error { return nil }

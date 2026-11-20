@@ -99,3 +99,30 @@ func TestKilvaterSplitPostOutlivesEdgeGoaway(t *testing.T) {
 		t.Fatalf("the flow was resumed %d times: a GOAWAY broke the stream", r-resumed)
 	}
 }
+
+// Split flows opened one after another across an edge's GOAWAYs all start:
+// a downlink GET the edge never took goes again on a new connection rather
+// than breaking the flow before its first byte.
+func TestKilvaterSplitOpensAcrossEdgeGoaway(t *testing.T) {
+	lab, spec := newKilLab(t, 5*time.Second)
+	spec.Mode = "split-post"
+	edge := &goawayEdge{h: lab.srv, max: 3}
+	defer edge.close()
+	w, err := newKilWire(spec, edge.dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	resumed, _ := KilvaterResumeCounts()
+	for i := 0; i < 30; i++ {
+		f := startKilFlow(t, w)
+		f.expect(t, "hello ")
+		f.pr.Close()
+	}
+	if g := edge.goaways.Load(); g < 10 {
+		t.Fatalf("the edge sent %d GOAWAYs, want at least 10", g)
+	}
+	if r, _ := KilvaterResumeCounts(); r != resumed {
+		t.Fatalf("flows were resumed %d times: a GOAWAY broke a flow", r-resumed)
+	}
+}
