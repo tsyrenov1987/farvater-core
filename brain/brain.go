@@ -123,6 +123,7 @@ type Brain struct {
 	cfg         Config
 	ctx         string
 	paths       []PathInfo
+	idx         map[string]int // path name → its place in paths (info)
 	st          map[string]*PathState
 	leader      string
 	leaderSince int64
@@ -311,10 +312,17 @@ func diversity(a, b PathInfo) int {
 }
 
 func (b *Brain) info(id string) PathInfo {
-	for _, p := range b.paths {
-		if p.ID == id {
-			return p
+	if b.idx == nil {
+		// Built once: the catalogue of a brain never changes, and this is
+		// asked several times per path on every pick (a walk of the list
+		// here made a pick quadratic in the catalogue's size).
+		b.idx = make(map[string]int, len(b.paths))
+		for i := len(b.paths) - 1; i >= 0; i-- {
+			b.idx[b.paths[i].ID] = i // the first of two equal names, as the walk found it
 		}
+	}
+	if i, ok := b.idx[id]; ok {
+		return b.paths[i]
 	}
 	return PathInfo{ID: id}
 }
