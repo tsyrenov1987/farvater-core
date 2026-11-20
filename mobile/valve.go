@@ -23,6 +23,9 @@ var (
 	// so the memory is live, not garbage: new flows are turned away (pressed())
 	// until it is back under shedClear of the line.
 	pressedOn atomic.Bool
+	// tightOn: the runtime holds shedClear of the line or more, as of the
+	// valve's last look. tight() holds the core's own sweeps back meanwhile.
+	tightOn   atomic.Bool
 	shedCount atomic.Int64
 	lastLetIn atomic.Int64 // unix ms of the last flow let in while pressed
 )
@@ -34,6 +37,13 @@ const (
 	shedClearNum = 85 // percent of the line
 	shedTrickle  = 250 * time.Millisecond
 )
+
+// tight is the switchboard's Config.Tight on the phones: the runtime is near
+// the valve's line (shedClear of it or more) or new flows are being turned
+// away. The valve looks every valveLook there, so it lags by a quarter second.
+func tight() bool {
+	return tightOn.Load() || pressedOn.Load()
+}
 
 // pressed is the switchboard's Config.Pressed on the phones.
 func pressed() bool {
@@ -167,12 +177,14 @@ func valveLoop() {
 			if held < at*shedClearNum/100 {
 				pressedOn.Store(false)
 			}
+			tightOn.Store(held >= at*shedClearNum/100)
 			if held >= at*7/10 {
 				look = valveLook
 			}
 		}
 		if at <= 0 {
 			pressedOn.Store(false)
+			tightOn.Store(false)
 		}
 		time.Sleep(look)
 	}

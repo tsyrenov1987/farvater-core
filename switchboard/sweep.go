@@ -16,9 +16,11 @@ import (
 )
 
 // sweepDue starts the sweep the brain asks for, if any (brain/sweep.go). It
-// runs with s.mu held.
+// runs with s.mu held. While memory is tight (Config.Tight) the brain is not
+// asked at all, so the sweep it owes stays owed and runs once memory is back
+// down, instead of being counted as made.
 func (s *Switchboard) sweepDue(now int64) {
-	if s.cfg.ProbeURL == "" {
+	if s.cfg.ProbeURL == "" || s.cfg.Tight != nil && s.cfg.Tight() {
 		return
 	}
 	paths := s.b.SweepDue(now)

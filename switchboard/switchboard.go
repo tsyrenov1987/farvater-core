@@ -95,6 +95,16 @@ type Config struct {
 	// left alone. Nil: never.
 	Pressed func() bool
 
+	// Tight, when set and true, holds the core's own sweeps back (sweep.go):
+	// a sweep opens up to SweepMax probe flows and the leader's at once, past
+	// Pressed, and on a network that resets often they came as memory peaked
+	// (iOS builds 66-81: half the tunnel's high-memory marks had a trip or a
+	// lead change in the two minutes before, against 14% of moments at
+	// random). The sweep is put off, not dropped: it runs once memory is back
+	// down. The app's flows and the paths they may take are untouched. Nil:
+	// never.
+	Tight func() bool
+
 	DialTimeout      time.Duration
 	FirstByteTimeout time.Duration
 	FirstPayloadWait time.Duration

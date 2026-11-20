@@ -229,6 +229,7 @@ func config(cat *catalogue.Catalogue, listenOn, u, p, network string) switchboar
 	// part, so the server decides: no labels, no spread.
 	cfg.Brain.Spread = 3
 	cfg.Pressed = pressed
+	cfg.Tight = tight
 	cfg.ProbeURL = DefaultProbeURL
 	if len(cat.ProbeURLs) > 0 {
 		cfg.ProbeURL = cat.ProbeURLs[0]
