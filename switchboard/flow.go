@@ -81,9 +81,9 @@ type attempt struct {
 	explore bool
 	start   time.Time // carries the monotonic reading sleptMs needs
 	startMs int64
-	readyMs int64       // 0 = never
-	dialAt  int64       // when the dial began, its pacing waited out; 0 = never
-	queued  atomic.Bool // waiting its turn with the governor: read by the race while the dial runs
+	readyMs int64        // 0 = never
+	dialAt  int64        // when the dial began, its pacing waited out; 0 = never
+	out     atomic.Int64 // dialAt, for the race to read while the dial runs
 	m       *meter
 	// condemned: closed while stuck on a path the breaker condemned
 	condemned bool
@@ -253,18 +253,24 @@ func (f *flow) dialOne(ctx context.Context, a *attempt) (wire.Session, error) {
 	if w == nil {
 		return nil, errors.New("no wire")
 	}
-	if err := f.s.paceQueued(ctx, a.path, &a.queued); err != nil {
-		return nil, err
+	for again := true; ; again = false {
+		if err := f.s.pace(ctx, a.path); err != nil {
+			return nil, err
+		}
+		a.dialAt = nowMs()
+		a.out.Store(a.dialAt)
+		dctx, cancel, left := f.s.dialCtx(ctx)
+		sess, err := w.Dial(dctx)
+		cancel()
+		if err != nil {
+			if again && left() {
+				continue // the network changed under the dial: once more, on the new one
+			}
+			return nil, err
+		}
+		a.readyMs = nowMs()
+		return sess, nil
 	}
-	a.dialAt = nowMs()
-	dctx, cancel := context.WithTimeout(ctx, f.s.cfg.DialTimeout)
-	defer cancel()
-	sess, err := w.Dial(dctx)
-	if err != nil {
-		return nil, err
-	}
-	a.readyMs = nowMs()
-	return sess, nil
 }
 
 type dialResult struct {
@@ -320,10 +326,10 @@ func (f *flow) dialRace(ctx context.Context, order []string, staggerMs int64, ex
 				cancelAll()
 				go f.drain(results, launched-finished)
 				// The first dial lost the race if it still hung (one that
-				// failed on its own filed its receipt). One still waiting its
-				// turn with the governor has not gone out: the wait is the
-				// core's own and says nothing of the path.
-				if r.a == first || !firstDone && !first.queued.Load() {
+				// failed on its own filed its receipt). One the governor held
+				// back until after the winner's went out lost nothing: the
+				// wait is the core's own and says nothing of the path.
+				if out := first.out.Load(); r.a == first || !firstDone && out != 0 && out <= r.a.out.Load() {
 					f.s.noteRace(first.path, r.a != first, first.startMs)
 				}
 				return r.sess, r.a, nil

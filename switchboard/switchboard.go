@@ -146,6 +146,9 @@ type Switchboard struct {
 	order   []string
 	Skipped []string
 
+	// net is done once the device leaves the network a dial began on (dialCtx).
+	net atomic.Pointer[netEpoch]
+
 	mu       sync.Mutex
 	b        *brain.Brain
 	receipts []brain.Receipt
@@ -208,6 +211,7 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 		cfg.ControlProbes = cat.ControlProbes
 	}
 	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, carried: map[string]*carried{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, count: probeCount, udpBack: map[string]int64{}, wantTill: map[string]int64{}, ruFailed: map[string]int64{}, letGone: make(chan struct{})}
+	s.newEpoch()
 	var infos []brain.PathInfo
 	hosts := make([]string, 0, len(cat.Paths))
 	for _, e := range cat.Paths {
@@ -354,6 +358,8 @@ func (s *Switchboard) SetNetwork(ctx string) {
 	_ = s.writeMemory(data, seq)
 	// A filter counts handshakes by the client's address, and that is new.
 	wire.ForgetHandshakes()
+	// Dials begun on the network left behind hang to their timeout: end them.
+	s.newEpoch()
 	// Connections shared across flows were made on the network left behind.
 	s.refreshAll(time.Now())
 }
@@ -374,7 +380,33 @@ func (s *Switchboard) SetBlocked(blocked bool) {
 	}
 	s.b.Unblocked(nowMs())
 	s.mu.Unlock()
+	s.newEpoch() // dials begun while blocked went nowhere
 	s.refreshAll(time.Now())
+}
+
+// netEpoch is the time the device spends on one network.
+type netEpoch struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// newEpoch ends the dials begun before now (dialCtx): the network they went
+// out on is gone, or the system had it blocked.
+func (s *Switchboard) newEpoch() {
+	e := &netEpoch{}
+	e.ctx, e.cancel = context.WithCancel(context.Background())
+	if old := s.net.Swap(e); old != nil {
+		old.cancel()
+	}
+}
+
+// dialCtx is ctx with the dial timeout, ended early if the device changes
+// network meanwhile; left then reports it, and the dial is worth making again.
+func (s *Switchboard) dialCtx(ctx context.Context) (dctx context.Context, cancel context.CancelFunc, left func() bool) {
+	e := s.net.Load()
+	dctx, stop := context.WithTimeout(ctx, s.cfg.DialTimeout)
+	unhook := context.AfterFunc(e.ctx, stop)
+	return dctx, func() { unhook(); stop() }, func() bool { return e.ctx.Err() != nil && ctx.Err() == nil }
 }
 
 // refreshAll refreshes every path at once and waits for none: a wire holds
@@ -826,12 +858,6 @@ func (s *Switchboard) pick(now int64, dst string, class brain.DstClass) brain.De
 
 // pace waits for the governor's slot when dialling path means a handshake.
 func (s *Switchboard) pace(ctx context.Context, path string) error {
-	return s.paceQueued(ctx, path, nil)
-}
-
-// paceQueued is pace that raises queued while the dial waits its turn with
-// the governor: the wait is the core's own, not the path's.
-func (s *Switchboard) paceQueued(ctx context.Context, path string, queued *atomic.Bool) error {
 	if !s.wires[path].NeedsHandshake() {
 		return nil
 	}
@@ -841,10 +867,6 @@ func (s *Switchboard) paceQueued(ctx context.Context, path string, queued *atomi
 	}
 	at := s.acquire(path)
 	if wait := at - nowMs(); wait > 0 {
-		if queued != nil {
-			queued.Store(true)
-			defer queued.Store(false)
-		}
 		select {
 		case <-time.After(time.Duration(wait) * time.Millisecond):
 		case <-ctx.Done():

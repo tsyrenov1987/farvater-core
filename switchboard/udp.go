@@ -204,9 +204,14 @@ func (s *Switchboard) openUDP(ctx context.Context, a *udpAssoc, d datagram) bool
 			}
 			return false
 		}
-		dctx, cancel := context.WithTimeout(ctx, s.cfg.DialTimeout)
+		dctx, cancel, left := s.dialCtx(ctx)
 		ps, err := pw.DialPacket(dctx)
 		cancel()
+		if err != nil && left() {
+			dctx, cancel, _ = s.dialCtx(ctx) // the network changed under the dial: once more
+			ps, err = pw.DialPacket(dctx)
+			cancel()
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return false
