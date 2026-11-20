@@ -28,6 +28,13 @@ func pumpUp(ctx context.Context, up <-chan []byte, w io.Writer, m Meter, it *idl
 	}
 }
 
+// appGone is a write to the app that failed: the app dropped the flow while
+// the path still delivered (a download left half-way). It is the app's end of
+// the flow, not the transport's: settle files it as the app finishing.
+type appGone struct{ error }
+
+func (e appGone) Unwrap() error { return e.error }
+
 // pumpDown hands what r yields to the app until r ends (nil) or fails.
 func pumpDown(r io.Reader, down io.Writer, m Meter, it *idleTimer) error {
 	fb := NewFlexBuf(poolBufSize)
@@ -41,7 +48,7 @@ func pumpDown(r io.Reader, down io.Writer, m Meter, it *idleTimer) error {
 			}
 			m.Down(p[:n])
 			if _, werr := down.Write(p[:n]); werr != nil {
-				return werr
+				return appGone{werr}
 			}
 		}
 		fb.Done(n)
@@ -74,6 +81,9 @@ func settle(ctx context.Context, upErr, downErr <-chan error, cancel func(), aft
 			}
 			if ended != nil {
 				return OutcomeCanceled, ended
+			}
+			if _, ok := err.(appGone); ok {
+				return OutcomeClientFin, nil
 			}
 			return OutcomeError, err
 		case err := <-upErr:

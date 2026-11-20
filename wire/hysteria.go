@@ -215,7 +215,7 @@ func (s *hySession) Run(ctx context.Context, target Target, prelude []byte, up <
 			if n > 0 {
 				m.Down(p[:n])
 				if _, werr := down.Write(p[:n]); werr != nil {
-					downErr <- werr
+					downErr <- appGone{werr}
 					return
 				}
 			}
