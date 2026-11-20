@@ -355,10 +355,7 @@ func (s *Switchboard) SetNetwork(ctx string) {
 	// A filter counts handshakes by the client's address, and that is new.
 	wire.ForgetHandshakes()
 	// Connections shared across flows were made on the network left behind.
-	at := time.Now()
-	for _, id := range s.order {
-		s.refresh(id, at)
-	}
+	s.refreshAll(time.Now())
 }
 
 // SetBlocked tells the switchboard the system blocked the app's network on
@@ -377,9 +374,18 @@ func (s *Switchboard) SetBlocked(blocked bool) {
 	}
 	s.b.Unblocked(nowMs())
 	s.mu.Unlock()
-	at := time.Now()
+	s.refreshAll(time.Now())
+}
+
+// refreshAll refreshes every path at once and waits for none: a wire holds
+// its lock while it dials, a dial begun on the network left behind hangs to
+// its timeout, and one after another each such path held back every path
+// after it, and the platform's network callback, for that long.
+func (s *Switchboard) refreshAll(at time.Time) {
 	for _, id := range s.order {
-		s.refresh(id, at)
+		if r, ok := s.wires[id].(wire.Refresher); ok {
+			go r.Refresh(at)
+		}
 	}
 }
 
