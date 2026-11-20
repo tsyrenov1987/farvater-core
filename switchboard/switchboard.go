@@ -209,6 +209,11 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 	}
 	s := &Switchboard{cfg: cfg, cat: cat, wires: map[string]wire.Wire{}, infos: map[string]brain.PathInfo{}, carried: map[string]*carried{}, started: time.Now(), savedAt: nowMs(), probe: probeWhite, count: probeCount, udpBack: map[string]int64{}, wantTill: map[string]int64{}, ruFailed: map[string]int64{}, letGone: make(chan struct{})}
 	var infos []brain.PathInfo
+	hosts := make([]string, 0, len(cat.Paths))
+	for _, e := range cat.Paths {
+		hosts = append(hosts, e.Spec.Host)
+	}
+	ips := resolveIPs(hosts)
 	for _, e := range cat.Paths {
 		if wire.IsHosted(e.Spec.Kind) && !slices.Contains(cfg.Hosted, e.Spec.Kind) {
 			s.Skipped = append(s.Skipped, e.ID+": "+string(e.Spec.Kind)+" paths are not run by this app")
@@ -219,7 +224,7 @@ func New(cfg Config, cat *catalogue.Catalogue) (*Switchboard, error) {
 			s.Skipped = append(s.Skipped, e.ID+": "+err.Error())
 			continue
 		}
-		info := brain.PathInfo{ID: e.ID, SNI: e.Spec.ServerSNI(), IP: resolveIP(e.Spec.Host), Rail: e.Spec.Rail(), White: e.Labels.White, Net: e.Labels.Net, Group: e.Labels.Group, Door: e.Labels.Door, NotHTTP: !e.Spec.HTTPLike()}
+		info := brain.PathInfo{ID: e.ID, SNI: e.Spec.ServerSNI(), IP: ips[e.Spec.Host], Rail: e.Spec.Rail(), White: e.Labels.White, Net: e.Labels.Net, Group: e.Labels.Group, Door: e.Labels.Door, NotHTTP: !e.Spec.HTTPLike()}
 		s.wires[e.ID] = w
 		if cw, ok := w.(wire.ConnWatcher); ok {
 			id := e.ID
@@ -480,6 +485,44 @@ func probeHosts(ctx context.Context, hosts []string) chan bool {
 		}()
 	}
 	return res
+}
+
+// lookupIP is resolveIP, replaced in tests.
+var lookupIP = resolveIP
+
+// resolveIPs resolves every distinct host once, all at the same time: a
+// catalogue names a few servers on hundreds of lines, and with the resolver
+// down each name costs its whole timeout. One after another that held the
+// start, and every reload of the catalogue, for the sum of them.
+func resolveIPs(hosts []string) map[string]string {
+	out := make(map[string]string, len(hosts))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, h := range hosts {
+		mu.Lock()
+		_, seen := out[h]
+		ip := net.ParseIP(h)
+		if !seen {
+			out[h] = h
+			if ip != nil {
+				out[h] = ip.String()
+			}
+		}
+		mu.Unlock()
+		if seen || ip != nil {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got := lookupIP(h)
+			mu.Lock()
+			out[h] = got
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return out
 }
 
 func resolveIP(host string) string {
