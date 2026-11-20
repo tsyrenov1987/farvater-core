@@ -722,6 +722,17 @@ func classify(port int) brain.DstClass {
 	return brain.DstOther
 }
 
+// serverSpeaksFirst reports the ports of protocols whose client says nothing
+// until the server's greeting (FTP, SMTP, POP3, IMAP, MySQL): waiting for a
+// first payload there only puts FirstPayloadWait before the dial.
+func serverSpeaksFirst(port int) bool {
+	switch port {
+	case 21, 25, 110, 143, 587, 2525, 3306:
+		return true
+	}
+	return false
+}
+
 func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 	s.active.Add(1)
 	defer s.active.Add(-1)
@@ -773,7 +784,11 @@ func (s *Switchboard) handle(ctx context.Context, c net.Conn) {
 	}
 	// First payload: most apps send it right after the SOCKS reply. Carrying it
 	// together with the proxy request saves a round trip.
-	_ = c.SetReadDeadline(time.Now().Add(s.cfg.FirstPayloadWait))
+	wait := s.cfg.FirstPayloadWait
+	if serverSpeaksFirst(req.Port) {
+		wait = time.Millisecond // nothing is coming: do not hold the dial for it
+	}
+	_ = c.SetReadDeadline(time.Now().Add(wait))
 	pb := wire.GetBuf()
 	n, rerr := c.Read((*pb)[:16*1024])
 	_ = c.SetDeadline(time.Time{})
