@@ -205,7 +205,7 @@ func (f *flow) serve(ctx context.Context) {
 	}
 	tried := map[string]bool{a.path: true}
 	for {
-		prelude, retryable := f.preludeCopy()
+		prelude, _ := f.preludeCopy()
 		out, rerr, fbTimeout, sawBytes := f.run(ctx, sess, a, prelude)
 		r := a.runReceipt(f, len(prelude), out, rerr, fbTimeout)
 		if f.off != nil && f.off.Load() {
@@ -222,7 +222,7 @@ func (f *flow) serve(ctx context.Context) {
 		}
 		// Failed before the first byte: the app has not seen anything yet, so
 		// another path can take over transparently.
-		prelude, retryable = f.preludeCopy()
+		_, retryable := f.preludeCopy()
 		next := ""
 		for _, id := range order {
 			if !tried[id] {

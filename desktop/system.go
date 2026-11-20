@@ -29,10 +29,9 @@ type Options struct {
 // tunPackets adapts a wireguard tun.Device (one packet per call; the offset
 // leaves room for the 4-byte header utun wants).
 type tunPackets struct {
-	dev     tun.Device
-	rb, wb  [][]byte
-	rs      []int
-	closing atomic.Bool
+	dev    tun.Device
+	rb, wb [][]byte
+	rs     []int
 }
 
 const tunOffset = 16
