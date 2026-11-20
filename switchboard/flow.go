@@ -361,6 +361,13 @@ func (f *flow) drain(results chan dialResult, n int) {
 	}
 }
 
+// untilTick is the wait from now (unix ms) to the next beat of a clock that
+// ticks every period ms. Counted from the epoch, the beats are the same for
+// every flow: their watchdogs wake the device together.
+func untilTick(now, period int64) time.Duration {
+	return time.Duration(period-now%period) * time.Millisecond
+}
+
 // run executes one session with the first-byte watchdog and stall accounting.
 func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude []byte) (out wire.Outcome, err error, fbTimeout bool, sawBytes bool) {
 	if a.m.c != nil {
@@ -385,7 +392,10 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 	// The first-byte deadline wants a fine clock; once the answer has come,
 	// stalls (StallMs) are judged as well on a coarse one, and a long idle
 	// flow (a messenger's) then wakes the phone once a second, not four times.
-	tick := time.NewTicker(250 * time.Millisecond)
+	// Every flow ticks on the same beat of the clock (untilTick), so a phone
+	// with thirty idle flows wakes once a second for them all, not thirty times.
+	period := int64(250)
+	tick := time.NewTimer(untilTick(nowMs(), period))
 	defer tick.Stop()
 	coarse, fine := false, false
 	fbMs := f.fbDeadlineMs
@@ -406,6 +416,7 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 			return r.out, r.err, fbTimeout, sn.firstDownAt > 0
 		case <-tick.C:
 			now := nowMs()
+			tick.Reset(untilTick(now, period))
 			sn := a.m.snap()
 			if sn.firstDownAt == 0 {
 				if askedAt == 0 {
@@ -419,7 +430,8 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 			}
 			if !coarse {
 				coarse = true
-				tick.Reset(time.Second)
+				period = 1000
+				tick.Reset(untilTick(now, period))
 				if sleptMs(a.start) < brain.SleepGraceMs {
 					f.s.noteAnswered(a.path, a.startMs) // the path gets through now
 				}
@@ -459,10 +471,11 @@ func (f *flow) run(ctx context.Context, sess wire.Session, a *attempt, prelude [
 			sq := a.m.snap()
 			if q := sq.cutQuiet >= cutFineMs || sq.asked >= brain.AskBytes && now-sq.askedAt >= cutFineMs && now-sq.askedAt < askFineMs; q != fine {
 				if fine = q; fine {
-					tick.Reset(250 * time.Millisecond)
+					period = 250
 				} else {
-					tick.Reset(time.Second)
+					period = 1000
 				}
+				tick.Reset(untilTick(now, period))
 			}
 			// a phone that slept stalls every flow it had open: not the path
 			if sleptMs(a.start) < brain.SleepGraceMs && (a.m.stallOnce() || a.m.unansweredOnce(now, f.s.cfg.StallMs)) {
