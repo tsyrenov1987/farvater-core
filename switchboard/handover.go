@@ -91,6 +91,9 @@ func (s *Switchboard) Inherit(old *Switchboard) {
 	s.started = old.started
 	s.flows.Store(old.flows.Load())
 	s.retries.Store(old.retries.Load())
+	s.paced.Store(old.paced.Load())
+	s.pacedMs.Store(old.pacedMs.Load())
+	s.pacedMaxMs.Store(old.pacedMaxMs.Load())
 	s.udp.Store(old.udp.Load())
 	s.direct.Store(old.direct.Load())
 	s.receipts = receipts

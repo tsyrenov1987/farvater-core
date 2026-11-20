@@ -61,6 +61,11 @@ func TestAHandshakeQueuedByTheGovernorIsNotALostRace(t *testing.T) {
 	}
 	wg.Wait()
 	t.Logf("%d of 12 flows went to the runner-up while the leader's handshake waited its turn", rescued)
+	if st := s.Status(); st.Paced == 0 || st.PacedMs < st.PacedMax || st.PacedMax < 250 {
+		t.Fatalf("status counts %d queued handshakes, %d ms in all, %d ms the longest: the burst's wait is not told", st.Paced, st.PacedMs, st.PacedMax)
+	} else {
+		t.Logf("status: %d handshakes queued, %d ms in all, %d ms the longest", st.Paced, st.PacedMs, st.PacedMax)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range s.b.J.Entries() {

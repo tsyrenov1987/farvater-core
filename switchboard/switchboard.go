@@ -193,9 +193,12 @@ type Switchboard struct {
 	flows   atomic.Int64
 	active  atomic.Int64
 	retries atomic.Int64
-	udp     atomic.Int64
-	direct  atomic.Int64
-	shed    atomic.Int64 // flows refused while Pressed
+	// The governor's queue: handshakes it made wait, their wait in all and
+	// the longest one (ms). What a burst of flows on a per-flow path costs.
+	paced, pacedMs, pacedMaxMs atomic.Int64
+	udp                        atomic.Int64
+	direct                     atomic.Int64
+	shed                       atomic.Int64 // flows refused while Pressed
 }
 
 // labTune, when set (only by the chaos lab's build, sleep_chaos.go), changes
@@ -867,6 +870,8 @@ func (s *Switchboard) pace(ctx context.Context, path string) error {
 	}
 	at := s.acquire(path)
 	if wait := at - nowMs(); wait > 0 {
+		from := nowMs()
+		defer func() { s.notePaced(nowMs() - from) }()
 		select {
 		case <-time.After(time.Duration(wait) * time.Millisecond):
 		case <-ctx.Done():
@@ -875,6 +880,18 @@ func (s *Switchboard) pace(ctx context.Context, path string) error {
 		}
 	}
 	return nil
+}
+
+// notePaced counts a handshake that waited ms in the governor's queue.
+func (s *Switchboard) notePaced(ms int64) {
+	s.paced.Add(1)
+	s.pacedMs.Add(ms)
+	for {
+		m := s.pacedMaxMs.Load()
+		if ms <= m || s.pacedMaxMs.CompareAndSwap(m, ms) {
+			return
+		}
+	}
 }
 
 func (s *Switchboard) release(path string, at int64) {
@@ -1183,9 +1200,12 @@ type Status struct {
 	Flows     int64         `json:"flows"`
 	Active    int64         `json:"active"`
 	Retries   int64         `json:"retries"`
-	UDP       int64         `json:"udp"`            // UDP associations that reached a path
-	Direct    int64         `json:"direct"`         // flows that went around the paths (Config.Direct)
-	Shed      int64         `json:"shed,omitempty"` // flows refused under memory pressure (Config.Pressed)
+	Paced     int64         `json:"paced,omitempty"`        // handshakes the governor made wait their turn
+	PacedMs   int64         `json:"paced_ms,omitempty"`     // their wait in all
+	PacedMax  int64         `json:"paced_max_ms,omitempty"` // and the longest
+	UDP       int64         `json:"udp"`                    // UDP associations that reached a path
+	Direct    int64         `json:"direct"`                 // flows that went around the paths (Config.Direct)
+	Shed      int64         `json:"shed,omitempty"`         // flows refused under memory pressure (Config.Pressed)
 	Dropped   int           `json:"dropped"`
 	Served    int64         `json:"served"`                 // the session's receipts served, on every network, probes left out
 	Blocked   int64         `json:"blocked"`                // the session's receipts with a block signature, the same way
@@ -1216,7 +1236,7 @@ func (s *Switchboard) Status() Status {
 	st := Status{Verdict: verdict,
 		Version: Version, UptimeSec: int64(time.Since(s.started).Seconds()),
 		Listen: s.cfg.Listen, Ctx: s.b.Ctx(), Catalogue: s.cat.Title, Leader: s.b.Leader(),
-		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Shed: s.shed.Load(), Dropped: s.b.Dropped,
+		Flows: s.flows.Load(), Active: s.active.Load(), Retries: s.retries.Load(), Paced: s.paced.Load(), PacedMs: s.pacedMs.Load(), PacedMax: s.pacedMaxMs.Load(), UDP: s.udp.Load(), Direct: s.direct.Load(), Shed: s.shed.Load(), Dropped: s.b.Dropped,
 		Skipped: s.Skipped, Journal: len(s.b.J.Entries()), Served: s.served, Blocked: s.blocked, Slept: s.slept, Drops: s.b.Drops,
 		White: s.b.Restricted(), VKOpen: s.b.VKOpen(now), CDNOpen: s.b.CDNOpen(now),
 	}
